@@ -33,15 +33,32 @@ function Read-Default {
     return $value.Trim()
 }
 
+function Read-MenuChoice {
+    param(
+        [string]$Prompt,
+        [int]$Default,
+        [int]$Min,
+        [int]$Max
+    )
+
+    do {
+        $choice = Read-Default $Prompt ([string]$Default)
+        $index = 0
+        $isNumber = [int]::TryParse($choice, [ref]$index)
+    } until ($isNumber -and $index -ge $Min -and $index -le $Max)
+
+    return $index
+}
+
 function Split-CommandLine {
     param([string]$Text)
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
 
-    $matches = [regex]::Matches($Text, '("[^"]*"|''[^'']*''|\S+)')
+    $argMatches = [regex]::Matches($Text, '("[^"]*"|''[^'']*''|\S+)')
     $items = @()
-    foreach ($match in $matches) {
-        $item = $match.Value
+    foreach ($argMatch in $argMatches) {
+        $item = $argMatch.Value
         if (($item.StartsWith('"') -and $item.EndsWith('"')) -or ($item.StartsWith("'") -and $item.EndsWith("'"))) {
             $item = $item.Substring(1, $item.Length - 2)
         }
@@ -89,11 +106,7 @@ function Select-Mmproj {
         Write-Host ("  {0,2}. {1}  ({2})" -f ($i + 1), $mmprojFiles[$i].Name, $size)
     }
 
-    do {
-        $choice = Read-Default "请选择 mmproj 编号" "0"
-        $index = 0
-        $isNumber = [int]::TryParse($choice, [ref]$index)
-    } until ($isNumber -and $index -ge 0 -and $index -le $mmprojFiles.Count)
+    $index = Read-MenuChoice -Prompt "请选择 mmproj 编号" -Default 0 -Min 0 -Max $mmprojFiles.Count
 
     if ($index -eq 0) {
         return ""
@@ -216,12 +229,12 @@ Write-Host "当前目录: $Root"
 Write-Host ""
 Write-Host "运行方式:"
 Write-Host "  1. 单模型 API 服务（llama-server，默认推荐）"
-Write-Host "  2. 命令行聊天（llama-cli）"
-Write-Host "  3. API 多模型路由（GET /models 可查看全部模型）"
+Write-Host "  2. API 多模型路由（GET /models 可查看全部模型）"
+Write-Host "  3. 命令行聊天（llama-cli）"
 Write-Host ""
-$mode = Read-Default "请选择运行方式" "1"
+$mode = [string](Read-MenuChoice -Prompt "请选择运行方式" -Default 1 -Min 1 -Max 3)
 
-if ($mode -eq "3") {
+if ($mode -eq "2") {
     $routerModels = @($models | Where-Object { $_.Extension -ieq ".gguf" })
     if ($routerModels.Count -eq 0) {
         Write-Host "路由模式需要 models 目录下至少有一个 .gguf 模型。" -ForegroundColor Red
@@ -272,17 +285,13 @@ for ($i = 0; $i -lt $models.Count; $i++) {
     Write-Host ("  {0,2}. {1}  ({2})" -f ($i + 1), $models[$i].Name, $size)
 }
 
-do {
-    $modelChoice = Read-Host "请选择模型编号"
-    $modelIndex = 0
-    $isNumber = [int]::TryParse($modelChoice, [ref]$modelIndex)
-} until ($isNumber -and $modelIndex -ge 1 -and $modelIndex -le $models.Count)
+$modelIndex = Read-MenuChoice -Prompt "请选择模型编号" -Default 1 -Min 1 -Max $models.Count
 
 $model = $models[$modelIndex - 1]
 
 $mmprojPath = ""
 $imageMinTokens = ""
-if ($mode -ne "2") {
+if ($mode -ne "3") {
     $mmprojPath = Select-Mmproj -Directory $mmprojRoot -ModelName $model.Name
     if ([string]::IsNullOrWhiteSpace($mmprojPath)) {
         $mmprojPath = Read-Default "其他 mmproj 路径，留空跳过；可输入完整路径，例如 D:\models\mmproj-BF16.gguf" ""
@@ -329,14 +338,14 @@ $extraText = Read-Default "额外参数，留空跳过，例如 --threads 8 --te
 $extraArgs = Split-CommandLine $extraText
 
 switch ($mode) {
-    "2" {
+    "3" {
         if (-not (Test-Path $cliExe)) {
             Write-Host "找不到 llama-cli.exe 或 llama.exe，无法启动命令行聊天。" -ForegroundColor Red
             Read-Host "按 Enter 退出"
             exit 1
         }
 
-        $commandArgs = $commonArgs + @("-i", "-cnv") + $extraArgs
+        $commandArgs = $commonArgs + @("-cnv") + $extraArgs
         if (-not (Show-FinalConfirm -Exe $cliExe -ArgumentList $commandArgs)) {
             Write-Host "已取消启动。" -ForegroundColor Yellow
             Read-Host "按 Enter 退出"

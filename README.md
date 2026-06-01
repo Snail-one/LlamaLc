@@ -33,8 +33,8 @@ llama.cpp/
 
 ```text
 1. 单模型 API 服务（llama-server）
-2. 命令行聊天（llama-cli）
-3. API 多模型路由
+2. API 多模型路由
+3. 命令行聊天（llama-cli）
 ```
 
 单模型 API 服务会让你选择模型、可选 `mmproj`、上下文长度、GPU 层数、host、port 和是否启用 Web UI。
