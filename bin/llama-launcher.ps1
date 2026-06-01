@@ -159,14 +159,14 @@ function Find-MatchingMmproj {
     $modelKey = Get-MmprojMatchKey $ModelFile.Name
     if ([string]::IsNullOrWhiteSpace($modelKey)) { return $null }
 
-    $matches = @($MmprojFiles | Where-Object {
+    $matchedMmprojFiles = @($MmprojFiles | Where-Object {
         $mmprojKey = Get-MmprojMatchKey $_.Name
         -not [string]::IsNullOrWhiteSpace($mmprojKey) -and
             $mmprojKey.Equals($modelKey, [System.StringComparison]::OrdinalIgnoreCase)
     })
 
-    if ($matches.Count -eq 0) { return $null }
-    return $matches[0]
+    if ($matchedMmprojFiles.Count -eq 0) { return $null }
+    return $matchedMmprojFiles[0]
 }
 
 function Find-RecommendedModelIndex {
