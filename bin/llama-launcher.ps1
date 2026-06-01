@@ -1,0 +1,343 @@
+param(
+    [string]$ModelsDir = "models",
+    [string]$MmprojDir = "mmproj"
+)
+
+$ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = $ScriptDir
+if (-not (Test-Path (Join-Path $Root "llama-server.exe"))) {
+    $ParentDir = Split-Path -Parent $ScriptDir
+    if (Test-Path (Join-Path $ParentDir "llama-server.exe")) {
+        $Root = $ParentDir
+    }
+}
+Set-Location $Root
+
+function Format-Size {
+    param([long]$Bytes)
+
+    if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
+    if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
+    return "$Bytes B"
+}
+
+function Read-Default {
+    param(
+        [string]$Prompt,
+        [string]$Default
+    )
+
+    $value = Read-Host "$Prompt [$Default]"
+    if ([string]::IsNullOrWhiteSpace($value)) { return $Default }
+    return $value.Trim()
+}
+
+function Split-CommandLine {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+
+    $matches = [regex]::Matches($Text, '("[^"]*"|''[^'']*''|\S+)')
+    $items = @()
+    foreach ($match in $matches) {
+        $item = $match.Value
+        if (($item.StartsWith('"') -and $item.EndsWith('"')) -or ($item.StartsWith("'") -and $item.EndsWith("'"))) {
+            $item = $item.Substring(1, $item.Length - 2)
+        }
+        $items += $item
+    }
+    return $items
+}
+
+function Resolve-InputPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+
+    $cleanPath = $Path.Trim().Trim('"').Trim("'")
+    if (-not [System.IO.Path]::IsPathRooted($cleanPath)) {
+        $cleanPath = Join-Path $Root $cleanPath
+    }
+
+    return [System.IO.Path]::GetFullPath($cleanPath)
+}
+
+function Get-MmprojMatchScore {
+    param(
+        [string]$ModelName,
+        [string]$MmprojName
+    )
+
+    $score = 0
+    $modelBase = [System.IO.Path]::GetFileNameWithoutExtension($ModelName).ToLowerInvariant()
+    $mmprojBase = [System.IO.Path]::GetFileNameWithoutExtension($MmprojName).ToLowerInvariant()
+
+    if ($modelBase -match 'qwen\d+(?:\.\d+)?') {
+        $modelFamily = $Matches[0]
+        if ($mmprojBase -like "*$modelFamily*") { $score += 100 }
+    }
+
+    if ($modelBase -match '(\d+)b') {
+        $modelSize = $Matches[1] + "b"
+        if ($mmprojBase -like "*$modelSize*") { $score += 20 }
+    }
+
+    foreach ($token in @("qwen", "vl", "vision", "llava", "minicpm")) {
+        if ($modelBase -like "*$token*" -and $mmprojBase -like "*$token*") {
+            $score += 10
+        }
+    }
+
+    return $score
+}
+
+function Select-Mmproj {
+    param(
+        [string]$Directory,
+        [string]$ModelName = ""
+    )
+
+    if (-not (Test-Path $Directory)) {
+        return ""
+    }
+
+    $mmprojFiles = Get-ChildItem -Path $Directory -Recurse -File -Include *.gguf | Sort-Object Name
+    if ($mmprojFiles.Count -eq 0) {
+        return ""
+    }
+
+    $recommendedIndex = 0
+    $bestScore = 0
+    if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+        for ($i = 0; $i -lt $mmprojFiles.Count; $i++) {
+            $score = Get-MmprojMatchScore -ModelName $ModelName -MmprojName $mmprojFiles[$i].Name
+            if ($score -gt $bestScore) {
+                $bestScore = $score
+                $recommendedIndex = $i + 1
+            }
+        }
+    }
+
+    Write-Host ""
+    if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+        Write-Host "当前选择模型: $ModelName" -ForegroundColor Cyan
+    }
+    Write-Host "发现 mmproj 多模态投影器:"
+    Write-Host "   0. 不使用 mmproj"
+    for ($i = 0; $i -lt $mmprojFiles.Count; $i++) {
+        $size = Format-Size $mmprojFiles[$i].Length
+        $label = ""
+        if (($i + 1) -eq $recommendedIndex) {
+            $label = "  [自动推荐]"
+        }
+        Write-Host ("  {0,2}. {1}  ({2}){3}" -f ($i + 1), $mmprojFiles[$i].Name, $size, $label)
+    }
+
+    $defaultChoice = "0"
+    if ($recommendedIndex -gt 0) {
+        $defaultChoice = [string]$recommendedIndex
+    }
+
+    do {
+        $choice = Read-Default "请选择 mmproj 编号" $defaultChoice
+        $index = 0
+        $isNumber = [int]::TryParse($choice, [ref]$index)
+    } until ($isNumber -and $index -ge 0 -and $index -le $mmprojFiles.Count)
+
+    if ($index -eq 0) {
+        return ""
+    }
+
+    return $mmprojFiles[$index - 1].FullName
+}
+
+function Format-DisplayArg {
+    param([string]$Value)
+
+    $display = $Value
+    if ($Value.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $relative = $Value.Substring($Root.Length).TrimStart('\', '/')
+        $display = ".\$relative"
+    }
+
+    if ($display -match '\s') {
+        return '"' + ($display -replace '"', '\"') + '"'
+    }
+    return $display
+}
+
+function Get-DisplayCommand {
+    param(
+        [string]$Exe,
+        [string[]]$ArgumentList
+    )
+
+    $displayExe = Format-DisplayArg $Exe
+    $escapedArgs = $ArgumentList | ForEach-Object { Format-DisplayArg $_ }
+    return "$displayExe $($escapedArgs -join ' ')"
+}
+
+function Show-FinalConfirm {
+    param(
+        [string]$Exe,
+        [string[]]$ArgumentList,
+        [string]$Url = ""
+    )
+
+    $command = Get-DisplayCommand -Exe $Exe -ArgumentList $ArgumentList
+
+    Write-Host ""
+    Write-Host "最终运行参数确认:" -ForegroundColor Cyan
+    Write-Host "  $command" -ForegroundColor DarkCyan
+    if (-not [string]::IsNullOrWhiteSpace($Url)) {
+        Write-Host "本地访问地址: $Url" -ForegroundColor Green
+    }
+    Write-Host ""
+
+    $answer = Read-Host "确认使用以上参数启动？Y/N [Y]"
+    if ([string]::IsNullOrWhiteSpace($answer)) { return $true }
+    return $answer -match '^[Yy]'
+}
+
+$serverExe = Join-Path $Root "llama-server.exe"
+$cliExe = Join-Path $Root "llama-cli.exe"
+$fallbackCliExe = Join-Path $Root "llama.exe"
+
+if (-not (Test-Path $serverExe)) {
+    Write-Host "找不到 llama-server.exe，请确认脚本放在 llama.cpp 可执行文件目录。" -ForegroundColor Red
+    Read-Host "按 Enter 退出"
+    exit 1
+}
+
+if (-not (Test-Path $cliExe) -and (Test-Path $fallbackCliExe)) {
+    $cliExe = $fallbackCliExe
+}
+
+$modelRoot = Join-Path $Root $ModelsDir
+$mmprojRoot = Join-Path $Root $MmprojDir
+if (-not (Test-Path $modelRoot)) {
+    New-Item -ItemType Directory -Path $modelRoot | Out-Null
+    Write-Host "已创建 models 目录：$modelRoot" -ForegroundColor Yellow
+}
+
+$models = Get-ChildItem -Path $modelRoot -Recurse -File -Include *.gguf,*.bin,*.ggml | Sort-Object Name
+if ($models.Count -eq 0) {
+    Write-Host "models 目录下没有找到模型文件（支持 .gguf / .bin / .ggml）。" -ForegroundColor Red
+    Write-Host "请把模型放到：$modelRoot"
+    Read-Host "按 Enter 退出"
+    exit 1
+}
+
+Clear-Host
+Write-Host "llama.cpp 一键启动器" -ForegroundColor Green
+Write-Host "当前目录: $Root"
+Write-Host ""
+Write-Host "运行方式:"
+Write-Host "  1. API 服务（llama-server，默认推荐）"
+Write-Host "  2. CLI 命令行聊天（llama-cli）"
+Write-Host ""
+$mode = Read-Default "请选择运行方式" "1"
+
+Write-Host ""
+Write-Host "发现模型:"
+for ($i = 0; $i -lt $models.Count; $i++) {
+    $size = Format-Size $models[$i].Length
+    Write-Host ("  {0,2}. {1}  ({2})" -f ($i + 1), $models[$i].Name, $size)
+}
+
+do {
+    $modelChoice = Read-Host "请选择模型编号"
+    $modelIndex = 0
+    $isNumber = [int]::TryParse($modelChoice, [ref]$modelIndex)
+} until ($isNumber -and $modelIndex -ge 1 -and $modelIndex -le $models.Count)
+
+$model = $models[$modelIndex - 1]
+
+$mmprojPath = ""
+$imageMinTokens = ""
+if ($mode -ne "2") {
+    $mmprojPath = Select-Mmproj -Directory $mmprojRoot -ModelName $model.Name
+    if ([string]::IsNullOrWhiteSpace($mmprojPath)) {
+        $mmprojPath = Read-Default "其他 mmproj 路径，留空跳过；可输入完整路径，例如 D:\models\mmproj-BF16.gguf" ""
+    }
+    if (-not [string]::IsNullOrWhiteSpace($mmprojPath)) {
+        $mmprojPath = Resolve-InputPath $mmprojPath
+        if (-not (Test-Path $mmprojPath)) {
+            Write-Host "找不到 mmproj 文件：$mmprojPath" -ForegroundColor Red
+            Read-Host "按 Enter 退出"
+            exit 1
+        }
+
+        $imageMinTokens = Read-Default "图片最小 token 数 --image-min-tokens，默认 1024；输入 0 或 N 跳过" "1024"
+        if ($imageMinTokens -match '^[Nn]$' -or $imageMinTokens -eq "0") {
+            $imageMinTokens = ""
+        } elseif (-not ($imageMinTokens -match '^\d+$')) {
+            Write-Host "--image-min-tokens 需要输入数字、0 或 N。" -ForegroundColor Red
+            Read-Host "按 Enter 退出"
+            exit 1
+        }
+    }
+}
+
+$commonArgs = @("-m", $model.FullName)
+
+$ctx = Read-Default "上下文长度 --ctx-size，留空用模型默认，或输入如 4096/8192" ""
+if (-not [string]::IsNullOrWhiteSpace($ctx)) {
+    $commonArgs += @("--ctx-size", $ctx)
+}
+
+$gpuLayers = Read-Default "GPU 层数 --n-gpu-layers，默认 auto，可输入 all/0/具体数字" "auto"
+if (-not [string]::IsNullOrWhiteSpace($gpuLayers)) {
+    $commonArgs += @("--n-gpu-layers", $gpuLayers)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($mmprojPath)) {
+    $commonArgs += @("--mmproj", $mmprojPath)
+    if (-not [string]::IsNullOrWhiteSpace($imageMinTokens)) {
+        $commonArgs += @("--image-min-tokens", $imageMinTokens)
+    }
+}
+
+$extraText = Read-Default "额外参数，留空跳过，例如 --threads 8 --temp 0.7" ""
+$extraArgs = Split-CommandLine $extraText
+
+switch ($mode) {
+    "2" {
+        if (-not (Test-Path $cliExe)) {
+            Write-Host "找不到 llama-cli.exe 或 llama.exe，无法启动命令行聊天。" -ForegroundColor Red
+            Read-Host "按 Enter 退出"
+            exit 1
+        }
+
+        $commandArgs = $commonArgs + @("-i", "-cnv") + $extraArgs
+        if (-not (Show-FinalConfirm -Exe $cliExe -ArgumentList $commandArgs)) {
+            Write-Host "已取消启动。" -ForegroundColor Yellow
+            Read-Host "按 Enter 退出"
+            exit 0
+        }
+        & $cliExe @commandArgs
+    }
+    default {
+        $hostValue = Read-Default "监听地址 --host" "127.0.0.1"
+        $portValue = Read-Default "端口 --port" "29856"
+        $uiChoice = Read-Default "是否启用 Web UI？Y/N" "N"
+
+        $commandArgs = $commonArgs + @("--host", $hostValue, "--port", $portValue)
+        if ($uiChoice -match '^[Nn]') {
+            $commandArgs += "--no-ui"
+        }
+        $commandArgs += $extraArgs
+
+        if (-not (Show-FinalConfirm -Exe $serverExe -ArgumentList $commandArgs -Url "http://$hostValue`:$portValue")) {
+            Write-Host "已取消启动。" -ForegroundColor Yellow
+            Read-Host "按 Enter 退出"
+            exit 0
+        }
+        & $serverExe @commandArgs
+    }
+}
+
+Write-Host ""
+Write-Host "进程已结束。"
+Read-Host "按 Enter 退出"
