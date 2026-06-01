@@ -30,12 +30,13 @@ llama.cpp/
 
 ## 启动模式
 
-启动器提供 3 种模式：
+启动器提供 4 种模式：
 
 ```text
 1. 单模型 API 服务（llama-server）
 2. API 多模型路由
 3. 命令行聊天（llama-cli）
+4. 创建/刷新手动路由配置
 ```
 
 单模型 API 服务会让你选择模型、可选 `mmproj`、上下文长度、GPU 层数、host、port 和是否启用 Web UI。
@@ -61,6 +62,20 @@ llama.cpp/
 ```
 
 `--models-max 1` 适合 16GB 显存环境，避免多个大模型同时占用显存。
+
+### 手动路由配置
+
+选择第 4 项会扫描 `models/*.gguf` 并创建/刷新 `bin/router-models.ini`。如果文件已经存在，脚本会先询问是否覆盖。
+
+生成的手动配置会包含：
+
+- 每个模型一个 section，section 名就是 GGUF 文件名
+- 主模型路径 `model = ...`
+- 常用配置模板：`n-gpu-layers`、`load-on-startup`、`ctx-size`、`threads`
+- 可手动启用的多模态配置：`mmproj`、`image-min-tokens`
+- 当前 `mmproj/*.gguf` 文件列表，方便复制到对应模型段落
+
+多模型路由启动时，如果 `bin/router-models.ini` 存在，会优先使用这个手动配置；否则使用自动生成的 `bin/router-models.auto.ini`。
 
 ## API 示例
 
@@ -95,6 +110,6 @@ Content-Type: application/json
 
 ## 说明
 
-`mmproj` 文件不是单独模型，它是多模态/视觉模型使用的投影器。单模型 API 服务模式会让你手动选择或跳过 `mmproj`；多模型路由模式默认只生成主模型 preset，不自动匹配 `mmproj`。
+`mmproj` 文件不是单独模型，它是多模态/视觉模型使用的投影器。单模型 API 服务模式会让你手动选择或跳过 `mmproj`；多模型路由的自动配置只生成主模型 preset，如需在路由模式中使用多模态模型，请用第 4 项生成 `router-models.ini` 后手动配置对应模型的 `mmproj`。
 
 多模型路由基于 `llama.cpp` 官方 `llama-server` router mode。官方 server README 说明 `--models-preset` 可使用 INI 文件定义模型预设，每个 section 是一个模型 preset，API 可通过 `/models`、`/models/load` 和请求里的 `model` 字段管理与路由模型。
