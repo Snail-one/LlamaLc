@@ -214,6 +214,10 @@ if (-not (Test-Path $modelRoot)) {
     New-Item -ItemType Directory -Path $modelRoot | Out-Null
     Write-Host "已创建 models 目录：$modelRoot" -ForegroundColor Yellow
 }
+if (-not (Test-Path $mmprojRoot)) {
+    New-Item -ItemType Directory -Path $mmprojRoot | Out-Null
+    Write-Host "已创建 mmproj 目录：$mmprojRoot" -ForegroundColor Yellow
+}
 
 $models = Get-ChildItem -Path $modelRoot -Recurse -File -Include *.gguf,*.bin,*.ggml | Sort-Object Name
 if ($models.Count -eq 0) {
