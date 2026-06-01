@@ -242,11 +242,25 @@ if ($mode -eq "2") {
         exit 1
     }
 
-    $routerPreset = Join-Path $ScriptDir "router-models.ini"
-    Write-RouterPreset -ModelFiles $routerModels -OutputPath $routerPreset
+    $manualRouterPreset = Join-Path $ScriptDir "router-models.ini"
+    $autoRouterPreset = Join-Path $ScriptDir "router-models.auto.ini"
+    $routerPreset = $manualRouterPreset
+    $usingManualRouterPreset = Test-Path $manualRouterPreset
+
+    if ($usingManualRouterPreset) {
+        Write-Host ""
+        Write-Host "检测到手动路由配置，将直接使用且不会覆盖: $manualRouterPreset" -ForegroundColor Cyan
+    } else {
+        $routerPreset = $autoRouterPreset
+        Write-RouterPreset -ModelFiles $routerModels -OutputPath $routerPreset
+    }
 
     Write-Host ""
-    Write-Host "已生成路由配置: $routerPreset" -ForegroundColor Green
+    if ($usingManualRouterPreset) {
+        Write-Host "使用路由配置: $routerPreset" -ForegroundColor Green
+    } else {
+        Write-Host "已生成路由配置: $routerPreset" -ForegroundColor Green
+    }
     Write-Host "API 模型列表:"
     foreach ($modelFile in $routerModels) {
         $modelId = Get-ModelId $modelFile

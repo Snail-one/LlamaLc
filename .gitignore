@@ -3,4 +3,5 @@
 !README.md
 !bin/
 !bin/**
+bin/router-models.auto.ini
 bin/router-models.ini

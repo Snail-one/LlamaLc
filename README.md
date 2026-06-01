@@ -9,7 +9,8 @@ llama.cpp/
 ├─ bin/
 │  ├─ llama-launcher.bat
 │  ├─ llama-launcher.ps1
-│  └─ router-models.ini        # 路由模式启动时自动生成
+│  ├─ router-models.ini        # 可选：手动路由配置，不会被覆盖
+│  └─ router-models.auto.ini   # 路由模式自动生成
 ├─ models/
 │  └─ *.gguf
 ├─ mmproj/
@@ -46,7 +47,8 @@ llama.cpp/
 路由模式使用 `llama-server` 原生 router 能力。启动时脚本会：
 
 - 扫描 `models/*.gguf`
-- 自动生成 `bin/router-models.ini`
+- 如果存在 `bin/router-models.ini`，优先使用它且不会覆盖
+- 如果不存在手动配置，自动生成 `bin/router-models.auto.ini`
 - 使用文件名去掉 `.gguf` 作为 API model id
 - 默认 `n-gpu-layers = auto`
 - 默认 `load-on-startup = false`
@@ -54,7 +56,7 @@ llama.cpp/
 最终启动命令类似：
 
 ```powershell
-.\llama-server.exe --models-preset .\bin\router-models.ini --models-max 1 --models-autoload --host 127.0.0.1 --port 29856 --no-ui
+.\llama-server.exe --models-preset .\bin\router-models.auto.ini --models-max 1 --models-autoload --host 127.0.0.1 --port 29856 --no-ui
 ```
 
 `--models-max 1` 适合 16GB 显存环境，避免多个大模型同时占用显存。
