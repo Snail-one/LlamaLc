@@ -47,9 +47,10 @@ llama.cpp/
 路由模式使用 `llama-server` 原生 router 能力。启动时脚本会：
 
 - 扫描 `models/*.gguf`
-- 如果存在 `bin/router-models.ini`，优先使用它且不会覆盖
-- 如果不存在手动配置，自动生成 `bin/router-models.auto.ini`
-- 使用文件名去掉 `.gguf` 作为 API model id
+- 每次都会刷新自动配置 `bin/router-models.auto.ini`
+- 如果存在手动配置 `bin/router-models.ini`，运行时优先使用它且不会覆盖
+- 如果不存在手动配置，运行时使用 `bin/router-models.auto.ini`
+- 使用完整 GGUF 文件名作为 API model id，和单模型列表显示一致
 - 默认 `n-gpu-layers = auto`
 - 默认 `load-on-startup = false`
 
@@ -75,7 +76,7 @@ GET http://127.0.0.1:29856/models
 POST http://127.0.0.1:29856/models/load
 Content-Type: application/json
 
-{"model":"Qwen3.5-9B-UD-Q4_K_XL"}
+{"model":"Qwen3.5-9B-UD-Q4_K_XL.gguf"}
 ```
 
 OpenAI 兼容接口选择模型：
@@ -85,7 +86,7 @@ POST http://127.0.0.1:29856/v1/chat/completions
 Content-Type: application/json
 
 {
-  "model": "Qwen3.5-9B-UD-Q4_K_XL",
+  "model": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
   "messages": [
     {"role": "user", "content": "你好"}
   ]
