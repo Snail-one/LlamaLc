@@ -71,6 +71,24 @@ func TestOSInstallationProbeTimeout(t *testing.T) {
 	}
 }
 
+func TestOSInstallationProbeOutputLimit(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := (OSInstallationProbe{}).Probe(Command{
+		Path: executable,
+		Args: []string{"-test.run=^TestInstallationProbeLargeOutputHelperProcess$"},
+		Dir:  t.TempDir(),
+	}, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "输出超过") {
+		t.Fatalf("probe output limit was not reported: %v", err)
+	}
+	if len(output) != maxProbeOutputSize {
+		t.Fatalf("captured output length = %d, want %d", len(output), maxProbeOutputSize)
+	}
+}
+
 func TestInstallationProbeHelperProcess(t *testing.T) {
 	if !hasExactTestRunArgument("TestInstallationProbeHelperProcess") {
 		return
@@ -84,6 +102,13 @@ func TestInstallationProbeSleepHelperProcess(t *testing.T) {
 		return
 	}
 	time.Sleep(time.Second)
+}
+
+func TestInstallationProbeLargeOutputHelperProcess(t *testing.T) {
+	if !hasExactTestRunArgument("TestInstallationProbeLargeOutputHelperProcess") {
+		return
+	}
+	fmt.Fprint(os.Stdout, strings.Repeat("x", maxProbeOutputSize+1024))
 }
 
 func hasExactTestRunArgument(name string) bool {
@@ -131,6 +156,26 @@ func TestVerifyInstallationRequiresRegularServerFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "config")); !os.IsNotExist(err) {
 		t.Fatalf("installation verification created config: %v", err)
+	}
+}
+
+func TestVerifyInstallationRejectsServerSymlink(t *testing.T) {
+	root := t.TempDir()
+	paths, err := ResolveFixedPaths(root, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "llama-server")
+	touchFile(t, target)
+	if err := os.Symlink(target, paths.Server); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	probe := &fakeInstallationProbe{}
+	if _, err := VerifyInstallation(root, paths, probe); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("server symlink was accepted: %v", err)
+	}
+	if len(probe.commands) != 0 {
+		t.Fatal("server symlink was executed")
 	}
 }
 

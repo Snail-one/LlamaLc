@@ -498,12 +498,15 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 }
 
 func requireFile(path, label string) error {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("找不到 %s: %s", label, path)
 	}
 	if err != nil {
 		return fmt.Errorf("无法访问 %s %s: %w", label, path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s 不允许使用符号链接或重解析点: %s", label, path)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("%s 路径是目录: %s", label, path)
