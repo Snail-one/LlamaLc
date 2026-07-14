@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	buildversion "github.com/joker/llama-launcher/internal/version"
 )
 
 type fakeExecutor struct {
@@ -74,19 +76,21 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	if len(fake.commands) != 0 {
 		t.Fatalf("cancelled launch executed process: %#v", fake.commands)
 	}
-	if !strings.Contains(out.String(), Version) {
-		t.Fatalf("menu header does not contain version %q: %s", Version, out.String())
+	if !strings.Contains(out.String(), buildversion.Version) {
+		t.Fatalf("menu header does not contain version %q: %s", buildversion.Version, out.String())
 	}
 }
 
-func TestVersionFlagsOnlyPrintVersion(t *testing.T) {
-	for _, versionFlag := range []string{"-v", "--version"} {
+func TestVersionCommandsOnlyPrintVersion(t *testing.T) {
+	for _, versionFlag := range []string{"-v", "--version", "version"} {
 		t.Run(versionFlag, func(t *testing.T) {
-			root := t.TempDir()
-			mockExecutableInBin(t, root)
-			oldVersion := Version
-			Version = "v9.8.7-test"
-			t.Cleanup(func() { Version = oldVersion })
+			oldVersion, oldCommit, oldBuildDate := buildversion.Version, buildversion.Commit, buildversion.BuildDate
+			buildversion.Version = "v9.8.7-test"
+			buildversion.Commit = "abc1234"
+			buildversion.BuildDate = "2026-07-14T12:00:00Z"
+			t.Cleanup(func() {
+				buildversion.Version, buildversion.Commit, buildversion.BuildDate = oldVersion, oldCommit, oldBuildDate
+			})
 
 			out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 			fake := &fakeExecutor{}
@@ -94,7 +98,8 @@ func TestVersionFlagsOnlyPrintVersion(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("version returned %d: %s", code, errOut.String())
 			}
-			if out.String() != "v9.8.7-test\n" {
+			want := "Version:   v9.8.7-test\nCommit:    abc1234\nBuildDate: 2026-07-14T12:00:00Z\n"
+			if out.String() != want {
 				t.Fatalf("unexpected version output: %q", out.String())
 			}
 			if errOut.Len() != 0 || len(fake.commands) != 0 {
@@ -121,16 +126,4 @@ func TestMainRejectsExecutableOutsideBin(t *testing.T) {
 		t.Fatalf("location validation should happen before config creation, stat error: %v", err)
 	}
 
-	out.Reset()
-	errOut.Reset()
-	code = Main([]string{"-v"}, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
-	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
-		t.Fatalf("outside-bin version command was not rejected: code=%d stderr=%q", code, errOut.String())
-	}
-	out.Reset()
-	errOut.Reset()
-	code = Main([]string{"--version"}, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
-	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
-		t.Fatalf("outside-bin long version command was not rejected: code=%d stderr=%q", code, errOut.String())
-	}
 }

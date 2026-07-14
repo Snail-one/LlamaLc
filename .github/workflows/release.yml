@@ -36,16 +36,21 @@ jobs:
       - name: Build and package Windows amd64
         env:
           VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
         run: |
+          ENTRY_DIR="$(find cmd -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          APP_NAME="$(basename "${ENTRY_DIR}")"
+          MODULE_PATH="$(go list -m)"
+          BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           mkdir -p dist/package/bin
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
             -trimpath \
-            -ldflags "-s -w -X github.com/joker/llama-launcher/internal/launcher.Version=${VERSION}" \
-            -o dist/package/bin/llama-launcher.exe \
-            ./cmd/llama-launcher
+            -ldflags "-s -w -X ${MODULE_PATH}/internal/version.Version=${VERSION} -X ${MODULE_PATH}/internal/version.Commit=${COMMIT} -X ${MODULE_PATH}/internal/version.BuildDate=${BUILD_DATE}" \
+            -o "dist/package/bin/${APP_NAME}.exe" \
+            "./${ENTRY_DIR}"
           cp README.md launcher.example.json dist/package/
           cd dist/package
-          zip -r ../llama-launcher-${VERSION}-windows-amd64.zip \
+          zip -r "../${APP_NAME}-${VERSION}-windows-amd64.zip" \
             bin README.md launcher.example.json
           cd ..
           sha256sum ./*.zip > SHA256SUMS.txt

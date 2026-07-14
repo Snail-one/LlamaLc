@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	buildversion "github.com/joker/llama-launcher/internal/version"
 )
 
 type menu struct {
@@ -32,7 +34,7 @@ llama.cpp Go 启动器 %s
   5. 多模型 Router
   6. CLI 命令行聊天
   0. 退出
-`, Version, app.Root)
+`, buildversion.Version, app.Root)
 		choice, err := m.readChoice("请选择", 1, 0, 6)
 		if errors.Is(err, io.EOF) {
 			return 0

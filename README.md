@@ -6,29 +6,86 @@
 
 ## 构建
 
-需要 Go 1.22 或更高版本。在项目根目录运行：
+需要 Go 1.22 或更高版本。
 
-```powershell
-go test ./...
-go build -o bin/llama-launcher.exe ./cmd/llama-launcher
-```
+### Linux 原生构建
 
-从 Linux 交叉编译 Windows x64 版本：
+`build-only.sh` 默认构建当前 Linux 架构，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入 `dist/`：
 
 ```sh
-GOOS=windows GOARCH=amd64 go build -o bin/llama-launcher.exe ./cmd/llama-launcher
+./build-only.sh
+./dist/llama-launcher_linux_amd64 --version
 ```
 
-项目不提交编译后的 exe。`llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
+可通过环境变量覆盖目标平台和所有版本信息：
 
-查看当前版本可使用短参数 `-v` 或标准长参数 `--version`：
+```sh
+VERSION=v1.0.0 \
+COMMIT=abc1234 \
+BUILD_DATE=2026-07-14T12:00:00Z \
+./build-only.sh
+```
+
+交叉编译也使用同一个脚本：
+
+```sh
+GOOS=windows GOARCH=amd64 ./build-only.sh
+```
+
+输出文件会根据入口程序、目标系统和架构自动命名，例如：
+
+```text
+dist/llama-launcher_linux_amd64
+dist/llama-launcher_windows_amd64.exe
+```
+
+### Windows 启动器一键构建
+
+Linux 下一键交叉编译 Windows amd64 版本：
+
+```sh
+./scripts/build-linux.sh
+```
+
+Windows 下双击 `scripts/build-windows.cmd`，或在终端运行：
+
+```powershell
+.\scripts\build-windows.cmd
+```
+
+两个脚本都支持可选的版本号和目标架构：
+
+```sh
+# Linux
+./scripts/build-linux.sh v1.2.3 arm64
+```
+
+```powershell
+# Windows
+.\scripts\build-windows.cmd v1.2.3 arm64
+```
+
+`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `bin/llama-launcher.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
+
+`llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
+
+查看完整版本信息可使用 `-v`、标准长参数 `--version` 或 `version` 命令：
 
 ```powershell
 .\bin\llama-launcher.exe -v
 .\bin\llama-launcher.exe --version
+.\bin\llama-launcher.exe version
 ```
 
-该命令通过 `bin` 位置检查后只打印版本号并退出，不会创建配置或扫描模型目录。交互菜单标题也会显示相同版本。
+输出包含构建版本、Git 提交和 UTC 构建时间：
+
+```text
+Version:   v1.0.0
+Commit:    abc1234
+BuildDate: 2026-07-14T12:00:00Z
+```
+
+版本查询直接输出并以状态码 `0` 退出，不要求位于 `bin/`，不会创建配置、扫描模型或启动服务器。其他命令仍会强制检查启动器必须位于 `bin/`。交互菜单标题显示其中的版本号。
 
 ## 目录布局
 
@@ -49,7 +106,7 @@ llama.cpp/
 
 模型目录会递归扫描并稳定排序。Router 只接收 GGUF，API model id 使用完整 GGUF 文件名；如果三个模型目录中存在同名文件，启动器会列出所有冲突并拒绝生成配置，避免静默覆盖。
 
-相对路径始终相对于 llama.cpp 根目录。启动器会检查其直接父目录必须名为 `bin`，否则在创建配置前报错；检查通过后自动使用上一级目录作为根目录。`--root` 可覆盖资源根目录，但不能绕过 `bin` 位置检查；`--config` 可指定另一个 JSON 配置文件。
+相对路径始终相对于 llama.cpp 根目录。除无副作用的版本查询外，启动器会检查其直接父目录必须名为 `bin`，否则在创建配置前报错；检查通过后自动使用上一级目录作为根目录。`--root` 可覆盖资源根目录，但不能绕过业务命令的 `bin` 位置检查；`--config` 可指定另一个 JSON 配置文件。
 
 ## 交互菜单
 
@@ -180,7 +237,7 @@ PowerShell 与 BAT 业务入口已删除。旧版路径保持兼容：已有 `bi
 
 ## 自动发版
 
-推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：运行测试与 `go vet`，交叉编译 Windows amd64 版本，将版本号注入 exe，随后上传 ZIP 和 `SHA256SUMS.txt` 到 GitHub Release。普通 push 和 Pull Request 不运行工作流。
+推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：运行测试与 `go vet`，交叉编译 Windows amd64 版本，将 tag、提交哈希和 UTC 构建时间注入 exe，随后上传 ZIP 和 `SHA256SUMS.txt` 到 GitHub Release。普通 push 和 Pull Request 不运行工作流。
 
 ```sh
 git tag v1.0.0

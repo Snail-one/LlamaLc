@@ -19,5 +19,6 @@
 *.ggml
 
 # Go test/build artifacts
+/dist/
 *.test
 *.out

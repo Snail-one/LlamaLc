@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	buildversion "github.com/joker/llama-launcher/internal/version"
 )
 
 type Application struct {
@@ -21,6 +23,11 @@ type Application struct {
 }
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
+	if isVersionCommand(args) {
+		fmt.Fprintln(stdout, buildversion.String())
+		return 0
+	}
+
 	rootFlag, configFlag, remaining, err := parseGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
@@ -34,10 +41,6 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
-	}
-	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version") {
-		fmt.Fprintln(stdout, Version)
-		return 0
 	}
 	if len(remaining) > 0 && (remaining[0] == "help" || remaining[0] == "--help" || remaining[0] == "-h") {
 		printUsage(stdout)
@@ -74,6 +77,13 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 		return 1
 	}
 	return code
+}
+
+func isVersionCommand(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	return args[0] == "-v" || args[0] == "--version" || args[0] == "version"
 }
 
 func parseGlobalFlags(args []string) (root, config string, remaining []string, err error) {
@@ -120,7 +130,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `llama.cpp Go 启动器
 
 用法:
-	  llama-launcher -v | --version         只打印版本号并退出
+  llama-launcher -v | --version | version  打印版本信息并退出
   llama-launcher [--root DIR] [--config FILE] <子命令> [选项] [-- llama.cpp参数]
   llama-launcher                         进入中文交互菜单
 
