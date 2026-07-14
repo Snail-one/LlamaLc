@@ -85,9 +85,10 @@ func ResolveModel(root, input string, kind ModelKind, extensions map[string]bool
 	return ResolveModelAt(root, root, input, kind, extensions)
 }
 
-// ResolveModelAt searches bare filenames in searchRoot. Inputs containing path
-// separators are resolved against pathRoot, matching the launcher's global rule
-// that explicit relative paths are relative to its root directory.
+// ResolveModelAt searches bare filenames in searchRoot first, allowing callers
+// to pass an API model ID such as "model.gguf". If no scanned model has that ID,
+// the same input is treated as a path relative to pathRoot. Inputs containing a
+// path separator always use pathRoot directly.
 func ResolveModelAt(searchRoot, pathRoot, input string, kind ModelKind, extensions map[string]bool) (ModelFile, error) {
 	input = strings.TrimSpace(strings.Trim(input, `"'`))
 	if input == "" {
@@ -108,6 +109,15 @@ func ResolveModelAt(searchRoot, pathRoot, input string, kind ModelKind, extensio
 		}
 	}
 	if len(matches) == 0 {
+		// A bare filename is ambiguous: it can be a scanned model ID or a path
+		// relative to the launcher root. Prefer the categorized model directory,
+		// then fall back to the documented root-relative path behavior.
+		rootRelativePath := ResolvePath(pathRoot, input)
+		if _, statErr := os.Stat(rootRelativePath); statErr == nil {
+			return modelFromPath(rootRelativePath, kind, extensions)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return ModelFile{}, fmt.Errorf("无法访问模型文件 %s: %w", rootRelativePath, statErr)
+		}
 		return ModelFile{}, fmt.Errorf("在 %s 中找不到模型 %q", searchRoot, input)
 	}
 	if len(matches) > 1 {

@@ -81,3 +81,35 @@ func TestResolveModelExplicitRelativePathUsesLauncherRoot(t *testing.T) {
 		t.Fatalf("explicit relative path resolved to %q, want %q", model.Path, path)
 	}
 }
+
+func TestResolveModelBareFilenameFallsBackToLauncherRoot(t *testing.T) {
+	launcherRoot := t.TempDir()
+	searchRoot := filepath.Join(launcherRoot, "models")
+	path := filepath.Join(launcherRoot, "custom.gguf")
+	touchFile(t, path)
+
+	model, err := ResolveModelAt(searchRoot, launcherRoot, "custom.gguf", GenerationModel, generationExtensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Path != path {
+		t.Fatalf("bare root-relative path resolved to %q, want %q", model.Path, path)
+	}
+}
+
+func TestResolveModelBareFilenamePrefersSearchDirectory(t *testing.T) {
+	launcherRoot := t.TempDir()
+	searchRoot := filepath.Join(launcherRoot, "models")
+	rootModel := filepath.Join(launcherRoot, "same.gguf")
+	searchedModel := filepath.Join(searchRoot, "nested", "same.gguf")
+	touchFile(t, rootModel)
+	touchFile(t, searchedModel)
+
+	model, err := ResolveModelAt(searchRoot, launcherRoot, "same.gguf", GenerationModel, generationExtensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Path != searchedModel {
+		t.Fatalf("bare model ID resolved to %q, want categorized model %q", model.Path, searchedModel)
+	}
+}
