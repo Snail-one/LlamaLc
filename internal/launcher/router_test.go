@@ -71,8 +71,8 @@ func TestPrepareRouterManualTakesPriority(t *testing.T) {
 	paths := ResolvedPaths{
 		Models: filepath.Join(root, "models"), Embeddings: filepath.Join(root, "embeddings"),
 		Rerank: filepath.Join(root, "rerank"), Mmproj: filepath.Join(root, "mmproj"),
-		RouterManual: filepath.Join(root, "bin", "router-models.ini"),
-		RouterAuto:   filepath.Join(root, "bin", "router-models.auto.ini"),
+		RouterManual: filepath.Join(root, "config", "router-models.ini"),
+		RouterAuto:   filepath.Join(root, "config", "router-models.auto.ini"),
 	}
 	touchFile(t, filepath.Join(paths.Models, "chat.gguf"))
 	touchFile(t, paths.RouterManual)

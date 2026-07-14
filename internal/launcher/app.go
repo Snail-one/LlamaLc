@@ -59,10 +59,19 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 		return 1
 	}
 	if created {
-		fmt.Fprintf(stdout, "已生成默认配置: %s\n", configPath)
+		fmt.Fprintf(stdout, "已生成配置: %s\n", configPath)
+	}
+	paths := config.ResolvePaths(root)
+	createdDirectories, err := EnsureRuntimeDirectories(root, paths)
+	if err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
+	}
+	for _, directory := range createdDirectories {
+		fmt.Fprintf(stdout, "已创建目录: %s\n", directory)
 	}
 	app := &Application{
-		Root: root, Config: config, Paths: config.ResolvePaths(root),
+		Root: root, Config: config, Paths: paths,
 		Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor,
 	}
 	if len(remaining) == 0 {

@@ -6,8 +6,8 @@
     "embeddings": "embeddings",
     "rerank": "rerank",
     "mmproj": "mmproj",
-    "router_manual": "bin/router-models.ini",
-    "router_auto": "bin/router-models.auto.ini"
+    "router_manual": "config/router-models.ini",
+    "router_auto": "config/router-models.auto.ini"
   },
   "server": {
     "host": "127.0.0.1",

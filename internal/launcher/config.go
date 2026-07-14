@@ -12,9 +12,16 @@ import (
 	"strings"
 )
 
-const DefaultConfigName = "launcher.json"
+const (
+	ConfigDirectoryName = "config"
+	DefaultConfigName   = "launcher.json"
+)
 
 var executablePath = os.Executable
+
+func DefaultConfigPath(root string) string {
+	return filepath.Join(root, ConfigDirectoryName, DefaultConfigName)
+}
 
 type Config struct {
 	Paths     PathsConfig     `json:"paths"`
@@ -68,8 +75,8 @@ func DefaultConfig() Config {
 			Embeddings:   "embeddings",
 			Rerank:       "rerank",
 			Mmproj:       "mmproj",
-			RouterManual: filepath.Join("bin", "router-models.ini"),
-			RouterAuto:   filepath.Join("bin", "router-models.auto.ini"),
+			RouterManual: filepath.Join(ConfigDirectoryName, "router-models.ini"),
+			RouterAuto:   filepath.Join(ConfigDirectoryName, "router-models.auto.ini"),
 		},
 		Server: ServerConfig{
 			Host:           "127.0.0.1",
@@ -126,45 +133,57 @@ func isWindowsAbs(value string) bool {
 
 func LoadOrCreateConfig(root, configPath string) (Config, string, bool, error) {
 	if configPath == "" {
-		configPath = filepath.Join(root, DefaultConfigName)
+		configPath = DefaultConfigPath(root)
 	} else {
 		configPath = ResolvePath(root, configPath)
 	}
 
-	config := DefaultConfig()
-	f, err := os.Open(configPath)
+	_, err := os.Stat(configPath)
 	if errors.Is(err, os.ErrNotExist) {
+		config := DefaultConfig()
 		if err := writeDefaultConfig(configPath, config); err != nil {
 			return Config{}, configPath, false, err
 		}
 		return config, configPath, true, nil
 	}
 	if err != nil {
-		return Config{}, configPath, false, fmt.Errorf("无法读取配置文件 %s: %w", configPath, err)
+		return Config{}, configPath, false, fmt.Errorf("无法访问配置文件 %s: %w", configPath, err)
+	}
+	config, err := readConfig(configPath)
+	if err != nil {
+		return Config{}, configPath, false, err
+	}
+	return config, configPath, false, nil
+}
+
+func readConfig(configPath string) (Config, error) {
+	config := DefaultConfig()
+	f, err := os.Open(configPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("无法读取配置文件 %s: %w", configPath, err)
 	}
 	defer f.Close()
 
 	decoder := json.NewDecoder(f)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, configPath, false, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
+		return Config{}, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("包含多余的 JSON 内容")
 		}
-		return Config{}, configPath, false, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
+		return Config{}, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
 	}
-	// Older generated configs used an empty pooling value. Treat that legacy
-	// placeholder as unset so upgrades receive the new default.
+	// An empty pooling value is treated as unset and receives the launcher default.
 	if strings.TrimSpace(config.Embedding.Pooling) == "" {
 		config.Embedding.Pooling = DefaultConfig().Embedding.Pooling
 	}
 	if err := ValidateConfig(config); err != nil {
-		return Config{}, configPath, false, err
+		return Config{}, err
 	}
-	return config, configPath, false, nil
+	return config, nil
 }
 
 func writeDefaultConfig(path string, config Config) error {
@@ -312,6 +331,55 @@ type ResolvedPaths struct {
 	Mmproj       string
 	RouterManual string
 	RouterAuto   string
+}
+
+func EnsureRuntimeDirectories(root string, paths ResolvedPaths) ([]string, error) {
+	directories := []struct {
+		label string
+		path  string
+	}{
+		{label: "config", path: filepath.Join(root, ConfigDirectoryName)},
+		{label: "models", path: paths.Models},
+		{label: "embeddings", path: paths.Embeddings},
+		{label: "rerank", path: paths.Rerank},
+		{label: "mmproj", path: paths.Mmproj},
+		{label: "Router 手动配置", path: filepath.Dir(paths.RouterManual)},
+		{label: "Router 自动配置", path: filepath.Dir(paths.RouterAuto)},
+	}
+
+	seen := make(map[string]bool)
+	var missing []string
+	for _, directory := range directories {
+		path := filepath.Clean(strings.TrimSpace(directory.path))
+		if path == "." || path == "" {
+			return nil, fmt.Errorf("%s 目录路径不能为空", directory.label)
+		}
+		key := strings.ToLower(path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		info, err := os.Stat(path)
+		if err == nil {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("%s 路径不是目录: %s", directory.label, path)
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("无法检查 %s 目录 %s: %w", directory.label, path, err)
+		}
+		missing = append(missing, path)
+	}
+
+	var created []string
+	for _, path := range missing {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return created, fmt.Errorf("无法创建运行目录 %s: %w", path, err)
+		}
+		created = append(created, path)
+	}
+	return created, nil
 }
 
 func (config Config) ResolvePaths(root string) ResolvedPaths {

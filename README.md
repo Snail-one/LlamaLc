@@ -93,20 +93,21 @@ BuildDate: 2026-07-14T12:00:00Z
 llama.cpp/
 ├─ llama-server.exe
 ├─ llama-cli.exe
-├─ launcher.json                  # 首次运行自动生成
-├─ models/                        # 生成/聊天模型：gguf、bin、ggml
-├─ embeddings/                    # Embedding 模型：gguf
-├─ rerank/                        # Rerank 模型：gguf
-├─ mmproj/                        # 多模态投影文件：gguf
+├─ models/                        # 自动创建；生成/聊天模型：gguf、bin、ggml
+├─ embeddings/                    # 自动创建；Embedding 模型：gguf
+├─ rerank/                        # 自动创建；Rerank 模型：gguf
+├─ mmproj/                        # 自动创建；多模态投影文件：gguf
+├─ config/                        # 验证安装位置后自动创建
+│  ├─ launcher.json              # 首次运行自动生成
+│  ├─ router-models.ini           # 手动 Router 配置
+│  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
-   ├─ llama-launcher.exe
-   ├─ router-models.ini           # 可选手动配置，优先使用且不会自动覆盖
-   └─ router-models.auto.ini      # 每次启动 Router 自动刷新
+   └─ llama-launcher.exe
 ```
 
 模型目录会递归扫描并稳定排序。Router 只接收 GGUF，API model id 使用完整 GGUF 文件名；如果三个模型目录中存在同名文件，启动器会列出所有冲突并拒绝生成配置，避免静默覆盖。
 
-相对路径始终相对于 llama.cpp 根目录。除无副作用的版本查询外，启动器会检查其直接父目录必须名为 `bin`，否则在创建配置前报错；检查通过后自动使用上一级目录作为根目录。`--root` 可覆盖资源根目录，但不能绕过业务命令的 `bin` 位置检查；`--config` 可指定另一个 JSON 配置文件。
+相对路径始终相对于 llama.cpp 根目录。除无副作用的版本查询外，启动器会先检查其直接父目录必须名为 `bin`；检查失败时不会创建任何配置或模型目录。检查通过后自动使用上一级目录作为根目录，创建并读取 `config/launcher.json`，随后创建四个模型目录。`--root` 可覆盖资源根目录，但不能绕过业务命令的 `bin` 位置检查；`--config` 可显式指定另一个 JSON 配置文件。
 
 ## 交互菜单
 
@@ -122,7 +123,7 @@ llama.cpp/
 0. 退出
 ```
 
-菜单只读取 `launcher.json`，不会把交互选择写回配置。交互流程已与旧 PS1 版本对齐并扩展：选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
+菜单只读取 `config/launcher.json`，不会把交互选择写回配置。交互流程已与旧 PS1 版本对齐并扩展：选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
 
 生成模型可从 `mmproj/` 中选择自动匹配项，也可输入其他 mmproj 路径；选择投影文件后还会询问图片最小和最大 token。Embedding 会额外询问 pooling 与向量归一化，Router 会询问模型加载上限、autoload 和 Embedding preset 参数。每种启动模式最后都可填写多个自定义 llama.cpp 参数。启动器会先显示完整最终命令，再请求确认；进程结束后等待按 Enter 返回菜单。模型列表中的 `0` 可直接返回主菜单。
 
@@ -177,9 +178,9 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 
 通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size`、`--threads`、`--batch-size`、`--ubatch-size`、`--flash-attn`、`--parallel` 和 `--ui`。Embedding 还支持 `--pooling` 与 `--embd-normalize`；Router preset 使用 `--embedding-batch-size` 和 `--embedding-ubatch-size`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
 
-配置优先级固定为：命令行 flags > `launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。
+配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。
 
-## launcher.json
+## config/launcher.json
 
 首次运行会自动生成默认配置，也可复制 [launcher.example.json](launcher.example.json) 后自行修改：
 
@@ -192,8 +193,8 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
     "embeddings": "embeddings",
     "rerank": "rerank",
     "mmproj": "mmproj",
-    "router_manual": "bin/router-models.ini",
-    "router_auto": "bin/router-models.auto.ini"
+    "router_manual": "config/router-models.ini",
+    "router_auto": "config/router-models.auto.ini"
   },
   "server": {
     "host": "127.0.0.1",
@@ -259,9 +260,9 @@ GET http://127.0.0.1:29856/models
 
 启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。
 
-## 从旧脚本迁移
+## 旧布局说明
 
-PowerShell 与 BAT 业务入口已删除。旧版路径保持兼容：已有 `bin/router-models.ini` 会继续优先使用且不会被自动覆盖；`bin/router-models.auto.ini` 仍是自动生成位置。原先只使用 `models/` 和 `mmproj/` 的用户只需将 `llama-launcher.exe` 放入 `bin/`，Embedding 与 Rerank 模型分别放入新目录即可。
+新版本不兼容旧配置位置，不会读取根目录的 `launcher.json`，也不会读取 `bin/router-models.ini` 或 `bin/router-models.auto.ini`。所有运行配置和 Router 文件统一位于根目录的 `config/` 中。
 
 ## 自动发版
 

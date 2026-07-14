@@ -46,7 +46,10 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
 	config := `{"server":{"host":"config-host","port":30001,"n_gpu_layers":"0"}}`
-	if err := os.WriteFile(filepath.Join(root, DefaultConfigName), []byte(config), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(DefaultConfigPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DefaultConfigPath(root), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	in := bytes.NewBufferString("stdin")
@@ -171,8 +174,32 @@ func TestMainRejectsExecutableOutsideBin(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
 		t.Fatalf("outside-bin executable was not rejected: code=%d stderr=%q", code, errOut.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, DefaultConfigName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(DefaultConfigPath(root)); !os.IsNotExist(err) {
 		t.Fatalf("location validation should happen before config creation, stat error: %v", err)
 	}
+	for _, directory := range []string{"config", "models", "embeddings", "rerank", "mmproj"} {
+		if _, err := os.Stat(filepath.Join(root, directory)); !os.IsNotExist(err) {
+			t.Fatalf("location validation should happen before creating %s, stat error: %v", directory, err)
+		}
+	}
 
+}
+
+func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Main(nil, menuInput("0"), out, errOut, &fakeExecutor{})
+	if code != 0 {
+		t.Fatalf("menu returned %d: %s", code, errOut.String())
+	}
+	for _, directory := range []string{"config", "models", "embeddings", "rerank", "mmproj"} {
+		info, err := os.Stat(filepath.Join(root, directory))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("runtime directory %s was not created: info=%v err=%v", directory, info, err)
+		}
+	}
+	if _, err := os.Stat(DefaultConfigPath(root)); err != nil {
+		t.Fatalf("config/launcher.json was not created: %v", err)
+	}
 }

@@ -25,6 +25,10 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Router.ModelsMax != 1 || !config.Router.Autoload {
 		t.Fatalf("unexpected router defaults: %#v", config.Router)
 	}
+	if config.Paths.RouterManual != filepath.Join("config", "router-models.ini") ||
+		config.Paths.RouterAuto != filepath.Join("config", "router-models.auto.ini") {
+		t.Fatalf("unexpected Router config paths: %#v", config.Paths)
+	}
 }
 
 func TestLoadConfigMergesWithDefaults(t *testing.T) {
@@ -45,9 +49,12 @@ func TestLoadConfigMergesWithDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadLegacyEmptyPoolingUsesNewDefaults(t *testing.T) {
+func TestLoadEmptyPoolingUsesDefault(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, DefaultConfigName)
+	path := DefaultConfigPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(`{"embedding":{"pooling":""}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +78,39 @@ func TestLoadOrCreateDefaultConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("default config was not written: %v", err)
+	}
+	if path != DefaultConfigPath(root) {
+		t.Fatalf("default config path = %q, want %q", path, DefaultConfigPath(root))
+	}
+}
+
+func TestDefaultConfigIgnoresOldRootConfig(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "launcher.json"), []byte(`{"server":{"port":70000}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, path, created, err := LoadOrCreateConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || path != DefaultConfigPath(root) || config.Server.Port != 29856 {
+		t.Fatalf("old root config affected new layout: created=%v path=%q config=%#v", created, path, config)
+	}
+}
+
+func TestEnsureRuntimeDirectoriesValidatesBeforeCreating(t *testing.T) {
+	root := t.TempDir()
+	paths := DefaultConfig().ResolvePaths(root)
+	if err := os.WriteFile(paths.Models, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureRuntimeDirectories(root, paths); err == nil {
+		t.Fatal("models file was accepted as a directory")
+	}
+	for _, path := range []string{paths.Embeddings, paths.Rerank, paths.Mmproj, filepath.Join(root, ConfigDirectoryName)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("directory was created before validation completed: %s (err=%v)", path, err)
+		}
 	}
 }
 
@@ -104,7 +144,10 @@ func TestLauncherRootFromBinDirectory(t *testing.T) {
 
 func TestInvalidConfig(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, DefaultConfigName)
+	path := DefaultConfigPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(`{"server":{"port":70000}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
