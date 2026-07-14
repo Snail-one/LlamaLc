@@ -35,7 +35,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
-	if len(args) == 1 && args[0] == "-v" {
+	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version") {
 		fmt.Fprintln(stdout, Version)
 		return 0
 	}
@@ -120,7 +120,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `llama.cpp Go 启动器
 
 用法:
-  llama-launcher -v                     只打印版本号并退出
+	  llama-launcher -v | --version         只打印版本号并退出
   llama-launcher [--root DIR] [--config FILE] <子命令> [选项] [-- llama.cpp参数]
   llama-launcher                         进入中文交互菜单
 

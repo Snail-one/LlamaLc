@@ -79,24 +79,28 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	}
 }
 
-func TestVersionFlagOnlyPrintsVersion(t *testing.T) {
-	root := t.TempDir()
-	mockExecutableInBin(t, root)
-	oldVersion := Version
-	Version = "v9.8.7-test"
-	t.Cleanup(func() { Version = oldVersion })
+func TestVersionFlagsOnlyPrintVersion(t *testing.T) {
+	for _, versionFlag := range []string{"-v", "--version"} {
+		t.Run(versionFlag, func(t *testing.T) {
+			root := t.TempDir()
+			mockExecutableInBin(t, root)
+			oldVersion := Version
+			Version = "v9.8.7-test"
+			t.Cleanup(func() { Version = oldVersion })
 
-	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	fake := &fakeExecutor{}
-	code := Main([]string{"-v"}, bytes.NewBuffer(nil), out, errOut, fake)
-	if code != 0 {
-		t.Fatalf("version returned %d: %s", code, errOut.String())
-	}
-	if out.String() != "v9.8.7-test\n" {
-		t.Fatalf("unexpected version output: %q", out.String())
-	}
-	if errOut.Len() != 0 || len(fake.commands) != 0 {
-		t.Fatalf("version inspection had side effects: stderr=%q commands=%#v", errOut.String(), fake.commands)
+			out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+			fake := &fakeExecutor{}
+			code := Main([]string{versionFlag}, bytes.NewBuffer(nil), out, errOut, fake)
+			if code != 0 {
+				t.Fatalf("version returned %d: %s", code, errOut.String())
+			}
+			if out.String() != "v9.8.7-test\n" {
+				t.Fatalf("unexpected version output: %q", out.String())
+			}
+			if errOut.Len() != 0 || len(fake.commands) != 0 {
+				t.Fatalf("version inspection had side effects: stderr=%q commands=%#v", errOut.String(), fake.commands)
+			}
+		})
 	}
 }
 
@@ -122,5 +126,11 @@ func TestMainRejectsExecutableOutsideBin(t *testing.T) {
 	code = Main([]string{"-v"}, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
 	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
 		t.Fatalf("outside-bin version command was not rejected: code=%d stderr=%q", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	code = Main([]string{"--version"}, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
+	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
+		t.Fatalf("outside-bin long version command was not rejected: code=%d stderr=%q", code, errOut.String())
 	}
 }

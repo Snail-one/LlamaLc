@@ -21,10 +21,11 @@ GOOS=windows GOARCH=amd64 go build -o bin/llama-launcher.exe ./cmd/llama-launche
 
 项目不提交编译后的 exe。`llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 
-查看当前版本只使用 `-v`：
+查看当前版本可使用短参数 `-v` 或标准长参数 `--version`：
 
 ```powershell
 .\bin\llama-launcher.exe -v
+.\bin\llama-launcher.exe --version
 ```
 
 该命令通过 `bin` 位置检查后只打印版本号并退出，不会创建配置或扫描模型目录。交互菜单标题也会显示相同版本。
