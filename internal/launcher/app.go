@@ -73,6 +73,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
+	fmt.Fprintln(stdout, "实际探测文件:", paths.Server)
 	fmt.Fprintln(stdout, "已识别 llama.cpp:", detectedVersion)
 
 	config, configPath, needsCreate, err := LoadConfig(root)

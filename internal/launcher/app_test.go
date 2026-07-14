@@ -226,6 +226,9 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 	if _, err := os.Stat(DefaultConfigPath(root)); err != nil {
 		t.Fatalf("config/launcher.json was not created: %v", err)
 	}
+	if !strings.Contains(out.String(), "实际探测文件: "+filepath.Join(root, "llama-server.exe")) {
+		t.Fatalf("probe path was not displayed: %q", out.String())
+	}
 	if len(probe.commands) != 1 || probe.commands[0].Path != filepath.Join(root, "llama-server.exe") ||
 		!reflect.DeepEqual(probe.commands[0].Args, []string{"--version"}) || probe.commands[0].Dir != root ||
 		probe.timeouts[0] != 30*time.Second {

@@ -111,6 +111,13 @@ llama.cpp/
 
 根目录固定为 `bin` 的上一级；模型目录、配置文件和 Router 文件位置也全部固定。`--root` 与 `--config` 已移除，传入时会直接报错，防止意外把文件写到其他位置。顶层帮助、子命令帮助和未知命令不会执行 server 探测或初始化磁盘；`-v`、`--version`、`version` 则可以在任意位置查询启动器版本。
 
+探测成功后会同时打印实际执行的 server 文件与识别到的版本，例如：
+
+```text
+实际探测文件: E:\llama.cpp\llama-server.exe
+已识别 llama.cpp: version: 10002 (a7312ae94)
+```
+
 ## 交互菜单
 
 双击 `bin/llama-launcher.exe`，或不带参数运行，即可进入中文菜单：
