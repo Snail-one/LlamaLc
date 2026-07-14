@@ -21,28 +21,34 @@ type Application struct {
 }
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
-	// Keep version inspection side-effect free: it must not create launcher.json,
-	// inspect the executable directory, or initialize a child process.
-	if len(args) == 1 && args[0] == "-v" {
-		fmt.Fprintln(stdout, Version)
-		return 0
-	}
-
 	rootFlag, configFlag, remaining, err := parseGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		printUsage(stderr)
 		return 2
 	}
+	// The executable location is mandatory even when --root is provided. This
+	// prevents configuration and generated presets from being split across an
+	// accidental launcher directory.
+	root, err := ExecutableRoot()
+	if err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
+	}
+	if len(args) == 1 && args[0] == "-v" {
+		fmt.Fprintln(stdout, Version)
+		return 0
+	}
 	if len(remaining) > 0 && (remaining[0] == "help" || remaining[0] == "--help" || remaining[0] == "-h") {
 		printUsage(stdout)
 		return 0
 	}
-
-	root, err := determineRoot(rootFlag)
-	if err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
+	if strings.TrimSpace(rootFlag) != "" {
+		root, err = determineRoot(rootFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
 	}
 	config, configPath, created, err := LoadOrCreateConfig(root, configFlag)
 	if err != nil {
@@ -96,9 +102,6 @@ func parseGlobalFlags(args []string) (root, config string, remaining []string, e
 }
 
 func determineRoot(root string) (string, error) {
-	if strings.TrimSpace(root) == "" {
-		return ExecutableRoot()
-	}
 	absolute, err := filepath.Abs(strings.TrimSpace(strings.Trim(root, `"'`)))
 	if err != nil {
 		return "", fmt.Errorf("无法解析根目录 %q: %w", root, err)

@@ -3,10 +3,10 @@
 /Server_README.md
 /bin/router-models.ini
 /bin/router-models.auto.ini
+/bin/llama-launcher.exe
 
 # Build output and llama.cpp Windows distribution
 /llama-launcher
-/llama-launcher.exe
 /*.exe
 /*.dll
 

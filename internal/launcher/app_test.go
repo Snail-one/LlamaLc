@@ -19,6 +19,15 @@ type fakeExecutor struct {
 	err      error
 }
 
+func mockExecutableInBin(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, "bin", "llama-launcher.exe")
+	touchFile(t, path)
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+}
+
 func (f *fakeExecutor) Execute(command Command, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	f.commands = append(f.commands, command)
 	f.stdin, f.stdout, f.stderr = stdin, stdout, stderr
@@ -27,6 +36,7 @@ func (f *fakeExecutor) Execute(command Command, stdin io.Reader, stdout, stderr 
 
 func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	root := t.TempDir()
+	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
 	config := `{"server":{"host":"config-host","port":30001,"n_gpu_layers":"0"}}`
@@ -52,6 +62,7 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 
 func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	root := t.TempDir()
+	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
 	in := bytes.NewBufferString("1\n1\nn\n0\n")
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
@@ -69,6 +80,8 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 }
 
 func TestVersionFlagOnlyPrintsVersion(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
 	oldVersion := Version
 	Version = "v9.8.7-test"
 	t.Cleanup(func() { Version = oldVersion })
@@ -84,5 +97,30 @@ func TestVersionFlagOnlyPrintsVersion(t *testing.T) {
 	}
 	if errOut.Len() != 0 || len(fake.commands) != 0 {
 		t.Fatalf("version inspection had side effects: stderr=%q commands=%#v", errOut.String(), fake.commands)
+	}
+}
+
+func TestMainRejectsExecutableOutsideBin(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "llama-launcher.exe")
+	touchFile(t, path)
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Main(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
+	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
+		t.Fatalf("outside-bin executable was not rejected: code=%d stderr=%q", code, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, DefaultConfigName)); !os.IsNotExist(err) {
+		t.Fatalf("location validation should happen before config creation, stat error: %v", err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Main([]string{"-v"}, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
+	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
+		t.Fatalf("outside-bin version command was not rejected: code=%d stderr=%q", code, errOut.String())
 	}
 }

@@ -1,6 +1,6 @@
 # llama.cpp Windows Go 启动器
 
-一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户只需运行 `llama-launcher.exe`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
+一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户只需运行 `bin/llama-launcher.exe`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
 
 实现只使用 Go 标准库。启动参数以 [llama.cpp 官方 Server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) 为准。
 
@@ -10,30 +10,29 @@
 
 ```powershell
 go test ./...
-go build -o llama-launcher.exe ./cmd/llama-launcher
+go build -o bin/llama-launcher.exe ./cmd/llama-launcher
 ```
 
 从 Linux 交叉编译 Windows x64 版本：
 
 ```sh
-GOOS=windows GOARCH=amd64 go build -o llama-launcher.exe ./cmd/llama-launcher
+GOOS=windows GOARCH=amd64 go build -o bin/llama-launcher.exe ./cmd/llama-launcher
 ```
 
-项目不提交编译后的 exe。把 `llama-launcher.exe` 放到 llama.cpp Windows 可执行文件所在目录即可。
+项目不提交编译后的 exe。`llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 
 查看当前版本只使用 `-v`：
 
 ```powershell
-.\llama-launcher.exe -v
+.\bin\llama-launcher.exe -v
 ```
 
-该命令只打印版本号并退出，不会创建配置或扫描目录。交互菜单标题也会显示相同版本。
+该命令通过 `bin` 位置检查后只打印版本号并退出，不会创建配置或扫描模型目录。交互菜单标题也会显示相同版本。
 
 ## 目录布局
 
 ```text
 llama.cpp/
-├─ llama-launcher.exe
 ├─ llama-server.exe
 ├─ llama-cli.exe
 ├─ launcher.json                  # 首次运行自动生成
@@ -42,17 +41,18 @@ llama.cpp/
 ├─ rerank/                        # Rerank 模型：gguf
 ├─ mmproj/                        # 多模态投影文件：gguf
 └─ bin/
+   ├─ llama-launcher.exe
    ├─ router-models.ini           # 可选手动配置，优先使用且不会自动覆盖
    └─ router-models.auto.ini      # 每次启动 Router 自动刷新
 ```
 
 模型目录会递归扫描并稳定排序。Router 只接收 GGUF，API model id 使用完整 GGUF 文件名；如果三个模型目录中存在同名文件，启动器会列出所有冲突并拒绝生成配置，避免静默覆盖。
 
-相对路径始终相对于启动器根目录。默认根目录是 `llama-launcher.exe` 所在目录，也可用全局 `--root` 指定。`--config` 可指定另一个 JSON 配置文件。
+相对路径始终相对于 llama.cpp 根目录。启动器会检查其直接父目录必须名为 `bin`，否则在创建配置前报错；检查通过后自动使用上一级目录作为根目录。`--root` 可覆盖资源根目录，但不能绕过 `bin` 位置检查；`--config` 可指定另一个 JSON 配置文件。
 
 ## 交互菜单
 
-双击 `llama-launcher.exe`，或不带参数运行，即可进入中文菜单：
+双击 `bin/llama-launcher.exe`，或不带参数运行，即可进入中文菜单：
 
 ```text
 1. 单模型 API 服务
@@ -72,29 +72,29 @@ llama.cpp/
 
 ```powershell
 # 单模型 API
-.\llama-launcher.exe serve --model Qwen.gguf --ctx-size 8192 --gpu-layers auto
+.\bin\llama-launcher.exe serve --model Qwen.gguf --ctx-size 8192 --gpu-layers auto
 
 # 多模态模型
-.\llama-launcher.exe serve --model Qwen-VL.gguf --mmproj mmproj-Qwen-VL-F16.gguf
+.\bin\llama-launcher.exe serve --model Qwen-VL.gguf --mmproj mmproj-Qwen-VL-F16.gguf
 
 # Embedding；不指定 pooling 时由模型元数据决定
-.\llama-launcher.exe embedding --model bge-m3.gguf --pooling mean
+.\bin\llama-launcher.exe embedding --model bge-m3.gguf --pooling mean
 
 # Rerank 专用模式
-.\llama-launcher.exe rerank --model bge-reranker-v2-m3.gguf
+.\bin\llama-launcher.exe rerank --model bge-reranker-v2-m3.gguf
 
 # 创建手动 preset；已有文件时必须显式 --force 才会覆盖
-.\llama-launcher.exe router-config
-.\llama-launcher.exe router-config --force
+.\bin\llama-launcher.exe router-config
+.\bin\llama-launcher.exe router-config --force
 
 # 启动 Router；仍会刷新 auto preset，但手动 preset 存在时优先使用
-.\llama-launcher.exe router --models-max 1 --autoload=true
+.\bin\llama-launcher.exe router --models-max 1 --autoload=true
 
 # 命令行聊天
-.\llama-launcher.exe chat --model Qwen.gguf --ctx-size 8192
+.\bin\llama-launcher.exe chat --model Qwen.gguf --ctx-size 8192
 
 # 额外参数原样转发
-.\llama-launcher.exe serve --model Qwen.gguf -- --threads 8 --flash-attn on
+.\bin\llama-launcher.exe serve --model Qwen.gguf -- --threads 8 --flash-attn on
 ```
 
 通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size` 和 `--ui`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
@@ -175,7 +175,7 @@ GET http://127.0.0.1:29856/models
 
 ## 从旧脚本迁移
 
-PowerShell 与 BAT 业务入口已删除。旧版路径保持兼容：已有 `bin/router-models.ini` 会继续优先使用且不会被自动覆盖；`bin/router-models.auto.ini` 仍是自动生成位置。原先只使用 `models/` 和 `mmproj/` 的用户只需新增 `llama-launcher.exe`，Embedding 与 Rerank 模型分别放入新目录即可。
+PowerShell 与 BAT 业务入口已删除。旧版路径保持兼容：已有 `bin/router-models.ini` 会继续优先使用且不会被自动覆盖；`bin/router-models.auto.ini` 仍是自动生成位置。原先只使用 `models/` 和 `mmproj/` 的用户只需将 `llama-launcher.exe` 放入 `bin/`，Embedding 与 Rerank 模型分别放入新目录即可。
 
 ## 自动发版
 

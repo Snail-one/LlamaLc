@@ -37,16 +37,16 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          mkdir -p dist/package
+          mkdir -p dist/package/bin
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
             -trimpath \
             -ldflags "-s -w -X github.com/joker/llama-launcher/internal/launcher.Version=${VERSION}" \
-            -o dist/package/llama-launcher.exe \
+            -o dist/package/bin/llama-launcher.exe \
             ./cmd/llama-launcher
           cp README.md launcher.example.json dist/package/
           cd dist/package
-          zip ../llama-launcher-${VERSION}-windows-amd64.zip \
-            llama-launcher.exe README.md launcher.example.json
+          zip -r ../llama-launcher-${VERSION}-windows-amd64.zip \
+            bin README.md launcher.example.json
           cd ..
           sha256sum ./*.zip > SHA256SUMS.txt
 

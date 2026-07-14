@@ -3,6 +3,7 @@ package launcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,24 @@ func TestResolveWindowsPath(t *testing.T) {
 	}
 	if got := ResolvePath(`/launcher`, `models\x.gguf`); got != filepath.Clean(filepath.Join(`/launcher`, `models\x.gguf`)) {
 		t.Fatalf("relative path mismatch: %q", got)
+	}
+}
+
+func TestLauncherRootFromBinDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	executable := filepath.Join(root, "bin", "llama-launcher.exe")
+	got, err := launcherRootFromExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Fatalf("launcher root = %q, want %q", got, root)
+	}
+
+	standaloneDir := filepath.Join(root, "tools")
+	standalone := filepath.Join(standaloneDir, "llama-launcher.exe")
+	if _, err := launcherRootFromExecutable(standalone); err == nil || !strings.Contains(err.Error(), "必须放在 bin 目录下") {
+		t.Fatalf("standalone launcher should be rejected, got %v", err)
 	}
 }
 

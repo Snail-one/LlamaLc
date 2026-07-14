@@ -14,6 +14,8 @@ import (
 
 const DefaultConfigName = "launcher.json"
 
+var executablePath = os.Executable
+
 type Config struct {
 	Paths     PathsConfig     `json:"paths"`
 	Server    ServerConfig    `json:"server"`
@@ -72,7 +74,7 @@ func DefaultConfig() Config {
 }
 
 func ExecutableRoot() (string, error) {
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err != nil {
 		return "", fmt.Errorf("无法确定启动器所在目录: %w", err)
 	}
@@ -80,7 +82,15 @@ func ExecutableRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法解析启动器路径: %w", err)
 	}
-	return filepath.Dir(exe), nil
+	return launcherRootFromExecutable(exe)
+}
+
+func launcherRootFromExecutable(executable string) (string, error) {
+	executableDir := filepath.Dir(executable)
+	if !strings.EqualFold(filepath.Base(executableDir), "bin") {
+		return "", fmt.Errorf("启动器必须放在 bin 目录下，当前目录: %s；请将 llama-launcher.exe 移动到 bin 目录后重试", executableDir)
+	}
+	return filepath.Dir(executableDir), nil
 }
 
 func ResolvePath(root, value string) string {
