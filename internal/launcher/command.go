@@ -34,6 +34,7 @@ type ServerOptions struct {
 	Pooling        string
 	Normalize      int
 	NormalizeSet   bool
+	APIKey         string
 	Extra          []string
 }
 
@@ -51,6 +52,7 @@ type RouterOptions struct {
 	UI             bool
 	ModelsMax      int
 	Autoload       bool
+	APIKey         string
 	Extra          []string
 }
 
@@ -83,6 +85,9 @@ func BuildServerCommand(mode Mode, executable, root string, options ServerOption
 		return Command{}, err
 	}
 	if err := ValidatePooling(options.Pooling); err != nil {
+		return Command{}, err
+	}
+	if err := ValidateAPIKey(options.APIKey); err != nil {
 		return Command{}, err
 	}
 	if mode == ModeEmbedding {
@@ -137,6 +142,9 @@ func BuildServerCommand(mode Mode, executable, root string, options ServerOption
 		args = append(args, "--ui")
 	} else {
 		args = append(args, "--no-ui")
+	}
+	if options.APIKey != "" {
+		args = append(args, "--api-key", options.APIKey)
 	}
 	args = append(args, options.Extra...)
 	return Command{Path: executable, Args: args, Dir: root}, nil
@@ -237,6 +245,9 @@ func BuildRouterCommand(executable, root string, options RouterOptions) (Command
 	if options.ContextSize < 0 || options.ModelsMax < 0 {
 		return Command{}, fmt.Errorf("ctx-size 和 models-max 不能小于 0")
 	}
+	if err := ValidateAPIKey(options.APIKey); err != nil {
+		return Command{}, err
+	}
 	args := []string{"--models-preset", options.Preset, "--models-max", strconv.Itoa(options.ModelsMax)}
 	if options.Autoload {
 		args = append(args, "--models-autoload")
@@ -267,6 +278,9 @@ func BuildRouterCommand(executable, root string, options RouterOptions) (Command
 		args = append(args, "--ui")
 	} else {
 		args = append(args, "--no-ui")
+	}
+	if options.APIKey != "" {
+		args = append(args, "--api-key", options.APIKey)
 	}
 	args = append(args, options.Extra...)
 	return Command{Path: executable, Args: args, Dir: root}, nil

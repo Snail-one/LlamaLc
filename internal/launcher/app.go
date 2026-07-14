@@ -89,6 +89,11 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	for _, directory := range createdDirectories {
 		fmt.Fprintf(stdout, "已创建目录: %s\n", directory)
 	}
+	startupInput, err := prepareAPIKey(&config, configPath, needsCreate, stdin, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
+	}
 	if needsCreate {
 		if err := WriteDefaultConfig(configPath, config); err != nil {
 			fmt.Fprintln(stderr, "错误:", err)
@@ -98,7 +103,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
-		Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor,
+		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor,
 	}
 	if len(remaining) == 0 {
 		return app.RunMenu()
@@ -270,12 +275,14 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
 		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
 		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Normalize: *normalize, NormalizeSet: mode == ModeEmbedding,
+		APIKey: app.Config.Server.APIKey,
 		Extra: forwarded,
 	})
 	if err != nil {
 		return 1, err
 	}
-	effectiveHost, remote, err := validateNetworkExposure(*host, forwarded)
+	authenticatedArgs := append([]string{"--api-key", app.Config.Server.APIKey}, forwarded...)
+	effectiveHost, remote, err := validateNetworkExposure(*host, authenticatedArgs)
 	if err != nil {
 		return 1, err
 	}
@@ -419,11 +426,13 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
 		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
 		UI: *ui, ModelsMax: *modelsMax, Autoload: *autoload, Extra: forwarded,
+		APIKey: app.Config.Server.APIKey,
 	})
 	if err != nil {
 		return 1, err
 	}
-	effectiveHost, remote, err := validateNetworkExposure(*host, forwarded)
+	authenticatedArgs := append([]string{"--api-key", app.Config.Server.APIKey}, forwarded...)
+	effectiveHost, remote, err := validateNetworkExposure(*host, authenticatedArgs)
 	if err != nil {
 		return 1, err
 	}

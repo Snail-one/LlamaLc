@@ -46,6 +46,18 @@ func menuInput(lines ...string) *bytes.Buffer {
 	return bytes.NewBufferString(strings.Join(lines, "\n") + "\n")
 }
 
+func withoutAPIKey(args []string) []string {
+	filtered := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		if args[index] == "--api-key" && index+1 < len(args) {
+			index++
+			continue
+		}
+		filtered = append(filtered, args[index])
+	}
+	return filtered
+}
+
 func mockExecutableInBin(t *testing.T, root string) {
 	t.Helper()
 	path := filepath.Join(root, "bin", "llama-launcher.exe")
@@ -81,8 +93,19 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	if code != 23 || len(fake.commands) != 1 {
 		t.Fatalf("unexpected result: code=%d calls=%d stderr=%s", code, len(fake.commands), errOut.String())
 	}
+	generatedKey := lastArgumentValue("", fake.commands[0].Args, "--api-key")
+	if len(generatedKey) != GeneratedAPIKeyLength {
+		t.Fatalf("generated API key length = %d, want %d", len(generatedKey), GeneratedAPIKeyLength)
+	}
+	savedConfig, _, _, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if savedConfig.Server.APIKey != generatedKey {
+		t.Fatal("generated API key was not saved to config")
+	}
 	wantTail := []string{"--host", "config-host", "--port", "30002", "--no-ui", "--threads", "8"}
-	args := fake.commands[0].Args
+	args := withoutAPIKey(fake.commands[0].Args)
 	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
 		t.Fatalf("flags/config/extra precedence failed: %#v", args)
 	}
@@ -145,7 +168,7 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 		"--host", "127.0.0.1", "--port", "29856", "--no-ui",
 		"--threads", "8", "--log-prefix", "hello world",
 	}
-	args := fake.commands[0].Args
+	args := withoutAPIKey(fake.commands[0].Args)
 	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
 		t.Fatalf("embedding defaults/custom arguments mismatch:\n got: %#v\nwant tail: %#v", args, wantTail)
 	}
@@ -234,6 +257,37 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 		!reflect.DeepEqual(probe.commands[0].Args, []string{"--version"}) || probe.commands[0].Dir != root ||
 		probe.timeouts[0] != 30*time.Second {
 		t.Fatalf("unexpected installation probe: commands=%#v timeouts=%#v", probe.commands, probe.timeouts)
+	}
+}
+
+func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	if err := os.MkdirAll(filepath.Dir(DefaultConfigPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.Server.APIKey = "keep-this-key"
+	if err := WriteDefaultConfig(DefaultConfigPath(root), config); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runTestMain(nil, menuInput("", "q"), out, errOut, &fakeExecutor{}, &fakeInstallationProbe{})
+	if code != 0 {
+		t.Fatalf("menu returned %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "是否重置 API key [y/N]") ||
+		!strings.Contains(out.String(), "继续使用配置文件中已生成的 API key") {
+		t.Fatalf("reset prompt/default result missing: %q", out.String())
+	}
+	saved, _, _, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.APIKey != "keep-this-key" {
+		t.Fatalf("default reset answer changed key: %q", saved.Server.APIKey)
 	}
 }
 

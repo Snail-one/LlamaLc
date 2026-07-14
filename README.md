@@ -132,7 +132,9 @@ llama.cpp/
 q. 退出
 ```
 
-菜单只读取 `config/launcher.json`，不会把交互选择写回配置。交互流程中任意询问输入 `q`（大小写均可）会立即返回主菜单，主菜单输入 `q` 退出程序；`0` 保留给参数和选项本身使用。交互终端在进入功能和返回主菜单时会自动清屏，重定向到文件或管道的输出不会包含清屏控制码。选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
+首次正常启动会自动生成 128 位 URL-safe API key 并写入 `config/launcher.json`。后续每次启动都会先询问 `是否重置 API key [y/N]`；直接回车或输入 `n` 会继续使用已保存的 key，输入 `y` 会用新的随机 key 原子更新配置。版本和帮助命令不读取或修改 key。
+
+除 API key 的首次生成和主动重置外，菜单不会把其他交互选择写回配置。交互流程中任意询问输入 `q`（大小写均可）会立即返回主菜单，主菜单输入 `q` 退出程序；`0` 保留给参数和选项本身使用。交互终端在进入功能和返回主菜单时会自动清屏，重定向到文件或管道的输出不会包含清屏控制码。选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
 
 生成模型可从 `mmproj/` 中选择自动匹配项，也可输入其他 mmproj 路径；选择投影文件后还会询问图片最小和最大 token。Embedding 会额外询问 pooling 与向量归一化，Router 会询问模型加载上限、autoload 和 Embedding preset 参数。每种启动模式最后都可填写多个自定义 llama.cpp 参数。启动器会先显示完整最终命令，再请求确认；进程结束后等待按 Enter 返回菜单。
 
@@ -184,13 +186,13 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 # 额外参数原样转发
 .\bin\llama-launcher.exe serve --model Qwen.gguf -- --threads 8 --flash-attn on
 
-# 监听局域网或公网地址时必须配置认证；推荐使用 API key 文件
-.\bin\llama-launcher.exe serve --model Qwen.gguf --host 0.0.0.0 -- --api-key-file E:\llama.cpp\config\api-keys.txt
+# 自动生成的 API key 会注入服务参数，因此可以安全通过认证校验
+.\bin\llama-launcher.exe serve --model Qwen.gguf --host 0.0.0.0
 ```
 
 通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size`、`--threads`、`--batch-size`、`--ubatch-size`、`--flash-attn`、`--parallel` 和 `--ui`。Embedding 还支持 `--pooling` 与 `--embd-normalize`；Router preset 使用 `--embedding-batch-size` 和 `--embedding-ubatch-size`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
 
-配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。监听地址不是 localhost、loopback IP 或 Unix socket 时，必须通过 `--api-key-file`、`--api-key`、`LLAMA_API_KEY` 或 `LLAMA_ARG_API_KEY_FILE` 配置认证，否则启动器拒绝启动。
+配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。启动器会把 `server.api_key` 作为 `--api-key` 自动注入单模型、Embedding、Rerank 和 Router 服务；监听地址不是 localhost、loopback IP 或 Unix socket 时仍会检查有效认证参数，否则拒绝启动。
 
 ## config/launcher.json
 
@@ -201,6 +203,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
   "server": {
     "host": "127.0.0.1",
     "port": 29856,
+    "api_key": "",
     "n_gpu_layers": "auto",
     "ctx_size": 0,
     "threads": -1,
@@ -223,6 +226,8 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 }
 ```
 
+`server.api_key` 在示例配置中可留空；启动器会用密码学安全随机源生成并保存 128 位 key。手工配置仍允许最长 8167 位；该上限依据[当前上游 HTTP 头限制](https://github.com/ggml-org/llama.cpp/blob/master/vendor/cpp-httplib/httplib.h)和[认证头处理实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-http.cpp)推导。
+
 `embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.batch_size` 与 `embedding.ubatch_size` 默认为 `8192`，必须是正整数且逻辑 batch 不能小于物理 batch；`embedding.normalize` 使用 llama.cpp 官方默认值 `2`。配置文件最大为 1 MiB。配置不再包含 `paths`；若现有 `config/launcher.json` 仍有该字段，启动器会拒绝读取，请删除该字段或删除配置后让启动器重新生成。
 
 ## API 示例
@@ -232,6 +237,7 @@ Embedding 服务启动后使用 OpenAI 兼容接口：
 ```powershell
 curl.exe http://127.0.0.1:29856/v1/embeddings `
   -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <config/launcher.json 中的 api_key>" `
   -d '{"input":["你好","世界"],"model":"bge-m3.gguf","encoding_format":"float"}'
 ```
 
@@ -240,6 +246,7 @@ Rerank 服务：
 ```powershell
 curl.exe http://127.0.0.1:29856/v1/rerank `
   -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <config/launcher.json 中的 api_key>" `
   -d '{"model":"bge-reranker-v2-m3.gguf","query":"什么是熊猫？","top_n":2,"documents":["一种编程语言","熊猫是熊科动物","今天天气很好"]}'
 ```
 
@@ -261,9 +268,10 @@ GET http://127.0.0.1:29856/models
 ## 安全说明
 
 - `config/launcher.json`、手动 Router preset 和自动 Router preset 都固定在 `config/` 中；符号链接、junction 和重解析点会被拒绝，避免写入根目录外文件。
+- `config/launcher.json` 包含明文 API key；启动器在支持权限位的平台上以仅当前用户可读写的 `0600` 模式创建或更新它。请勿提交或共享真实配置。
 - 配置与 Router preset 先写入同目录临时文件并同步，再替换目标文件。覆盖失败不会先清空原文件；不带 `--force` 时仍拒绝覆盖手动配置。
 - Router 会拒绝包含控制字符、换行或非法 section 分隔符的模型文件名和路径，防止 preset 注入。
-- 完整命令预览会把 `--api-key VALUE` 和 `--api-key=VALUE` 脱敏为 `******`。密钥仍可能出现在操作系统进程列表中，因此推荐使用 `--api-key-file` 或 `LLAMA_API_KEY`。
+- 完整命令预览会把自动注入的 `--api-key VALUE` 以及用户提供的 `--api-key=VALUE` 脱敏为 `******`。密钥仍可能出现在操作系统进程列表中。
 - 非本机监听必须配置认证，并会额外显示安全警告。默认仍为 `127.0.0.1` 且关闭 Web UI。
 - 自定义参数拥有 llama.cpp 的完整能力。不要在不可信环境中启用 `--tools`、MCP proxy 等高权限功能。
 - 不要直接加载来源不明的模型。llama.cpp 官方建议在容器、虚拟机等隔离环境中处理不可信模型，参见 [llama.cpp Security](https://github.com/ggml-org/llama.cpp/security)。

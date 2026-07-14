@@ -33,6 +33,7 @@ type Config struct {
 type ServerConfig struct {
 	Host           string `json:"host"`
 	Port           int    `json:"port"`
+	APIKey         string `json:"api_key"`
 	GPULayers      string `json:"n_gpu_layers"`
 	ContextSize    int    `json:"ctx_size"`
 	Threads        int    `json:"threads"`
@@ -167,15 +168,37 @@ func readConfig(configPath string) (Config, error) {
 }
 
 func WriteDefaultConfig(path string, config Config) error {
-	data, err := json.MarshalIndent(config, "", "  ")
+	data, err := marshalConfig(config)
 	if err != nil {
-		return fmt.Errorf("无法生成默认配置: %w", err)
+		return err
 	}
-	data = append(data, '\n')
-	if err := writeFileExclusive(path, data, 0o644); err != nil {
+	if err := writeFileExclusive(path, data, 0o600); err != nil {
 		return fmt.Errorf("无法原子创建默认配置 %s: %w", path, err)
 	}
 	return nil
+}
+
+func WriteConfig(path string, config Config) error {
+	data, err := marshalConfig(config)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("无法原子更新配置 %s: %w", path, err)
+	}
+	return nil
+}
+
+func marshalConfig(config Config) ([]byte, error) {
+	if err := ValidateConfig(config); err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("无法生成配置: %w", err)
+	}
+	data = append(data, '\n')
+	return data, nil
 }
 
 func ValidateConfig(config Config) error {
@@ -183,6 +206,9 @@ func ValidateConfig(config Config) error {
 		return errors.New("配置错误: server.host 不能为空")
 	}
 	if err := ValidatePort(config.Server.Port); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateAPIKey(config.Server.APIKey); err != nil {
 		return fmt.Errorf("配置错误: %w", err)
 	}
 	if err := ValidateGPULayers(config.Server.GPULayers); err != nil {
