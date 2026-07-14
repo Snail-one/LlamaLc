@@ -24,21 +24,9 @@ func DefaultConfigPath(root string) string {
 }
 
 type Config struct {
-	Paths     PathsConfig     `json:"paths"`
 	Server    ServerConfig    `json:"server"`
 	Embedding EmbeddingConfig `json:"embedding"`
 	Router    RouterConfig    `json:"router"`
-}
-
-type PathsConfig struct {
-	Server       string `json:"server"`
-	CLI          string `json:"cli"`
-	Models       string `json:"models"`
-	Embeddings   string `json:"embeddings"`
-	Rerank       string `json:"rerank"`
-	Mmproj       string `json:"mmproj"`
-	RouterManual string `json:"router_manual"`
-	RouterAuto   string `json:"router_auto"`
 }
 
 type ServerConfig struct {
@@ -68,16 +56,6 @@ type RouterConfig struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Paths: PathsConfig{
-			Server:       "llama-server.exe",
-			CLI:          "llama-cli.exe",
-			Models:       "models",
-			Embeddings:   "embeddings",
-			Rerank:       "rerank",
-			Mmproj:       "mmproj",
-			RouterManual: filepath.Join(ConfigDirectoryName, "router-models.ini"),
-			RouterAuto:   filepath.Join(ConfigDirectoryName, "router-models.auto.ini"),
-		},
 		Server: ServerConfig{
 			Host:           "127.0.0.1",
 			Port:           29856,
@@ -109,7 +87,7 @@ func ExecutableRoot() (string, error) {
 func launcherRootFromExecutable(executable string) (string, error) {
 	executableDir := filepath.Dir(executable)
 	if !strings.EqualFold(filepath.Base(executableDir), "bin") {
-		return "", fmt.Errorf("启动器必须放在 bin 目录下，当前目录: %s；请将 llama-launcher.exe 移动到 bin 目录后重试", executableDir)
+		return "", fmt.Errorf("启动器必须放在 bin 目录下，当前目录: %s；请将 llama-launcher 可执行文件移动到 bin 目录后重试", executableDir)
 	}
 	return filepath.Dir(executableDir), nil
 }
@@ -131,19 +109,11 @@ func isWindowsAbs(value string) bool {
 	return windowsDrivePath.MatchString(value) || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`)
 }
 
-func LoadOrCreateConfig(root, configPath string) (Config, string, bool, error) {
-	if configPath == "" {
-		configPath = DefaultConfigPath(root)
-	} else {
-		configPath = ResolvePath(root, configPath)
-	}
-
+func LoadConfig(root string) (Config, string, bool, error) {
+	configPath := DefaultConfigPath(root)
 	_, err := os.Stat(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		config := DefaultConfig()
-		if err := writeDefaultConfig(configPath, config); err != nil {
-			return Config{}, configPath, false, err
-		}
 		return config, configPath, true, nil
 	}
 	if err != nil {
@@ -186,17 +156,22 @@ func readConfig(configPath string) (Config, error) {
 	return config, nil
 }
 
-func writeDefaultConfig(path string, config Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("无法创建配置目录: %w", err)
-	}
+func WriteDefaultConfig(path string, config Config) error {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("无法生成默认配置: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
 		return fmt.Errorf("无法写入默认配置 %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("无法写入默认配置 %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("无法保存默认配置 %s: %w", path, err)
 	}
 	return nil
 }
@@ -325,6 +300,7 @@ func ValidateFlashAttention(value string) error {
 type ResolvedPaths struct {
 	Server       string
 	CLI          string
+	CLIFallback  string
 	Models       string
 	Embeddings   string
 	Rerank       string
@@ -333,18 +309,16 @@ type ResolvedPaths struct {
 	RouterAuto   string
 }
 
-func EnsureRuntimeDirectories(root string, paths ResolvedPaths) ([]string, error) {
+func EnsureRuntimeDirectories(root string) ([]string, error) {
 	directories := []struct {
 		label string
 		path  string
 	}{
 		{label: "config", path: filepath.Join(root, ConfigDirectoryName)},
-		{label: "models", path: paths.Models},
-		{label: "embeddings", path: paths.Embeddings},
-		{label: "rerank", path: paths.Rerank},
-		{label: "mmproj", path: paths.Mmproj},
-		{label: "Router 手动配置", path: filepath.Dir(paths.RouterManual)},
-		{label: "Router 自动配置", path: filepath.Dir(paths.RouterAuto)},
+		{label: "models", path: filepath.Join(root, "models")},
+		{label: "embeddings", path: filepath.Join(root, "embeddings")},
+		{label: "rerank", path: filepath.Join(root, "rerank")},
+		{label: "mmproj", path: filepath.Join(root, "mmproj")},
 	}
 
 	seen := make(map[string]bool)
@@ -382,15 +356,25 @@ func EnsureRuntimeDirectories(root string, paths ResolvedPaths) ([]string, error
 	return created, nil
 }
 
-func (config Config) ResolvePaths(root string) ResolvedPaths {
-	return ResolvedPaths{
-		Server:       ResolvePath(root, config.Paths.Server),
-		CLI:          ResolvePath(root, config.Paths.CLI),
-		Models:       ResolvePath(root, config.Paths.Models),
-		Embeddings:   ResolvePath(root, config.Paths.Embeddings),
-		Rerank:       ResolvePath(root, config.Paths.Rerank),
-		Mmproj:       ResolvePath(root, config.Paths.Mmproj),
-		RouterManual: ResolvePath(root, config.Paths.RouterManual),
-		RouterAuto:   ResolvePath(root, config.Paths.RouterAuto),
+func ResolveFixedPaths(root, goos string) (ResolvedPaths, error) {
+	serverName, cliName, cliFallback := "", "", ""
+	switch goos {
+	case "windows":
+		serverName, cliName, cliFallback = "llama-server.exe", "llama-cli.exe", "llama.exe"
+	case "linux":
+		serverName, cliName, cliFallback = "llama-server", "llama-cli", "llama"
+	default:
+		return ResolvedPaths{}, fmt.Errorf("当前操作系统 %q 暂不支持，仅支持 Windows 和 Linux", goos)
 	}
+	return ResolvedPaths{
+		Server:       filepath.Join(root, serverName),
+		CLI:          filepath.Join(root, cliName),
+		CLIFallback:  filepath.Join(root, cliFallback),
+		Models:       filepath.Join(root, "models"),
+		Embeddings:   filepath.Join(root, "embeddings"),
+		Rerank:       filepath.Join(root, "rerank"),
+		Mmproj:       filepath.Join(root, "mmproj"),
+		RouterManual: filepath.Join(root, ConfigDirectoryName, "router-models.ini"),
+		RouterAuto:   filepath.Join(root, ConfigDirectoryName, "router-models.auto.ini"),
+	}, nil
 }

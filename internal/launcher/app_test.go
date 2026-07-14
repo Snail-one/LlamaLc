@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	buildversion "github.com/joker/llama-launcher/internal/version"
 )
@@ -19,6 +20,26 @@ type fakeExecutor struct {
 	stderr   io.Writer
 	code     int
 	err      error
+}
+
+type fakeInstallationProbe struct {
+	commands []Command
+	timeouts []time.Duration
+	output   string
+	err      error
+}
+
+func (f *fakeInstallationProbe) Probe(command Command, timeout time.Duration) (string, error) {
+	f.commands = append(f.commands, command)
+	f.timeouts = append(f.timeouts, timeout)
+	if f.output == "" && f.err == nil {
+		return "version: 9999 (test)\nbuilt with Go test for linux/amd64\n", nil
+	}
+	return f.output, f.err
+}
+
+func runTestMain(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor, probe InstallationProbe) int {
+	return mainWithProbe(args, stdin, stdout, stderr, executor, probe, "windows")
 }
 
 func menuInput(lines ...string) *bytes.Buffer {
@@ -55,7 +76,7 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	in := bytes.NewBufferString("stdin")
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{code: 23}
-	code := Main([]string{"--root", root, "serve", "--model", "chat.gguf", "--port", "30002", "--", "--threads", "8"}, in, out, errOut, fake)
+	code := runTestMain([]string{"serve", "--model", "chat.gguf", "--port", "30002", "--", "--threads", "8"}, in, out, errOut, fake, &fakeInstallationProbe{})
 	if code != 23 || len(fake.commands) != 1 {
 		t.Fatalf("unexpected result: code=%d calls=%d stderr=%s", code, len(fake.commands), errOut.String())
 	}
@@ -72,6 +93,7 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
 	in := menuInput(
 		"1", "1", // mode and model
@@ -85,7 +107,7 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
-	code := Main([]string{"--root", root}, in, out, errOut, fake)
+	code := runTestMain(nil, in, out, errOut, fake, &fakeInstallationProbe{})
 	if code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
@@ -112,7 +134,7 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
-	code := Main([]string{"--root", root}, in, out, errOut, fake)
+	code := runTestMain(nil, in, out, errOut, fake, &fakeInstallationProbe{})
 	if code != 0 || len(fake.commands) != 1 {
 		t.Fatalf("unexpected menu result: code=%d calls=%d stderr=%s", code, len(fake.commands), errOut.String())
 	}
@@ -170,7 +192,7 @@ func TestMainRejectsExecutableOutsideBin(t *testing.T) {
 	t.Cleanup(func() { executablePath = oldExecutablePath })
 
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	code := Main(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{})
+	code := runTestMain(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, &fakeInstallationProbe{})
 	if code != 1 || !strings.Contains(errOut.String(), "必须放在 bin 目录下") {
 		t.Fatalf("outside-bin executable was not rejected: code=%d stderr=%q", code, errOut.String())
 	}
@@ -188,8 +210,10 @@ func TestMainRejectsExecutableOutsideBin(t *testing.T) {
 func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	code := Main(nil, menuInput("0"), out, errOut, &fakeExecutor{})
+	probe := &fakeInstallationProbe{}
+	code := runTestMain(nil, menuInput("0"), out, errOut, &fakeExecutor{}, probe)
 	if code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
@@ -201,5 +225,98 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 	}
 	if _, err := os.Stat(DefaultConfigPath(root)); err != nil {
 		t.Fatalf("config/launcher.json was not created: %v", err)
+	}
+	if len(probe.commands) != 1 || probe.commands[0].Path != filepath.Join(root, "llama-server.exe") ||
+		!reflect.DeepEqual(probe.commands[0].Args, []string{"--version"}) || probe.commands[0].Dir != root ||
+		probe.timeouts[0] != 30*time.Second {
+		t.Fatalf("unexpected installation probe: commands=%#v timeouts=%#v", probe.commands, probe.timeouts)
+	}
+}
+
+func TestMainRejectsRemovedPathFlagsWithoutSideEffects(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	for _, args := range [][]string{{"--root", root}, {"serve", "--config=other.json"}} {
+		probe := &fakeInstallationProbe{}
+		out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+		code := runTestMain(args, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, probe)
+		if code != 2 || !strings.Contains(errOut.String(), "已移除") || len(probe.commands) != 0 {
+			t.Fatalf("removed flag was not rejected early: args=%#v code=%d stderr=%q probes=%d", args, code, errOut.String(), len(probe.commands))
+		}
+		if _, err := os.Stat(filepath.Join(root, "config")); !os.IsNotExist(err) {
+			t.Fatalf("removed flag created files: %v", err)
+		}
+	}
+}
+
+func TestMainProbeFailureDoesNotCreateLayout(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	probe := &fakeInstallationProbe{output: "not a llama version"}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runTestMain(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, probe)
+	if code != 1 || !strings.Contains(errOut.String(), "输出无法识别") {
+		t.Fatalf("bad probe output was accepted: code=%d stderr=%q", code, errOut.String())
+	}
+	for _, directory := range []string{"config", "models", "embeddings", "rerank", "mmproj"} {
+		if _, err := os.Stat(filepath.Join(root, directory)); !os.IsNotExist(err) {
+			t.Fatalf("probe failure created %s: %v", directory, err)
+		}
+	}
+}
+
+func TestMainMissingServerDoesNotCreateLayout(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	probe := &fakeInstallationProbe{}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runTestMain(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, probe)
+	if code != 1 || !strings.Contains(errOut.String(), "找不到 llama-server") || len(probe.commands) != 0 {
+		t.Fatalf("missing server was not rejected early: code=%d stderr=%q probes=%d", code, errOut.String(), len(probe.commands))
+	}
+	for _, directory := range []string{"config", "models", "embeddings", "rerank", "mmproj"} {
+		if _, err := os.Stat(filepath.Join(root, directory)); !os.IsNotExist(err) {
+			t.Fatalf("missing server created %s: %v", directory, err)
+		}
+	}
+}
+
+func TestMainCorruptConfigDoesNotCreateModelDirectories(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	path := DefaultConfigPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"paths":{"models":"elsewhere"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runTestMain(nil, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, &fakeInstallationProbe{})
+	if code != 1 || !strings.Contains(errOut.String(), "unknown field") {
+		t.Fatalf("old config was accepted: code=%d stderr=%q", code, errOut.String())
+	}
+	for _, directory := range []string{"models", "embeddings", "rerank", "mmproj"} {
+		if _, err := os.Stat(filepath.Join(root, directory)); !os.IsNotExist(err) {
+			t.Fatalf("corrupt config created %s: %v", directory, err)
+		}
+	}
+}
+
+func TestHelpAndUnknownCommandDoNotProbeOrCreateFiles(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"serve", "--help"}, {"unknown"}} {
+		root := t.TempDir()
+		mockExecutableInBin(t, root)
+		probe := &fakeInstallationProbe{}
+		out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+		_ = runTestMain(args, bytes.NewBuffer(nil), out, errOut, &fakeExecutor{}, probe)
+		if len(probe.commands) != 0 {
+			t.Fatalf("help/unknown command triggered probe: args=%#v", args)
+		}
+		if _, err := os.Stat(filepath.Join(root, "config")); !os.IsNotExist(err) {
+			t.Fatalf("help/unknown command created files: args=%#v err=%v", args, err)
+		}
 	}
 }

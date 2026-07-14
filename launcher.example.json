@@ -1,14 +1,4 @@
 {
-  "paths": {
-    "server": "llama-server.exe",
-    "cli": "llama-cli.exe",
-    "models": "models",
-    "embeddings": "embeddings",
-    "rerank": "rerank",
-    "mmproj": "mmproj",
-    "router_manual": "config/router-models.ini",
-    "router_auto": "config/router-models.auto.ini"
-  },
   "server": {
     "host": "127.0.0.1",
     "port": 29856,

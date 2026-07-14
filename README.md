@@ -1,6 +1,6 @@
-# llama.cpp Windows Go 启动器
+# llama.cpp Windows/Linux Go 启动器
 
-一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户只需运行 `bin/llama-launcher.exe`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
+一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户运行 `bin/llama-launcher.exe`，Linux 用户运行 `bin/llama-launcher`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
 
 实现只使用 Go 标准库。启动参数以 [llama.cpp 官方 Server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) 为准。
 
@@ -91,8 +91,8 @@ BuildDate: 2026-07-14T12:00:00Z
 
 ```text
 llama.cpp/
-├─ llama-server.exe
-├─ llama-cli.exe
+├─ llama-server.exe / llama-server  # Windows / Linux
+├─ llama-cli.exe / llama-cli        # Windows / Linux
 ├─ models/                        # 自动创建；生成/聊天模型：gguf、bin、ggml
 ├─ embeddings/                    # 自动创建；Embedding 模型：gguf
 ├─ rerank/                        # 自动创建；Rerank 模型：gguf
@@ -102,12 +102,14 @@ llama.cpp/
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
-   └─ llama-launcher.exe
+   └─ llama-launcher.exe / llama-launcher
 ```
 
 模型目录会递归扫描并稳定排序。Router 只接收 GGUF，API model id 使用完整 GGUF 文件名；如果三个模型目录中存在同名文件，启动器会列出所有冲突并拒绝生成配置，避免静默覆盖。
 
-相对路径始终相对于 llama.cpp 根目录。除无副作用的版本查询外，启动器会先检查其直接父目录必须名为 `bin`；检查失败时不会创建任何配置或模型目录。检查通过后自动使用上一级目录作为根目录，创建并读取 `config/launcher.json`，随后创建四个模型目录。`--root` 可覆盖资源根目录，但不能绕过业务命令的 `bin` 位置检查；`--config` 可显式指定另一个 JSON 配置文件。
+除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），并检查直接父目录必须名为 `bin`。随后按当前系统检查根目录中的 `llama-server.exe`（Windows）或 `llama-server`（Linux），在根目录执行 `--version`，只有命令在 30 秒内成功退出且输出可识别时，才读取配置和创建目录。任何位置、平台、文件、运行库或版本探测错误都不会创建配置或模型目录。
+
+根目录固定为 `bin` 的上一级；模型目录、配置文件和 Router 文件位置也全部固定。`--root` 与 `--config` 已移除，传入时会直接报错，防止意外把文件写到其他位置。顶层帮助、子命令帮助和未知命令不会执行 server 探测或初始化磁盘；`-v`、`--version`、`version` 则可以在任意位置查询启动器版本。
 
 ## 交互菜单
 
@@ -186,16 +188,6 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 
 ```json
 {
-  "paths": {
-    "server": "llama-server.exe",
-    "cli": "llama-cli.exe",
-    "models": "models",
-    "embeddings": "embeddings",
-    "rerank": "rerank",
-    "mmproj": "mmproj",
-    "router_manual": "config/router-models.ini",
-    "router_auto": "config/router-models.auto.ini"
-  },
   "server": {
     "host": "127.0.0.1",
     "port": 29856,
@@ -221,7 +213,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 }
 ```
 
-`embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.batch_size` 与 `embedding.ubatch_size` 默认为 `8192`，必须是正整数且逻辑 batch 不能小于物理 batch；`embedding.normalize` 使用 llama.cpp 官方默认值 `2`。所有路径均可改为绝对路径；Windows 盘符和 UNC 路径受支持。
+`embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.batch_size` 与 `embedding.ubatch_size` 默认为 `8192`，必须是正整数且逻辑 batch 不能小于物理 batch；`embedding.normalize` 使用 llama.cpp 官方默认值 `2`。配置不再包含 `paths`；若现有 `config/launcher.json` 仍有该字段，启动器会拒绝读取，请删除该字段或删除配置后让启动器重新生成。
 
 ## API 示例
 

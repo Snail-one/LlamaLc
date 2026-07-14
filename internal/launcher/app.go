@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"runtime"
 	"strings"
 
 	buildversion "github.com/joker/llama-launcher/internal/version"
@@ -23,20 +23,21 @@ type Application struct {
 }
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
+	return mainWithProbe(args, stdin, stdout, stderr, executor, OSInstallationProbe{}, runtime.GOOS)
+}
+
+func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor, probe InstallationProbe, goos string) int {
 	if isVersionCommand(args) {
 		fmt.Fprintln(stdout, buildversion.String())
 		return 0
 	}
 
-	rootFlag, configFlag, remaining, err := parseGlobalFlags(args)
-	if err != nil {
+	if err := rejectRemovedPathFlags(args); err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		printUsage(stderr)
 		return 2
 	}
-	// The executable location is mandatory even when --root is provided. This
-	// prevents configuration and generated presets from being split across an
-	// accidental launcher directory.
+	remaining := args
 	root, err := ExecutableRoot()
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
@@ -46,29 +47,53 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 		printUsage(stdout)
 		return 0
 	}
-	if strings.TrimSpace(rootFlag) != "" {
-		root, err = determineRoot(rootFlag)
+	if len(remaining) > 0 && !isKnownCommand(remaining[0]) {
+		fmt.Fprintf(stderr, "错误: 未知子命令 %q\n", remaining[0])
+		return 1
+	}
+	if len(remaining) > 0 && hasHelpFlag(remaining[1:]) {
+		app := &Application{Root: root, Config: DefaultConfig(), Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor}
+		_, err := app.RunCommand(remaining[0], remaining[1:])
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, "错误:", err)
-			return 1
+			return 2
 		}
+		return 0
 	}
-	config, configPath, created, err := LoadOrCreateConfig(root, configFlag)
+	paths, err := ResolveFixedPaths(root, goos)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
-	if created {
-		fmt.Fprintf(stdout, "已生成配置: %s\n", configPath)
+	detectedVersion, err := VerifyInstallation(root, paths, probe)
+	if err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
 	}
-	paths := config.ResolvePaths(root)
-	createdDirectories, err := EnsureRuntimeDirectories(root, paths)
+	fmt.Fprintln(stdout, "已识别 llama.cpp:", detectedVersion)
+
+	config, configPath, needsCreate, err := LoadConfig(root)
+	if err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
+	}
+	createdDirectories, err := EnsureRuntimeDirectories(root)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
 	for _, directory := range createdDirectories {
 		fmt.Fprintf(stdout, "已创建目录: %s\n", directory)
+	}
+	if needsCreate {
+		if err := WriteDefaultConfig(configPath, config); err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "已生成配置: %s\n", configPath)
 	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
@@ -95,44 +120,40 @@ func isVersionCommand(args []string) bool {
 	return args[0] == "-v" || args[0] == "--version" || args[0] == "version"
 }
 
-func parseGlobalFlags(args []string) (root, config string, remaining []string, err error) {
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--root" || arg == "--config":
-			if i+1 >= len(args) {
-				return "", "", nil, fmt.Errorf("%s 缺少值", arg)
-			}
-			i++
-			if arg == "--root" {
-				root = args[i]
-			} else {
-				config = args[i]
-			}
-		case strings.HasPrefix(arg, "--root="):
-			root = strings.TrimPrefix(arg, "--root=")
-		case strings.HasPrefix(arg, "--config="):
-			config = strings.TrimPrefix(arg, "--config=")
-		default:
-			return root, config, args[i:], nil
+func rejectRemovedPathFlags(args []string) error {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--root" || strings.HasPrefix(arg, "--root=") {
+			return errors.New("--root 已移除；启动器根目录固定为 bin 的上一级目录")
+		}
+		if arg == "--config" || strings.HasPrefix(arg, "--config=") {
+			return errors.New("--config 已移除；配置文件固定为 config/launcher.json")
 		}
 	}
-	return root, config, nil, nil
+	return nil
 }
 
-func determineRoot(root string) (string, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(strings.Trim(root, `"'`)))
-	if err != nil {
-		return "", fmt.Errorf("无法解析根目录 %q: %w", root, err)
+func isKnownCommand(name string) bool {
+	switch name {
+	case "serve", "embedding", "rerank", "router-config", "router", "chat":
+		return true
+	default:
+		return false
 	}
-	info, err := os.Stat(absolute)
-	if err != nil {
-		return "", fmt.Errorf("无法访问根目录 %s: %w", absolute, err)
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-h" || arg == "--help" {
+			return true
+		}
 	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("根路径不是目录: %s", absolute)
-	}
-	return filepath.Clean(absolute), nil
+	return false
 }
 
 func printUsage(w io.Writer) {
@@ -140,7 +161,7 @@ func printUsage(w io.Writer) {
 
 用法:
   llama-launcher -v | --version | version  打印版本信息并退出
-  llama-launcher [--root DIR] [--config FILE] <子命令> [选项] [-- llama.cpp参数]
+  llama-launcher <子命令> [选项] [-- llama.cpp参数]
   llama-launcher                         进入中文交互菜单
 
 子命令:
@@ -239,7 +260,7 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 		}
 		mmprojPath = projector.Path
 	}
-	if err := requireFile(app.Paths.Server, "llama-server.exe"); err != nil {
+	if err := requireFile(app.Paths.Server, "llama-server"); err != nil {
 		return 1, err
 	}
 	command, err := BuildServerCommand(mode, app.Paths.Server, app.Root, ServerOptions{
@@ -287,13 +308,12 @@ func (app *Application) runChatSubcommand(args []string) (int, error) {
 		return 1, err
 	}
 	cli := app.Paths.CLI
-	if _, err := os.Stat(cli); errors.Is(err, os.ErrNotExist) && filepath.Base(cli) == "llama-cli.exe" {
-		fallback := filepath.Join(filepath.Dir(cli), "llama.exe")
-		if _, fallbackErr := os.Stat(fallback); fallbackErr == nil {
-			cli = fallback
+	if _, err := os.Stat(cli); errors.Is(err, os.ErrNotExist) {
+		if _, fallbackErr := os.Stat(app.Paths.CLIFallback); fallbackErr == nil {
+			cli = app.Paths.CLIFallback
 		}
 	}
-	if err := requireFile(cli, "llama-cli.exe"); err != nil {
+	if err := requireFile(cli, "llama-cli"); err != nil {
 		return 1, err
 	}
 	command, err := BuildChatCommand(cli, app.Root, ServerOptions{
@@ -383,7 +403,7 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	if err := requireFile(app.Paths.Server, "llama-server.exe"); err != nil {
+	if err := requireFile(app.Paths.Server, "llama-server"); err != nil {
 		return 1, err
 	}
 	command, err := BuildRouterCommand(app.Paths.Server, app.Root, RouterOptions{
@@ -469,6 +489,9 @@ func requireFile(path, label string) error {
 	}
 	if info.IsDir() {
 		return fmt.Errorf("%s 路径是目录: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 不是普通文件: %s", label, path)
 	}
 	return nil
 }
