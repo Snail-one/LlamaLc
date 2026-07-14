@@ -1,7 +1,23 @@
-*
-!.gitignore
-!README.md
-!bin/
-!bin/**
-bin/router-models.auto.ini
-bin/router-models.ini
+# Local launcher state
+/launcher.json
+/Server_README.md
+/bin/router-models.ini
+/bin/router-models.auto.ini
+
+# Build output and llama.cpp Windows distribution
+/llama-launcher
+/llama-launcher.exe
+/*.exe
+/*.dll
+
+# Local models
+/models/
+/embeddings/
+/rerank/
+/mmproj/
+*.gguf
+*.ggml
+
+# Go test/build artifacts
+*.test
+*.out
