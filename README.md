@@ -132,7 +132,7 @@ llama.cpp/
 q. 退出
 ```
 
-菜单只读取 `config/launcher.json`，不会把交互选择写回配置。交互流程中任意询问输入 `q`（大小写均可）会立即返回主菜单，主菜单输入 `q` 退出程序；`0` 保留给参数和选项本身使用。选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
+菜单只读取 `config/launcher.json`，不会把交互选择写回配置。交互流程中任意询问输入 `q`（大小写均可）会立即返回主菜单，主菜单输入 `q` 退出程序；`0` 保留给参数和选项本身使用。交互终端在进入功能和返回主菜单时会自动清屏，重定向到文件或管道的输出不会包含清屏控制码。选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
 
 生成模型可从 `mmproj/` 中选择自动匹配项，也可输入其他 mmproj 路径；选择投影文件后还会询问图片最小和最大 token。Embedding 会额外询问 pooling 与向量归一化，Router 会询问模型加载上限、autoload 和 Embedding preset 参数。每种启动模式最后都可填写多个自定义 llama.cpp 参数。启动器会先显示完整最终命令，再请求确认；进程结束后等待按 Enter 返回菜单。
 

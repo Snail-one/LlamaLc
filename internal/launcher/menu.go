@@ -24,7 +24,12 @@ func (app *Application) RunMenu() int {
 	// Pass the same reader to children so any bytes already buffered by the menu
 	// remain visible to llama-cli/llama-server.
 	app.Stdin = m.reader
+	clearBeforeMenu := false
 	for {
+		if clearBeforeMenu {
+			clearTerminal(app.Stdout)
+		}
+		clearBeforeMenu = false
 		fmt.Fprintf(app.Stdout, `
 llama.cpp Go 启动器 %s
 根目录: %s
@@ -49,15 +54,19 @@ llama.cpp Go 启动器 %s
 			fmt.Fprintln(app.Stderr, "错误:", err)
 			continue
 		}
+		clearTerminal(app.Stdout)
 		if err := m.runChoice(choice); err != nil {
 			if errors.Is(err, io.EOF) {
 				return 0
 			}
 			if errors.Is(err, errMenuBack) {
+				clearBeforeMenu = true
 				continue
 			}
 			fmt.Fprintln(app.Stderr, "错误:", err)
+			continue
 		}
+		clearBeforeMenu = true
 	}
 }
 
@@ -173,7 +182,7 @@ func (m *menu) runChoice(choice int) error {
 			}
 			if !overwrite {
 				fmt.Fprintln(m.app.Stdout, "已取消，原文件未修改。")
-				return nil
+				return m.pause()
 			}
 			args = append(args, "--force")
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -215,7 +224,10 @@ func (m *menu) runChoice(choice int) error {
 			"--mmproj-auto="+strconv.FormatBool(autoMatch),
 		)
 		_, err = m.app.RunCommand("router-config", args)
-		return err
+		if err != nil {
+			return err
+		}
+		return m.pause()
 	case 5:
 		args, err := m.readRuntimeArguments(m.app.Config.Server.BatchSize, m.app.Config.Server.UBatchSize, true)
 		if err != nil {
