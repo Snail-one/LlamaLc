@@ -133,3 +133,15 @@ func TestVerifyInstallationRequiresRegularServerFile(t *testing.T) {
 		t.Fatalf("installation verification created config: %v", err)
 	}
 }
+
+func TestCappedProbeOutputDoesNotGrowPastLimit(t *testing.T) {
+	output := &cappedOutput{limit: 16}
+	data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	n, err := output.Write(data)
+	if err != nil || n != len(data) {
+		t.Fatalf("unexpected write result: n=%d err=%v", n, err)
+	}
+	if !output.Exceeded() || len(output.String()) != 16 {
+		t.Fatalf("output limit failed: exceeded=%v length=%d", output.Exceeded(), len(output.String()))
+	}
+}

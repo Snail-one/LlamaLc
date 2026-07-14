@@ -53,9 +53,15 @@ func ScanModels(root string, kind ModelKind, extensions map[string]bool) ([]Mode
 		if !extensions[ext] {
 			return nil
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("模型文件不允许使用符号链接: %s", path)
+		}
 		fileInfo, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if !fileInfo.Mode().IsRegular() {
+			return fmt.Errorf("模型不是普通文件: %s", path)
 		}
 		absolute, err := filepath.Abs(path)
 		if err != nil {
@@ -131,15 +137,18 @@ func ResolveModelAt(searchRoot, pathRoot, input string, kind ModelKind, extensio
 }
 
 func modelFromPath(path string, kind ModelKind, extensions map[string]bool) (ModelFile, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ModelFile{}, fmt.Errorf("找不到模型文件: %s", path)
 		}
 		return ModelFile{}, fmt.Errorf("无法访问模型文件 %s: %w", path, err)
 	}
-	if info.IsDir() {
-		return ModelFile{}, fmt.Errorf("模型路径不能是目录: %s", path)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ModelFile{}, fmt.Errorf("模型文件不允许使用符号链接: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return ModelFile{}, fmt.Errorf("模型必须是普通文件: %s", path)
 	}
 	if !extensions[strings.ToLower(filepath.Ext(path))] {
 		return ModelFile{}, fmt.Errorf("不支持的模型扩展名: %s", filepath.Ext(path))

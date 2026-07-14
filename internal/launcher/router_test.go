@@ -25,7 +25,10 @@ func TestRenderRouterPresetAllKinds(t *testing.T) {
 		{ID: "rank.gguf", Path: `C:\rerank\rank.gguf`, Kind: RerankModel},
 	}
 	projectors := []ModelFile{{ID: "mmproj-chat-F16.gguf", Path: `C:\mmproj\mmproj-chat-F16.gguf`}}
-	content := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean", BatchSize: 8192, UBatchSize: 8192})
+	content, err := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean", BatchSize: 8192, UBatchSize: 8192})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, expected := range []string{
 		"version = 1", "[chat.gguf]", `mmproj = C:\mmproj\mmproj-chat-F16.gguf`,
 		"[embed.gguf]", "embedding = true", "pooling = mean", "batch-size = 8192", "ubatch-size = 8192",
@@ -57,7 +60,10 @@ func TestWriteRouterPresetRejectsOverwrite(t *testing.T) {
 func TestRenderManualRouterPresetCanDisableMmprojAutoMatch(t *testing.T) {
 	models := []ModelFile{{ID: "chat.gguf", Path: `C:\models\chat.gguf`, Kind: GenerationModel}}
 	projectors := []ModelFile{{ID: "mmproj-chat-F16.gguf", Path: `C:\mmproj\mmproj-chat-F16.gguf`}}
-	content := RenderRouterPreset(models, projectors, PresetOptions{Manual: true, DisableMmprojAuto: true})
+	content, err := RenderRouterPreset(models, projectors, PresetOptions{Manual: true, DisableMmprojAuto: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(content, `mmproj = C:\mmproj\mmproj-chat-F16.gguf`) {
 		t.Fatalf("disabled mmproj auto-match still selected a projector:\n%s", content)
 	}
@@ -85,5 +91,64 @@ func TestPrepareRouterManualTakesPriority(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.RouterAuto); err != nil {
 		t.Fatalf("auto preset was not refreshed: %v", err)
+	}
+}
+
+func TestRouterPresetRejectsInjectedFilename(t *testing.T) {
+	models := []ModelFile{{ID: "safe.gguf]\napi-key = stolen", Path: filepath.Join(t.TempDir(), "safe.gguf"), Kind: GenerationModel}}
+	if _, err := RenderRouterPreset(models, nil, PresetOptions{}); err == nil {
+		t.Fatalf("injected model ID was accepted: %v", err)
+	}
+}
+
+func TestWriteRouterPresetRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "important.txt")
+	if err := os.WriteFile(target, []byte("important"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, "router-models.auto.ini")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	if err := WriteRouterPreset(path, "replacement", true); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("Router symlink was accepted: %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "important" {
+		t.Fatalf("symlink target was modified: %q", content)
+	}
+}
+
+func TestWriteRouterPresetAtomicallyReplacesExistingFile(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, "router-models.auto.ini")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRouterPreset(path, "new", true); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "new" {
+		t.Fatalf("preset was not replaced: %q", content)
+	}
+	matches, err := filepath.Glob(filepath.Join(configDir, ".router-models.auto.ini.tmp-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary files remain: %v, %v", matches, err)
 	}
 }

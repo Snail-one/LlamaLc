@@ -1,14 +1,54 @@
 package launcher
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
-const installationProbeTimeout = 30 * time.Second
+const (
+	installationProbeTimeout = 30 * time.Second
+	maxProbeOutputSize       = 1 << 20
+)
+
+type cappedOutput struct {
+	mu       sync.Mutex
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (output *cappedOutput) Write(data []byte) (int, error) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	remaining := output.limit - output.buffer.Len()
+	if remaining > 0 {
+		if remaining > len(data) {
+			remaining = len(data)
+		}
+		_, _ = output.buffer.Write(data[:remaining])
+	}
+	if len(data) > remaining {
+		output.exceeded = true
+	}
+	return len(data), nil
+}
+
+func (output *cappedOutput) String() string {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return output.buffer.String()
+}
+
+func (output *cappedOutput) Exceeded() bool {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return output.exceeded
+}
 
 type InstallationProbe interface {
 	Probe(command Command, timeout time.Duration) (string, error)
@@ -22,14 +62,20 @@ func (OSInstallationProbe) Probe(command Command, timeout time.Duration) (string
 
 	cmd := exec.CommandContext(ctx, command.Path, command.Args...)
 	cmd.Dir = command.Dir
-	output, err := cmd.CombinedOutput()
+	output := &cappedOutput{limit: maxProbeOutputSize}
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return string(output), fmt.Errorf("探测超时（%s）", timeout)
+		return output.String(), fmt.Errorf("探测超时（%s）", timeout)
 	}
 	if err != nil {
-		return string(output), fmt.Errorf("执行 --version 失败: %w", err)
+		return output.String(), fmt.Errorf("执行 --version 失败: %w", err)
 	}
-	return string(output), nil
+	if output.Exceeded() {
+		return output.String(), fmt.Errorf("--version 输出超过 %d 字节限制", maxProbeOutputSize)
+	}
+	return output.String(), nil
 }
 
 func VerifyInstallation(root string, paths ResolvedPaths, probe InstallationProbe) (string, error) {
@@ -55,7 +101,7 @@ func versionSummary(output string) string {
 	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.Contains(strings.ToLower(line), "version:") {
-			return line
+			return safeTerminalText(line)
 		}
 	}
 	return "version: unknown"
@@ -66,5 +112,5 @@ func formatProbeOutput(output string) string {
 	if output == "" {
 		return ""
 	}
-	return "；输出: " + output
+	return "；输出: " + safeTerminalText(output)
 }

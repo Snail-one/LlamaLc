@@ -15,6 +15,7 @@ import (
 const (
 	ConfigDirectoryName = "config"
 	DefaultConfigName   = "launcher.json"
+	maxConfigSize       = 1 << 20
 )
 
 var executablePath = os.Executable
@@ -111,13 +112,22 @@ func isWindowsAbs(value string) bool {
 
 func LoadConfig(root string) (Config, string, bool, error) {
 	configPath := DefaultConfigPath(root)
-	_, err := os.Stat(configPath)
+	if err := validateManagedPath(root, filepath.Join(root, ConfigDirectoryName), "配置目录", true, true); err != nil {
+		return Config{}, configPath, false, err
+	}
+	if err := validateManagedPath(root, configPath, "配置文件", true, false); err != nil {
+		return Config{}, configPath, false, err
+	}
+	info, err := os.Lstat(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		config := DefaultConfig()
 		return config, configPath, true, nil
 	}
 	if err != nil {
 		return Config{}, configPath, false, fmt.Errorf("无法访问配置文件 %s: %w", configPath, err)
+	}
+	if info.Size() > maxConfigSize {
+		return Config{}, configPath, false, fmt.Errorf("配置文件过大（最大 %d 字节）: %s", maxConfigSize, configPath)
 	}
 	config, err := readConfig(configPath)
 	if err != nil {
@@ -134,7 +144,7 @@ func readConfig(configPath string) (Config, error) {
 	}
 	defer f.Close()
 
-	decoder := json.NewDecoder(f)
+	decoder := json.NewDecoder(io.LimitReader(f, maxConfigSize+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
@@ -162,16 +172,8 @@ func WriteDefaultConfig(path string, config Config) error {
 		return fmt.Errorf("无法生成默认配置: %w", err)
 	}
 	data = append(data, '\n')
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return fmt.Errorf("无法写入默认配置 %s: %w", path, err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("无法写入默认配置 %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("无法保存默认配置 %s: %w", path, err)
+	if err := writeFileExclusive(path, data, 0o644); err != nil {
+		return fmt.Errorf("无法原子创建默认配置 %s: %w", path, err)
 	}
 	return nil
 }
@@ -333,11 +335,11 @@ func EnsureRuntimeDirectories(root string) ([]string, error) {
 			continue
 		}
 		seen[key] = true
-		info, err := os.Stat(path)
+		if err := validateManagedPath(root, path, directory.label+" 目录", true, true); err != nil {
+			return nil, err
+		}
+		_, err := os.Lstat(path)
 		if err == nil {
-			if !info.IsDir() {
-				return nil, fmt.Errorf("%s 路径不是目录: %s", directory.label, path)
-			}
 			continue
 		}
 		if !errors.Is(err, os.ErrNotExist) {
@@ -350,6 +352,9 @@ func EnsureRuntimeDirectories(root string) ([]string, error) {
 	for _, path := range missing {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return created, fmt.Errorf("无法创建运行目录 %s: %w", path, err)
+		}
+		if err := validateManagedPath(root, path, "新建运行目录", false, true); err != nil {
+			return created, err
 		}
 		created = append(created, path)
 	}

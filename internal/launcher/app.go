@@ -275,6 +275,13 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 	if err != nil {
 		return 1, err
 	}
+	effectiveHost, remote, err := validateNetworkExposure(*host, forwarded)
+	if err != nil {
+		return 1, err
+	}
+	if remote {
+		fmt.Fprintf(app.Stderr, "安全警告: 服务将监听非本机地址 %s，请确认防火墙和 API key 配置。\n", effectiveHost)
+	}
 	endpoint := ""
 	switch mode {
 	case ModeEmbedding:
@@ -282,7 +289,7 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 	case ModeRerank:
 		endpoint = "/v1/rerank"
 	}
-	app.showLaunch(command, fmt.Sprintf("http://%s:%d%s", *host, *port, endpoint))
+	app.showLaunch(command, serviceURL(effectiveHost, *port, endpoint))
 	return app.Executor.Execute(command, app.Stdin, app.Stdout, app.Stderr)
 }
 
@@ -416,13 +423,20 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	effectiveHost, remote, err := validateNetworkExposure(*host, forwarded)
+	if err != nil {
+		return 1, err
+	}
+	if remote {
+		fmt.Fprintf(app.Stderr, "安全警告: Router 将监听非本机地址 %s，请确认防火墙和 API key 配置。\n", effectiveHost)
+	}
 	if manual {
 		fmt.Fprintf(app.Stdout, "检测到手动配置，运行时优先使用且不会覆盖: %s\n", preset)
 	} else {
 		fmt.Fprintf(app.Stdout, "已生成自动 Router 配置: %s\n", preset)
 	}
 	fmt.Fprintf(app.Stdout, "Router 共发现 %d 个模型。\n", len(models))
-	app.showLaunch(command, fmt.Sprintf("http://%s:%d/models", *host, *port))
+	app.showLaunch(command, serviceURL(effectiveHost, *port, "/models"))
 	return app.Executor.Execute(command, app.Stdin, app.Stdout, app.Stderr)
 }
 
@@ -469,10 +483,13 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	content := RenderRouterPreset(models, projectors, PresetOptions{
+	content, err := RenderRouterPreset(models, projectors, PresetOptions{
 		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)),
 		BatchSize: *batchSize, UBatchSize: *ubatchSize, DisableMmprojAuto: !*mmprojAuto, Manual: true,
 	})
+	if err != nil {
+		return 1, err
+	}
 	if err := WriteRouterPreset(app.Paths.RouterManual, content, *force); err != nil {
 		return 1, err
 	}

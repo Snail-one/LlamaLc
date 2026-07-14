@@ -276,7 +276,7 @@ func (m *menu) selectModel(directory string, kind ModelKind, extensions map[stri
 	fmt.Fprintln(m.app.Stdout, "\n发现模型:")
 	fmt.Fprintln(m.app.Stdout, "   q. 返回主菜单")
 	for i, model := range models {
-		fmt.Fprintf(m.app.Stdout, "  %2d. %s  (%s)\n", i+1, model.ID, formatSize(model.Size))
+		fmt.Fprintf(m.app.Stdout, "  %2d. %s  (%s)\n", i+1, safeTerminalText(model.ID), formatSize(model.Size))
 	}
 	choice, err := m.readChoice("请选择模型", 1, 1, len(models))
 	if err != nil {
@@ -297,7 +297,7 @@ func (m *menu) selectProjector(model ModelFile, projectors []ModelFile) (*ModelF
 			defaultChoice = i + 1
 			label = "  [自动匹配]"
 		}
-		fmt.Fprintf(m.app.Stdout, "  %2d. %s%s\n", i+1, projector.ID, label)
+		fmt.Fprintf(m.app.Stdout, "  %2d. %s%s\n", i+1, safeTerminalText(projector.ID), label)
 	}
 	choice, err := m.readChoice("请选择 mmproj", defaultChoice, 0, len(projectors))
 	if err != nil {

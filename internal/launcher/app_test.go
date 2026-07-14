@@ -62,6 +62,7 @@ func (f *fakeExecutor) Execute(command Command, stdin io.Reader, stdout, stderr 
 }
 
 func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
+	t.Setenv("LLAMA_API_KEY", "test-only-key")
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "llama-server.exe"))

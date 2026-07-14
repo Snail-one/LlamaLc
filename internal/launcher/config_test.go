@@ -220,3 +220,48 @@ func TestWriteDefaultConfigIsExclusive(t *testing.T) {
 		t.Fatal("existing config was overwritten")
 	}
 }
+
+func TestManagedDirectoriesRejectSymlinks(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "config")); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	if _, err := EnsureRuntimeDirectories(root); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("managed directory symlink was accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(external, DefaultConfigName)); !os.IsNotExist(err) {
+		t.Fatalf("external directory was modified: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "external.json")
+	if err := os.WriteFile(external, []byte(`{"server":{"port":29856}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, DefaultConfigPath(root)); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	if _, _, _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("config symlink was accepted: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	path := DefaultConfigPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, maxConfigSize+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), "配置文件过大") {
+		t.Fatalf("oversized config was accepted: %v", err)
+	}
+}

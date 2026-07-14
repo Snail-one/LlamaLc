@@ -113,3 +113,16 @@ func TestResolveModelBareFilenamePrefersSearchDirectory(t *testing.T) {
 		t.Fatalf("bare model ID resolved to %q, want categorized model %q", model.Path, searchedModel)
 	}
 }
+
+func TestResolveModelRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target.gguf")
+	touchFile(t, target)
+	link := filepath.Join(root, "linked.gguf")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	if _, err := ResolveModel(root, "linked.gguf", GenerationModel, ggufExtension); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("model symlink was accepted: %v", err)
+	}
+}
