@@ -14,11 +14,18 @@
     "port": 29856,
     "n_gpu_layers": "auto",
     "ctx_size": 0,
+    "threads": -1,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "flash_attention": "auto",
+    "parallel": -1,
     "ui": false
   },
   "embedding": {
     "pooling": "last",
-    "ubatch_size": 8192
+    "batch_size": 8192,
+    "ubatch_size": 8192,
+    "normalize": 2
   },
   "router": {
     "models_max": 1,

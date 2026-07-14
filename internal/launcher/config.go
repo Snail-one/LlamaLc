@@ -35,16 +35,23 @@ type PathsConfig struct {
 }
 
 type ServerConfig struct {
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	GPULayers   string `json:"n_gpu_layers"`
-	ContextSize int    `json:"ctx_size"`
-	UI          bool   `json:"ui"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	GPULayers      string `json:"n_gpu_layers"`
+	ContextSize    int    `json:"ctx_size"`
+	Threads        int    `json:"threads"`
+	BatchSize      int    `json:"batch_size"`
+	UBatchSize     int    `json:"ubatch_size"`
+	FlashAttention string `json:"flash_attention"`
+	Parallel       int    `json:"parallel"`
+	UI             bool   `json:"ui"`
 }
 
 type EmbeddingConfig struct {
 	Pooling    string `json:"pooling"`
+	BatchSize  int    `json:"batch_size"`
 	UBatchSize int    `json:"ubatch_size"`
+	Normalize  int    `json:"normalize"`
 }
 
 type RouterConfig struct {
@@ -65,12 +72,17 @@ func DefaultConfig() Config {
 			RouterAuto:   filepath.Join("bin", "router-models.auto.ini"),
 		},
 		Server: ServerConfig{
-			Host:      "127.0.0.1",
-			Port:      29856,
-			GPULayers: "auto",
-			UI:        false,
+			Host:           "127.0.0.1",
+			Port:           29856,
+			GPULayers:      "auto",
+			Threads:        -1,
+			BatchSize:      2048,
+			UBatchSize:     512,
+			FlashAttention: "auto",
+			Parallel:       -1,
+			UI:             false,
 		},
-		Embedding: EmbeddingConfig{Pooling: "last", UBatchSize: 8192},
+		Embedding: EmbeddingConfig{Pooling: "last", BatchSize: 8192, UBatchSize: 8192, Normalize: 2},
 		Router:    RouterConfig{ModelsMax: 1, Autoload: true},
 	}
 }
@@ -183,11 +195,38 @@ func ValidateConfig(config Config) error {
 	if config.Server.ContextSize < 0 {
 		return errors.New("配置错误: server.ctx_size 不能小于 0")
 	}
+	if err := ValidateThreads(config.Server.Threads); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidatePositive("batch-size", config.Server.BatchSize); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateUBatchSize(config.Server.UBatchSize); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateBatchPair(config.Server.BatchSize, config.Server.UBatchSize); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateFlashAttention(config.Server.FlashAttention); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateParallel(config.Server.Parallel); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
 	if err := ValidatePooling(config.Embedding.Pooling); err != nil {
 		return fmt.Errorf("配置错误: %w", err)
 	}
 	if err := ValidateUBatchSize(config.Embedding.UBatchSize); err != nil {
 		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidatePositive("embedding.batch_size", config.Embedding.BatchSize); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
+	if err := ValidateBatchPair(config.Embedding.BatchSize, config.Embedding.UBatchSize); err != nil {
+		return fmt.Errorf("配置错误: Embedding %w", err)
+	}
+	if config.Embedding.Normalize < -1 {
+		return errors.New("配置错误: embedding.normalize 必须不小于 -1")
 	}
 	if config.Router.ModelsMax < 0 {
 		return errors.New("配置错误: router.models_max 不能小于 0")
@@ -224,10 +263,44 @@ func ValidatePooling(value string) error {
 }
 
 func ValidateUBatchSize(value int) error {
-	if value < 1 {
-		return fmt.Errorf("ubatch-size 必须是正整数，当前为 %d", value)
+	return ValidatePositive("ubatch-size", value)
+}
+
+func ValidateBatchPair(batchSize, ubatchSize int) error {
+	if batchSize < ubatchSize {
+		return fmt.Errorf("batch-size (%d) 不能小于 ubatch-size (%d)", batchSize, ubatchSize)
 	}
 	return nil
+}
+
+func ValidatePositive(name string, value int) error {
+	if value < 1 {
+		return fmt.Errorf("%s 必须是正整数，当前为 %d", name, value)
+	}
+	return nil
+}
+
+func ValidateThreads(value int) error {
+	if value != -1 && value < 1 {
+		return fmt.Errorf("threads 必须是 -1（自动）或正整数，当前为 %d", value)
+	}
+	return nil
+}
+
+func ValidateParallel(value int) error {
+	if value != -1 && value < 1 {
+		return fmt.Errorf("parallel 必须是 -1（自动）或正整数，当前为 %d", value)
+	}
+	return nil
+}
+
+func ValidateFlashAttention(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "on", "off":
+		return nil
+	default:
+		return fmt.Errorf("flash-attn 必须是 auto、on 或 off，当前为 %q", value)
+	}
 }
 
 type ResolvedPaths struct {

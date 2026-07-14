@@ -25,10 +25,10 @@ func TestRenderRouterPresetAllKinds(t *testing.T) {
 		{ID: "rank.gguf", Path: `C:\rerank\rank.gguf`, Kind: RerankModel},
 	}
 	projectors := []ModelFile{{ID: "mmproj-chat-F16.gguf", Path: `C:\mmproj\mmproj-chat-F16.gguf`}}
-	content := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean", UBatchSize: 8192})
+	content := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean", BatchSize: 8192, UBatchSize: 8192})
 	for _, expected := range []string{
 		"version = 1", "[chat.gguf]", `mmproj = C:\mmproj\mmproj-chat-F16.gguf`,
-		"[embed.gguf]", "embedding = true", "pooling = mean", "ubatch-size = 8192",
+		"[embed.gguf]", "embedding = true", "pooling = mean", "batch-size = 8192", "ubatch-size = 8192",
 		"[rank.gguf]", "reranking = true",
 	} {
 		if !strings.Contains(content, expected) {
@@ -51,6 +51,18 @@ func TestWriteRouterPresetRejectsOverwrite(t *testing.T) {
 	}
 	if string(data) != "first" {
 		t.Fatalf("existing content changed: %q", data)
+	}
+}
+
+func TestRenderManualRouterPresetCanDisableMmprojAutoMatch(t *testing.T) {
+	models := []ModelFile{{ID: "chat.gguf", Path: `C:\models\chat.gguf`, Kind: GenerationModel}}
+	projectors := []ModelFile{{ID: "mmproj-chat-F16.gguf", Path: `C:\mmproj\mmproj-chat-F16.gguf`}}
+	content := RenderRouterPreset(models, projectors, PresetOptions{Manual: true, DisableMmprojAuto: true})
+	if strings.Contains(content, `mmproj = C:\mmproj\mmproj-chat-F16.gguf`) {
+		t.Fatalf("disabled mmproj auto-match still selected a projector:\n%s", content)
+	}
+	if !strings.Contains(content, `; mmproj = C:\path\to\mmproj.gguf`) {
+		t.Fatalf("manual mmproj placeholder missing:\n%s", content)
 	}
 }
 

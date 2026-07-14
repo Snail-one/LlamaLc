@@ -10,11 +10,13 @@ import (
 )
 
 type PresetOptions struct {
-	GPULayers   string
-	ContextSize int
-	Pooling     string
-	UBatchSize  int
-	Manual      bool
+	GPULayers         string
+	ContextSize       int
+	Pooling           string
+	BatchSize         int
+	UBatchSize        int
+	DisableMmprojAuto bool
+	Manual            bool
 }
 
 func CollectRouterModels(paths ResolvedPaths) ([]ModelFile, []ModelFile, error) {
@@ -97,7 +99,7 @@ func RenderRouterPreset(models, projectors []ModelFile, options PresetOptions) s
 
 		switch model.Kind {
 		case GenerationModel:
-			if projector := FindMatchingMmproj(model, projectors); projector != nil {
+			if projector := FindMatchingMmproj(model, projectors); projector != nil && !options.DisableMmprojAuto {
 				lines = append(lines, "mmproj = "+projector.Path)
 			} else if options.Manual {
 				lines = append(lines, "; mmproj = C:\\path\\to\\mmproj.gguf")
@@ -106,6 +108,9 @@ func RenderRouterPreset(models, projectors []ModelFile, options PresetOptions) s
 			lines = append(lines, "embedding = true")
 			if options.Pooling != "" {
 				lines = append(lines, "pooling = "+options.Pooling)
+			}
+			if options.BatchSize > 0 {
+				lines = append(lines, fmt.Sprintf("batch-size = %d", options.BatchSize))
 			}
 			if options.UBatchSize > 0 {
 				lines = append(lines, fmt.Sprintf("ubatch-size = %d", options.UBatchSize))

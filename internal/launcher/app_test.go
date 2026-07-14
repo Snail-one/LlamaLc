@@ -21,6 +21,10 @@ type fakeExecutor struct {
 	err      error
 }
 
+func menuInput(lines ...string) *bytes.Buffer {
+	return bytes.NewBufferString(strings.Join(lines, "\n") + "\n")
+}
+
 func mockExecutableInBin(t *testing.T, root string) {
 	t.Helper()
 	path := filepath.Join(root, "bin", "llama-launcher.exe")
@@ -66,7 +70,16 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
-	in := bytes.NewBufferString("1\n1\n\nn\n0\n")
+	in := menuInput(
+		"1", "1", // mode and model
+		"",                         // other mmproj
+		"", "", "", "", "", "", "", // runtime defaults
+		"", "", "", // network defaults, including disabled UI
+		"",  // custom arguments
+		"n", // cancel after final command preview
+		"",  // pause
+		"0",
+	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
 	code := Main([]string{"--root", root}, in, out, errOut, fake)
@@ -86,7 +99,14 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "embeddings", "embed.gguf"))
-	in := bytes.NewBufferString("2\n1\n\n\n--threads 8 --log-prefix \"hello world\"\ny\n0\n")
+	in := menuInput(
+		"2", "1", // mode and model
+		"", "", "", "", "", "", "", // runtime defaults
+		"", "", // pooling and normalization defaults
+		"", "", "", // network defaults, including disabled UI
+		`--threads 8 --log-prefix "hello world"`,
+		"y", "", "0", // confirm, pause, exit
+	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
 	code := Main([]string{"--root", root}, in, out, errOut, fake)
@@ -95,12 +115,18 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 	}
 	wantTail := []string{
 		"--embedding", "--pooling", "last", "--ubatch-size", "8192",
+		"--embd-normalize", "2",
 		"--host", "127.0.0.1", "--port", "29856", "--no-ui",
 		"--threads", "8", "--log-prefix", "hello world",
 	}
 	args := fake.commands[0].Args
 	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
 		t.Fatalf("embedding defaults/custom arguments mismatch:\n got: %#v\nwant tail: %#v", args, wantTail)
+	}
+	previewAt := strings.Index(out.String(), "最终命令:")
+	confirmAt := strings.Index(out.String(), "确认使用以上参数启动")
+	if previewAt < 0 || confirmAt < 0 || previewAt > confirmAt {
+		t.Fatalf("final command was not displayed before confirmation:\n%s", out.String())
 	}
 }
 

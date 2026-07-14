@@ -26,11 +26,27 @@ func TestBuildCommands(t *testing.T) {
 			want: []string{"--model", "m.gguf", "--ctx-size", "8192", "--n-gpu-layers", "all", "--mmproj", "p.gguf", "--image-min-tokens", "1024", "--host", "0.0.0.0", "--port", "9000", "--ui", "--threads", "8"},
 		},
 		{
+			name: "serve official runtime defaults and multimodal limits",
+			build: func() (Command, error) {
+				return BuildServerCommand(ModeServe, "server.exe", ".", ServerOptions{
+					Model: "m.gguf", Mmproj: "p.gguf", ImageMinTokens: 512, ImageMaxTokens: 4096,
+					Host: "127.0.0.1", Port: 29856, GPULayers: "auto", Threads: -1,
+					BatchSize: 2048, UBatchSize: 512, FlashAttention: "auto", Parallel: -1,
+				})
+			},
+			want: []string{
+				"--model", "m.gguf", "--n-gpu-layers", "auto", "--threads", "-1",
+				"--batch-size", "2048", "--ubatch-size", "512", "--flash-attn", "auto", "--parallel", "-1",
+				"--mmproj", "p.gguf", "--image-min-tokens", "512", "--image-max-tokens", "4096",
+				"--host", "127.0.0.1", "--port", "29856", "--no-ui",
+			},
+		},
+		{
 			name: "embedding",
 			build: func() (Command, error) {
-				return BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{Model: "e.gguf", Host: "localhost", Port: 1, GPULayers: "0", Pooling: "mean", UBatchSize: 8192})
+				return BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{Model: "e.gguf", Host: "localhost", Port: 1, GPULayers: "0", Pooling: "mean", BatchSize: 8192, UBatchSize: 8192, Normalize: 2, NormalizeSet: true})
 			},
-			want: []string{"--model", "e.gguf", "--n-gpu-layers", "0", "--embedding", "--pooling", "mean", "--ubatch-size", "8192", "--host", "localhost", "--port", "1", "--no-ui"},
+			want: []string{"--model", "e.gguf", "--n-gpu-layers", "0", "--batch-size", "8192", "--embedding", "--pooling", "mean", "--ubatch-size", "8192", "--embd-normalize", "2", "--host", "localhost", "--port", "1", "--no-ui"},
 		},
 		{
 			name: "rerank",
@@ -73,5 +89,15 @@ func TestBuildEmbeddingCommandRejectsInvalidUBatchSize(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("zero ubatch-size was accepted")
+	}
+}
+
+func TestBuildEmbeddingCommandRejectsBatchSmallerThanUBatch(t *testing.T) {
+	_, err := BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{
+		Model: "e.gguf", Host: "localhost", Port: 29856, Pooling: "last",
+		BatchSize: 2048, UBatchSize: 8192,
+	})
+	if err == nil {
+		t.Fatal("batch-size smaller than ubatch-size was accepted")
 	}
 }

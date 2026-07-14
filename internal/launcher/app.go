@@ -185,11 +185,23 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 	set.StringVar(&gpu, "gpu-layers", gpu, "GPU 层数: auto/all/非负整数")
 	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的别名")
 	ctx := set.Int("ctx-size", app.Config.Server.ContextSize, "上下文长度，0 使用模型默认")
+	threads := set.Int("threads", app.Config.Server.Threads, "生成线程数，-1 自动")
+	batchDefault := app.Config.Server.BatchSize
+	ubatchDefault := app.Config.Server.UBatchSize
+	if mode == ModeEmbedding {
+		batchDefault = app.Config.Embedding.BatchSize
+		ubatchDefault = app.Config.Embedding.UBatchSize
+	}
+	batchSize := set.Int("batch-size", batchDefault, "逻辑批次大小")
+	ubatchSize := set.Int("ubatch-size", ubatchDefault, "物理批次大小")
+	flashAttention := set.String("flash-attn", app.Config.Server.FlashAttention, "Flash Attention: auto/on/off")
+	parallel := set.Int("parallel", app.Config.Server.Parallel, "服务并发槽位数，-1 自动")
 	ui := set.Bool("ui", app.Config.Server.UI, "启用 Web UI（可用 --ui=false）")
 	mmproj := set.String("mmproj", "", "mmproj 文件路径（serve）")
 	imageMinTokens := set.Int("image-min-tokens", 0, "最小图片 token 数")
+	imageMaxTokens := set.Int("image-max-tokens", 0, "最大图片 token 数")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "Embedding pooling: mean/cls/last/rank/none")
-	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "Embedding 物理批次大小")
+	normalize := set.Int("embd-normalize", app.Config.Embedding.Normalize, "Embedding 归一化方式，官方默认 2")
 	if err := set.Parse(launcherArgs); err != nil {
 		return 2, err
 	}
@@ -222,9 +234,12 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 		return 1, err
 	}
 	command, err := BuildServerCommand(mode, app.Paths.Server, app.Root, ServerOptions{
-		Model: selected.Path, Mmproj: mmprojPath, ImageMinTokens: *imageMinTokens,
+		Model: selected.Path, Mmproj: mmprojPath, ImageMinTokens: *imageMinTokens, ImageMaxTokens: *imageMaxTokens,
 		Host: *host, Port: *port, GPULayers: gpu, ContextSize: *ctx, UI: *ui,
-		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize, Extra: forwarded,
+		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
+		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
+		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Normalize: *normalize, NormalizeSet: mode == ModeEmbedding,
+		Extra: forwarded,
 	})
 	if err != nil {
 		return 1, err
@@ -248,6 +263,10 @@ func (app *Application) runChatSubcommand(args []string) (int, error) {
 	set.StringVar(&gpu, "gpu-layers", gpu, "GPU 层数")
 	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的别名")
 	ctx := set.Int("ctx-size", app.Config.Server.ContextSize, "上下文长度")
+	threads := set.Int("threads", app.Config.Server.Threads, "生成线程数，-1 自动")
+	batchSize := set.Int("batch-size", app.Config.Server.BatchSize, "逻辑批次大小")
+	ubatchSize := set.Int("ubatch-size", app.Config.Server.UBatchSize, "物理批次大小")
+	flashAttention := set.String("flash-attn", app.Config.Server.FlashAttention, "Flash Attention: auto/on/off")
 	if err := set.Parse(launcherArgs); err != nil {
 		return 2, err
 	}
@@ -268,7 +287,11 @@ func (app *Application) runChatSubcommand(args []string) (int, error) {
 	if err := requireFile(cli, "llama-cli.exe"); err != nil {
 		return 1, err
 	}
-	command, err := BuildChatCommand(cli, app.Root, ServerOptions{Model: selected.Path, GPULayers: gpu, ContextSize: *ctx, Extra: forwarded})
+	command, err := BuildChatCommand(cli, app.Root, ServerOptions{
+		Model: selected.Path, GPULayers: gpu, ContextSize: *ctx,
+		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
+		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Extra: forwarded,
+	})
 	if err != nil {
 		return 1, err
 	}
@@ -285,11 +308,17 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	set.StringVar(&gpu, "gpu-layers", gpu, "所有 Router 模型的 GPU 层数")
 	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的别名")
 	ctx := set.Int("ctx-size", app.Config.Server.ContextSize, "所有 Router 模型的上下文长度")
+	threads := set.Int("threads", app.Config.Server.Threads, "生成线程数，-1 自动")
+	batchSize := set.Int("batch-size", app.Config.Server.BatchSize, "逻辑批次大小")
+	ubatchSize := set.Int("ubatch-size", app.Config.Server.UBatchSize, "通用物理批次大小")
+	flashAttention := set.String("flash-attn", app.Config.Server.FlashAttention, "Flash Attention: auto/on/off")
+	parallel := set.Int("parallel", app.Config.Server.Parallel, "服务并发槽位数，-1 自动")
 	ui := set.Bool("ui", app.Config.Server.UI, "启用 Web UI")
 	modelsMax := set.Int("models-max", app.Config.Router.ModelsMax, "最多同时加载的模型数，0 不限制")
 	autoload := set.Bool("autoload", app.Config.Router.Autoload, "按请求自动加载模型")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "自动 preset 中 Embedding pooling")
-	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "自动 preset 中 Embedding 物理批次大小")
+	embeddingBatchSize := set.Int("embedding-batch-size", app.Config.Embedding.BatchSize, "自动 preset 中 Embedding 逻辑批次大小")
+	embeddingUBatchSize := set.Int("embedding-ubatch-size", app.Config.Embedding.UBatchSize, "自动 preset 中 Embedding 物理批次大小")
 	if err := set.Parse(launcherArgs); err != nil {
 		return 2, err
 	}
@@ -299,8 +328,14 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	if err := ValidatePooling(*pooling); err != nil {
 		return 1, err
 	}
-	if err := ValidateUBatchSize(*ubatchSize); err != nil {
+	if err := ValidateUBatchSize(*embeddingUBatchSize); err != nil {
 		return 1, err
+	}
+	if err := ValidatePositive("embedding-batch-size", *embeddingBatchSize); err != nil {
+		return 1, err
+	}
+	if err := ValidateBatchPair(*embeddingBatchSize, *embeddingUBatchSize); err != nil {
+		return 1, fmt.Errorf("Embedding %w", err)
 	}
 	if strings.TrimSpace(*host) == "" {
 		return 1, errors.New("监听地址不能为空")
@@ -311,10 +346,31 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	if err := ValidateGPULayers(gpu); err != nil {
 		return 1, err
 	}
+	if err := ValidateThreads(*threads); err != nil {
+		return 1, err
+	}
+	if err := ValidatePositive("batch-size", *batchSize); err != nil {
+		return 1, err
+	}
+	if err := ValidateUBatchSize(*ubatchSize); err != nil {
+		return 1, err
+	}
+	if err := ValidateBatchPair(*batchSize, *ubatchSize); err != nil {
+		return 1, err
+	}
+	if err := ValidateFlashAttention(*flashAttention); err != nil {
+		return 1, err
+	}
+	if err := ValidateParallel(*parallel); err != nil {
+		return 1, err
+	}
 	if *ctx < 0 || *modelsMax < 0 {
 		return 1, errors.New("ctx-size 和 models-max 不能小于 0")
 	}
-	preset, manual, models, err := PrepareRouter(app.Paths, PresetOptions{GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize})
+	preset, manual, models, err := PrepareRouter(app.Paths, PresetOptions{
+		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)),
+		BatchSize: *embeddingBatchSize, UBatchSize: *embeddingUBatchSize,
+	})
 	if err != nil {
 		return 1, err
 	}
@@ -323,6 +379,8 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	}
 	command, err := BuildRouterCommand(app.Paths.Server, app.Root, RouterOptions{
 		Preset: preset, Host: *host, Port: *port, GPULayers: gpu, ContextSize: *ctx,
+		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
+		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
 		UI: *ui, ModelsMax: *modelsMax, Autoload: *autoload, Extra: forwarded,
 	})
 	if err != nil {
@@ -346,7 +404,9 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的别名")
 	ctx := set.Int("ctx-size", app.Config.Server.ContextSize, "每个 preset 的上下文长度")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "Embedding pooling")
+	batchSize := set.Int("batch-size", app.Config.Embedding.BatchSize, "Embedding 逻辑批次大小")
 	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "Embedding 物理批次大小")
+	mmprojAuto := set.Bool("mmproj-auto", true, "按文件名前缀自动匹配 mmproj")
 	launcherArgs, forwarded := splitForwarded(args)
 	if len(forwarded) != 0 {
 		return 2, errors.New("router-config 不接受 -- 后的转发参数")
@@ -369,12 +429,19 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 	if err := ValidateUBatchSize(*ubatchSize); err != nil {
 		return 1, err
 	}
+	if err := ValidatePositive("batch-size", *batchSize); err != nil {
+		return 1, err
+	}
+	if err := ValidateBatchPair(*batchSize, *ubatchSize); err != nil {
+		return 1, fmt.Errorf("Embedding %w", err)
+	}
 	models, projectors, err := CollectRouterModels(app.Paths)
 	if err != nil {
 		return 1, err
 	}
 	content := RenderRouterPreset(models, projectors, PresetOptions{
-		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize, Manual: true,
+		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)),
+		BatchSize: *batchSize, UBatchSize: *ubatchSize, DisableMmprojAuto: !*mmprojAuto, Manual: true,
 	})
 	if err := WriteRouterPreset(app.Paths.RouterManual, content, *force); err != nil {
 		return 1, err

@@ -15,7 +15,11 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Server.GPULayers != "auto" || config.Server.UI {
 		t.Fatalf("unexpected GPU/UI defaults: %#v", config.Server)
 	}
-	if config.Embedding.Pooling != "last" || config.Embedding.UBatchSize != 8192 {
+	if config.Server.ContextSize != 0 || config.Server.Threads != -1 || config.Server.BatchSize != 2048 ||
+		config.Server.UBatchSize != 512 || config.Server.FlashAttention != "auto" || config.Server.Parallel != -1 {
+		t.Fatalf("unexpected official runtime defaults: %#v", config.Server)
+	}
+	if config.Embedding.Pooling != "last" || config.Embedding.BatchSize != 8192 || config.Embedding.UBatchSize != 8192 || config.Embedding.Normalize != 2 {
 		t.Fatalf("unexpected embedding defaults: %#v", config.Embedding)
 	}
 	if config.Router.ModelsMax != 1 || !config.Router.Autoload {
@@ -36,7 +40,7 @@ func TestLoadConfigMergesWithDefaults(t *testing.T) {
 	if created {
 		t.Fatal("existing config reported as created")
 	}
-	if config.Server.Port != 31000 || config.Server.Host != "127.0.0.1" || config.Embedding.Pooling != "mean" || config.Embedding.UBatchSize != 8192 {
+	if config.Server.Port != 31000 || config.Server.Host != "127.0.0.1" || config.Embedding.Pooling != "mean" || config.Embedding.BatchSize != 8192 || config.Embedding.UBatchSize != 8192 {
 		t.Fatalf("config precedence/merge failed: %#v", config)
 	}
 }
@@ -51,7 +55,7 @@ func TestLoadLegacyEmptyPoolingUsesNewDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Embedding.Pooling != "last" || config.Embedding.UBatchSize != 8192 {
+	if config.Embedding.Pooling != "last" || config.Embedding.BatchSize != 8192 || config.Embedding.UBatchSize != 8192 {
 		t.Fatalf("legacy embedding defaults were not migrated: %#v", config.Embedding)
 	}
 }
@@ -118,5 +122,17 @@ func TestInvalidConfig(t *testing.T) {
 	}
 	if _, _, _, err := LoadOrCreateConfig(root, ""); err == nil {
 		t.Fatal("invalid ubatch-size was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"server":{"flash_attention":"fast"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := LoadOrCreateConfig(root, ""); err == nil {
+		t.Fatal("invalid flash-attn was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"embedding":{"batch_size":2048,"ubatch_size":8192}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := LoadOrCreateConfig(root, ""); err == nil {
+		t.Fatal("embedding batch-size smaller than ubatch-size was accepted")
 	}
 }
