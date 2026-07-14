@@ -13,6 +13,7 @@ type PresetOptions struct {
 	GPULayers   string
 	ContextSize int
 	Pooling     string
+	UBatchSize  int
 	Manual      bool
 }
 
@@ -105,6 +106,9 @@ func RenderRouterPreset(models, projectors []ModelFile, options PresetOptions) s
 			lines = append(lines, "embedding = true")
 			if options.Pooling != "" {
 				lines = append(lines, "pooling = "+options.Pooling)
+			}
+			if options.UBatchSize > 0 {
+				lines = append(lines, fmt.Sprintf("ubatch-size = %d", options.UBatchSize))
 			}
 		case RerankModel:
 			lines = append(lines, "reranking = true")

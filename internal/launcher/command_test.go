@@ -28,9 +28,9 @@ func TestBuildCommands(t *testing.T) {
 		{
 			name: "embedding",
 			build: func() (Command, error) {
-				return BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{Model: "e.gguf", Host: "localhost", Port: 1, GPULayers: "0", Pooling: "mean"})
+				return BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{Model: "e.gguf", Host: "localhost", Port: 1, GPULayers: "0", Pooling: "mean", UBatchSize: 8192})
 			},
-			want: []string{"--model", "e.gguf", "--n-gpu-layers", "0", "--embedding", "--pooling", "mean", "--host", "localhost", "--port", "1", "--no-ui"},
+			want: []string{"--model", "e.gguf", "--n-gpu-layers", "0", "--embedding", "--pooling", "mean", "--ubatch-size", "8192", "--host", "localhost", "--port", "1", "--no-ui"},
 		},
 		{
 			name: "rerank",
@@ -64,5 +64,14 @@ func TestBuildCommands(t *testing.T) {
 				t.Fatalf("args mismatch\n got: %#v\nwant: %#v", command.Args, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildEmbeddingCommandRejectsInvalidUBatchSize(t *testing.T) {
+	_, err := BuildServerCommand(ModeEmbedding, "server.exe", ".", ServerOptions{
+		Model: "e.gguf", Host: "localhost", Port: 29856, Pooling: "last",
+	})
+	if err == nil {
+		t.Fatal("zero ubatch-size was accepted")
 	}
 }

@@ -43,7 +43,8 @@ type ServerConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Pooling string `json:"pooling"`
+	Pooling    string `json:"pooling"`
+	UBatchSize int    `json:"ubatch_size"`
 }
 
 type RouterConfig struct {
@@ -69,7 +70,8 @@ func DefaultConfig() Config {
 			GPULayers: "auto",
 			UI:        false,
 		},
-		Router: RouterConfig{ModelsMax: 1, Autoload: true},
+		Embedding: EmbeddingConfig{Pooling: "last", UBatchSize: 8192},
+		Router:    RouterConfig{ModelsMax: 1, Autoload: true},
 	}
 }
 
@@ -142,6 +144,11 @@ func LoadOrCreateConfig(root, configPath string) (Config, string, bool, error) {
 		}
 		return Config{}, configPath, false, fmt.Errorf("配置文件损坏 %s: %w", configPath, err)
 	}
+	// Older generated configs used an empty pooling value. Treat that legacy
+	// placeholder as unset so upgrades receive the new default.
+	if strings.TrimSpace(config.Embedding.Pooling) == "" {
+		config.Embedding.Pooling = DefaultConfig().Embedding.Pooling
+	}
 	if err := ValidateConfig(config); err != nil {
 		return Config{}, configPath, false, err
 	}
@@ -179,6 +186,9 @@ func ValidateConfig(config Config) error {
 	if err := ValidatePooling(config.Embedding.Pooling); err != nil {
 		return fmt.Errorf("配置错误: %w", err)
 	}
+	if err := ValidateUBatchSize(config.Embedding.UBatchSize); err != nil {
+		return fmt.Errorf("配置错误: %w", err)
+	}
 	if config.Router.ModelsMax < 0 {
 		return errors.New("配置错误: router.models_max 不能小于 0")
 	}
@@ -211,6 +221,13 @@ func ValidatePooling(value string) error {
 	default:
 		return fmt.Errorf("pooling 必须是 none、mean、cls、last、rank 之一或留空，当前为 %q", value)
 	}
+}
+
+func ValidateUBatchSize(value int) error {
+	if value < 1 {
+		return fmt.Errorf("ubatch-size 必须是正整数，当前为 %d", value)
+	}
+	return nil
 }
 
 type ResolvedPaths struct {

@@ -122,7 +122,7 @@ llama.cpp/
 0. 退出
 ```
 
-菜单只读取 `launcher.json`，不会把交互选择写回配置。生成模型可从 `mmproj/` 中选择投影文件；启动器会按文件名公共前缀给出自动匹配项。
+菜单只读取 `launcher.json`，不会把交互选择写回配置。生成模型可从 `mmproj/` 中选择投影文件；启动器会按文件名公共前缀给出自动匹配项。每种启动模式在确认前都可填写一行自定义 llama.cpp 参数，留空即跳过；Embedding 模式还会单独询问 pooling 和 ubatch-size，直接回车使用 `last` 与 `8192`。
 
 ## 子命令
 
@@ -135,8 +135,11 @@ llama.cpp/
 # 多模态模型
 .\bin\llama-launcher.exe serve --model Qwen-VL.gguf --mmproj mmproj-Qwen-VL-F16.gguf
 
-# Embedding；不指定 pooling 时由模型元数据决定
-.\bin\llama-launcher.exe embedding --model bge-m3.gguf --pooling mean
+# Embedding；不指定时默认 --pooling last --ubatch-size 8192
+.\bin\llama-launcher.exe embedding --model bge-m3.gguf
+
+# 显式覆盖 Embedding 参数
+.\bin\llama-launcher.exe embedding --model bge-m3.gguf --pooling mean --ubatch-size 4096
 
 # Rerank 专用模式
 .\bin\llama-launcher.exe rerank --model bge-reranker-v2-m3.gguf
@@ -155,7 +158,7 @@ llama.cpp/
 .\bin\llama-launcher.exe serve --model Qwen.gguf -- --threads 8 --flash-attn on
 ```
 
-通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size` 和 `--ui`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
+通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size` 和 `--ui`。Embedding 还支持 `--pooling` 和 `--ubatch-size`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
 
 配置优先级固定为：命令行 flags > `launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。
 
@@ -183,7 +186,8 @@ llama.cpp/
     "ui": false
   },
   "embedding": {
-    "pooling": ""
+    "pooling": "last",
+    "ubatch_size": 8192
   },
   "router": {
     "models_max": 1,
@@ -192,7 +196,7 @@ llama.cpp/
 }
 ```
 
-`embedding.pooling` 留空时使用模型元数据，也可设为 `none`、`mean`、`cls`、`last` 或 `rank`。所有路径均可改为绝对路径；Windows 盘符和 UNC 路径受支持。
+`embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.ubatch_size` 默认为 `8192`，且必须是正整数。所有路径均可改为绝对路径；Windows 盘符和 UNC 路径受支持。
 
 ## API 示例
 
@@ -225,7 +229,7 @@ GET http://127.0.0.1:29856/models
 }
 ```
 
-自动 Router preset 同时收录三类目录：普通模型可自动写入匹配的 `mmproj`，Embedding preset 写入 `embedding = true` 和可选 pooling，Rerank preset 写入 `reranking = true`。
+自动 Router preset 同时收录三类目录：普通模型可自动写入匹配的 `mmproj`，Embedding preset 写入 `embedding = true`、pooling 和 ubatch-size，Rerank preset 写入 `reranking = true`。
 
 ## 进程与退出码
 

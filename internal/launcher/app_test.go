@@ -66,7 +66,7 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
-	in := bytes.NewBufferString("1\n1\nn\n0\n")
+	in := bytes.NewBufferString("1\n1\n\nn\n0\n")
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
 	code := Main([]string{"--root", root}, in, out, errOut, fake)
@@ -78,6 +78,29 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), buildversion.Version) {
 		t.Fatalf("menu header does not contain version %q: %s", buildversion.Version, out.String())
+	}
+}
+
+func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	touchFile(t, filepath.Join(root, "embeddings", "embed.gguf"))
+	in := bytes.NewBufferString("2\n1\n\n\n--threads 8 --log-prefix \"hello world\"\ny\n0\n")
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	fake := &fakeExecutor{}
+	code := Main([]string{"--root", root}, in, out, errOut, fake)
+	if code != 0 || len(fake.commands) != 1 {
+		t.Fatalf("unexpected menu result: code=%d calls=%d stderr=%s", code, len(fake.commands), errOut.String())
+	}
+	wantTail := []string{
+		"--embedding", "--pooling", "last", "--ubatch-size", "8192",
+		"--host", "127.0.0.1", "--port", "29856", "--no-ui",
+		"--threads", "8", "--log-prefix", "hello world",
+	}
+	args := fake.commands[0].Args
+	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
+		t.Fatalf("embedding defaults/custom arguments mismatch:\n got: %#v\nwant tail: %#v", args, wantTail)
 	}
 }
 

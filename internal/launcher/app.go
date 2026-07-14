@@ -189,6 +189,7 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 	mmproj := set.String("mmproj", "", "mmproj 文件路径（serve）")
 	imageMinTokens := set.Int("image-min-tokens", 0, "最小图片 token 数")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "Embedding pooling: mean/cls/last/rank/none")
+	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "Embedding 物理批次大小")
 	if err := set.Parse(launcherArgs); err != nil {
 		return 2, err
 	}
@@ -223,7 +224,7 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 	command, err := BuildServerCommand(mode, app.Paths.Server, app.Root, ServerOptions{
 		Model: selected.Path, Mmproj: mmprojPath, ImageMinTokens: *imageMinTokens,
 		Host: *host, Port: *port, GPULayers: gpu, ContextSize: *ctx, UI: *ui,
-		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Extra: forwarded,
+		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize, Extra: forwarded,
 	})
 	if err != nil {
 		return 1, err
@@ -288,6 +289,7 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	modelsMax := set.Int("models-max", app.Config.Router.ModelsMax, "最多同时加载的模型数，0 不限制")
 	autoload := set.Bool("autoload", app.Config.Router.Autoload, "按请求自动加载模型")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "自动 preset 中 Embedding pooling")
+	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "自动 preset 中 Embedding 物理批次大小")
 	if err := set.Parse(launcherArgs); err != nil {
 		return 2, err
 	}
@@ -295,6 +297,9 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 		return 2, fmt.Errorf("无法识别的参数 %q；额外参数请放在 -- 之后", set.Args())
 	}
 	if err := ValidatePooling(*pooling); err != nil {
+		return 1, err
+	}
+	if err := ValidateUBatchSize(*ubatchSize); err != nil {
 		return 1, err
 	}
 	if strings.TrimSpace(*host) == "" {
@@ -309,7 +314,7 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 	if *ctx < 0 || *modelsMax < 0 {
 		return 1, errors.New("ctx-size 和 models-max 不能小于 0")
 	}
-	preset, manual, models, err := PrepareRouter(app.Paths, PresetOptions{GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling))})
+	preset, manual, models, err := PrepareRouter(app.Paths, PresetOptions{GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize})
 	if err != nil {
 		return 1, err
 	}
@@ -341,6 +346,7 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的别名")
 	ctx := set.Int("ctx-size", app.Config.Server.ContextSize, "每个 preset 的上下文长度")
 	pooling := set.String("pooling", app.Config.Embedding.Pooling, "Embedding pooling")
+	ubatchSize := set.Int("ubatch-size", app.Config.Embedding.UBatchSize, "Embedding 物理批次大小")
 	launcherArgs, forwarded := splitForwarded(args)
 	if len(forwarded) != 0 {
 		return 2, errors.New("router-config 不接受 -- 后的转发参数")
@@ -360,12 +366,15 @@ func (app *Application) runRouterConfigSubcommand(args []string) (int, error) {
 	if err := ValidatePooling(*pooling); err != nil {
 		return 1, err
 	}
+	if err := ValidateUBatchSize(*ubatchSize); err != nil {
+		return 1, err
+	}
 	models, projectors, err := CollectRouterModels(app.Paths)
 	if err != nil {
 		return 1, err
 	}
 	content := RenderRouterPreset(models, projectors, PresetOptions{
-		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Manual: true,
+		GPULayers: gpu, ContextSize: *ctx, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), UBatchSize: *ubatchSize, Manual: true,
 	})
 	if err := WriteRouterPreset(app.Paths.RouterManual, content, *force); err != nil {
 		return 1, err

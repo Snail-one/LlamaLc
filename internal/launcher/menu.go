@@ -82,7 +82,19 @@ func (m *menu) runChoice(choice int) error {
 		if err != nil {
 			return err
 		}
-		return m.confirmAndRun("embedding", []string{"--model", model.Path})
+		pooling, err := m.readPooling(m.app.Config.Embedding.Pooling)
+		if err != nil {
+			return err
+		}
+		ubatchSize, err := m.readPositiveInt("物理批次大小 --ubatch-size", m.app.Config.Embedding.UBatchSize)
+		if err != nil {
+			return err
+		}
+		return m.confirmAndRun("embedding", []string{
+			"--model", model.Path,
+			"--pooling", pooling,
+			"--ubatch-size", strconv.Itoa(ubatchSize),
+		})
 	case 3:
 		model, err := m.selectModel(m.app.Paths.Rerank, RerankModel, ggufExtension)
 		if err != nil {
@@ -161,6 +173,14 @@ func (m *menu) selectProjector(model ModelFile, projectors []ModelFile) (*ModelF
 }
 
 func (m *menu) confirmAndRun(command string, args []string) error {
+	extra, err := m.readCustomArguments()
+	if err != nil {
+		return err
+	}
+	if len(extra) > 0 {
+		args = append(args, "--")
+		args = append(args, extra...)
+	}
 	ok, err := m.readYesNo("确认启动", true)
 	if err != nil {
 		return err
@@ -179,6 +199,55 @@ func (m *menu) confirmAndRun(command string, args []string) error {
 		fmt.Fprintln(m.app.Stdout, "进程已结束。")
 	}
 	return nil
+}
+
+func (m *menu) readPooling(defaultValue string) (string, error) {
+	for {
+		line, err := m.readLine(fmt.Sprintf("Pooling --pooling [%s]: ", defaultValue))
+		if err != nil {
+			return "", err
+		}
+		if line == "" {
+			line = defaultValue
+		}
+		line = strings.ToLower(strings.TrimSpace(line))
+		if err := ValidatePooling(line); err == nil {
+			return line, nil
+		} else {
+			fmt.Fprintln(m.app.Stderr, "错误:", err)
+		}
+	}
+}
+
+func (m *menu) readPositiveInt(prompt string, defaultValue int) (int, error) {
+	for {
+		line, err := m.readLine(fmt.Sprintf("%s [%d]: ", prompt, defaultValue))
+		if err != nil {
+			return 0, err
+		}
+		if line == "" {
+			return defaultValue, nil
+		}
+		value, err := strconv.Atoi(line)
+		if err == nil && ValidateUBatchSize(value) == nil {
+			return value, nil
+		}
+		fmt.Fprintln(m.app.Stderr, "请输入正整数。")
+	}
+}
+
+func (m *menu) readCustomArguments() ([]string, error) {
+	for {
+		line, err := m.readLine("自定义 llama.cpp 参数（留空跳过）: ")
+		if err != nil {
+			return nil, err
+		}
+		args, err := SplitCustomArguments(line)
+		if err == nil {
+			return args, nil
+		}
+		fmt.Fprintln(m.app.Stderr, "错误:", err)
+	}
 }
 
 func (m *menu) readChoice(prompt string, defaultValue, min, max int) (int, error) {

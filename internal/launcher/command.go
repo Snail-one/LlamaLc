@@ -26,6 +26,7 @@ type ServerOptions struct {
 	ContextSize    int
 	UI             bool
 	Pooling        string
+	UBatchSize     int
 	Extra          []string
 }
 
@@ -69,6 +70,11 @@ func BuildServerCommand(mode Mode, executable, root string, options ServerOption
 	if err := ValidatePooling(options.Pooling); err != nil {
 		return Command{}, err
 	}
+	if mode == ModeEmbedding {
+		if err := ValidateUBatchSize(options.UBatchSize); err != nil {
+			return Command{}, err
+		}
+	}
 
 	args := []string{"--model", options.Model}
 	if options.ContextSize > 0 {
@@ -89,6 +95,7 @@ func BuildServerCommand(mode Mode, executable, root string, options ServerOption
 		if options.Pooling != "" {
 			args = append(args, "--pooling", options.Pooling)
 		}
+		args = append(args, "--ubatch-size", strconv.Itoa(options.UBatchSize))
 	case ModeRerank:
 		args = append(args, "--reranking")
 	}

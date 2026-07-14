@@ -15,6 +15,9 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Server.GPULayers != "auto" || config.Server.UI {
 		t.Fatalf("unexpected GPU/UI defaults: %#v", config.Server)
 	}
+	if config.Embedding.Pooling != "last" || config.Embedding.UBatchSize != 8192 {
+		t.Fatalf("unexpected embedding defaults: %#v", config.Embedding)
+	}
 	if config.Router.ModelsMax != 1 || !config.Router.Autoload {
 		t.Fatalf("unexpected router defaults: %#v", config.Router)
 	}
@@ -33,8 +36,23 @@ func TestLoadConfigMergesWithDefaults(t *testing.T) {
 	if created {
 		t.Fatal("existing config reported as created")
 	}
-	if config.Server.Port != 31000 || config.Server.Host != "127.0.0.1" || config.Embedding.Pooling != "mean" {
+	if config.Server.Port != 31000 || config.Server.Host != "127.0.0.1" || config.Embedding.Pooling != "mean" || config.Embedding.UBatchSize != 8192 {
 		t.Fatalf("config precedence/merge failed: %#v", config)
+	}
+}
+
+func TestLoadLegacyEmptyPoolingUsesNewDefaults(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"embedding":{"pooling":""}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, _, _, err := LoadOrCreateConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Embedding.Pooling != "last" || config.Embedding.UBatchSize != 8192 {
+		t.Fatalf("legacy embedding defaults were not migrated: %#v", config.Embedding)
 	}
 }
 
@@ -94,5 +112,11 @@ func TestInvalidConfig(t *testing.T) {
 	}
 	if _, _, _, err := LoadOrCreateConfig(root, ""); err == nil {
 		t.Fatal("invalid pooling was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"embedding":{"ubatch_size":-1}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := LoadOrCreateConfig(root, ""); err == nil {
+		t.Fatal("invalid ubatch-size was accepted")
 	}
 }

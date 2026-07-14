@@ -25,10 +25,10 @@ func TestRenderRouterPresetAllKinds(t *testing.T) {
 		{ID: "rank.gguf", Path: `C:\rerank\rank.gguf`, Kind: RerankModel},
 	}
 	projectors := []ModelFile{{ID: "mmproj-chat-F16.gguf", Path: `C:\mmproj\mmproj-chat-F16.gguf`}}
-	content := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean"})
+	content := RenderRouterPreset(models, projectors, PresetOptions{GPULayers: "auto", Pooling: "mean", UBatchSize: 8192})
 	for _, expected := range []string{
 		"version = 1", "[chat.gguf]", `mmproj = C:\mmproj\mmproj-chat-F16.gguf`,
-		"[embed.gguf]", "embedding = true", "pooling = mean",
+		"[embed.gguf]", "embedding = true", "pooling = mean", "ubatch-size = 8192",
 		"[rank.gguf]", "reranking = true",
 	} {
 		if !strings.Contains(content, expected) {

@@ -17,7 +17,8 @@
     "ui": false
   },
   "embedding": {
-    "pooling": ""
+    "pooling": "last",
+    "ubatch_size": 8192
   },
   "router": {
     "models_max": 1,
