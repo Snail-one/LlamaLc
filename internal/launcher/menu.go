@@ -28,6 +28,7 @@ func (app *Application) RunMenu() int {
 		fmt.Fprintf(app.Stdout, `
 llama.cpp Go 启动器 %s
 根目录: %s
+提示: 操作中输入 q 返回主菜单（主菜单输入 q 退出）
 
   1. 单模型 API 服务
   2. Embedding API
@@ -35,18 +36,18 @@ llama.cpp Go 启动器 %s
   4. 生成手动 Router 配置
   5. 多模型 Router
   6. CLI 命令行聊天
-  0. 退出
+  q. 退出
 `, buildversion.Version, app.Root)
-		choice, err := m.readChoice("请选择", 1, 0, 6)
+		choice, err := m.readChoice("请选择", 1, 1, 6)
 		if errors.Is(err, io.EOF) {
+			return 0
+		}
+		if errors.Is(err, errMenuBack) {
 			return 0
 		}
 		if err != nil {
 			fmt.Fprintln(app.Stderr, "错误:", err)
 			continue
-		}
-		if choice == 0 {
-			return 0
 		}
 		if err := m.runChoice(choice); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -273,16 +274,13 @@ func (m *menu) selectModel(directory string, kind ModelKind, extensions map[stri
 		return ModelFile{}, fmt.Errorf("目录中没有找到支持的模型: %s", directory)
 	}
 	fmt.Fprintln(m.app.Stdout, "\n发现模型:")
-	fmt.Fprintln(m.app.Stdout, "   0. 返回主菜单")
+	fmt.Fprintln(m.app.Stdout, "   q. 返回主菜单")
 	for i, model := range models {
 		fmt.Fprintf(m.app.Stdout, "  %2d. %s  (%s)\n", i+1, model.ID, formatSize(model.Size))
 	}
-	choice, err := m.readChoice("请选择模型", 1, 0, len(models))
+	choice, err := m.readChoice("请选择模型", 1, 1, len(models))
 	if err != nil {
 		return ModelFile{}, err
-	}
-	if choice == 0 {
-		return ModelFile{}, errMenuBack
 	}
 	return models[choice-1], nil
 }
@@ -291,6 +289,7 @@ func (m *menu) selectProjector(model ModelFile, projectors []ModelFile) (*ModelF
 	recommended := FindMatchingMmproj(model, projectors)
 	defaultChoice := 0
 	fmt.Fprintln(m.app.Stdout, "\n可用 mmproj:")
+	fmt.Fprintln(m.app.Stdout, "   q. 返回主菜单")
 	fmt.Fprintln(m.app.Stdout, "   0. 不使用 mmproj")
 	for i, projector := range projectors {
 		label := ""
@@ -585,6 +584,9 @@ func (m *menu) readLine(prompt string) (string, error) {
 	line = strings.TrimSpace(line)
 	if errors.Is(err, io.EOF) && line == "" {
 		return "", io.EOF
+	}
+	if strings.EqualFold(line, "q") {
+		return "", errMenuBack
 	}
 	return line, nil
 }

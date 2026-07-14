@@ -103,7 +103,7 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 		"",  // custom arguments
 		"n", // cancel after final command preview
 		"",  // pause
-		"0",
+		"q",
 	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
@@ -130,7 +130,7 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 		"", "", // pooling and normalization defaults
 		"", "", "", // network defaults, including disabled UI
 		`--threads 8 --log-prefix "hello world"`,
-		"y", "", "0", // confirm, pause, exit
+		"y", "", "q", // confirm, pause, exit
 	)
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	fake := &fakeExecutor{}
@@ -213,7 +213,7 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	probe := &fakeInstallationProbe{}
-	code := runTestMain(nil, menuInput("0"), out, errOut, &fakeExecutor{}, probe)
+	code := runTestMain(nil, menuInput("q"), out, errOut, &fakeExecutor{}, probe)
 	if code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
@@ -230,6 +230,32 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 		!reflect.DeepEqual(probe.commands[0].Args, []string{"--version"}) || probe.commands[0].Dir != root ||
 		probe.timeouts[0] != 30*time.Second {
 		t.Fatalf("unexpected installation probe: commands=%#v timeouts=%#v", probe.commands, probe.timeouts)
+	}
+}
+
+func TestQReturnsFromInteractivePrompts(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
+
+	tests := []struct {
+		name  string
+		input *bytes.Buffer
+	}{
+		{name: "main menu", input: menuInput("Q")},
+		{name: "model selection", input: menuInput("1", "q", "q")},
+		{name: "parameter prompt", input: menuInput("1", "1", "", "q", "q")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+			executor := &fakeExecutor{}
+			code := runTestMain(nil, test.input, out, errOut, executor, &fakeInstallationProbe{})
+			if code != 0 || len(executor.commands) != 0 {
+				t.Fatalf("q did not return cleanly: code=%d commands=%#v stderr=%q", code, executor.commands, errOut.String())
+			}
+		})
 	}
 }
 
