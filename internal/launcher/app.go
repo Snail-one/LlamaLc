@@ -21,6 +21,13 @@ type Application struct {
 }
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
+	// Keep version inspection side-effect free: it must not create launcher.json,
+	// inspect the executable directory, or initialize a child process.
+	if len(args) == 1 && args[0] == "-v" {
+		fmt.Fprintln(stdout, Version)
+		return 0
+	}
+
 	rootFlag, configFlag, remaining, err := parseGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
@@ -110,6 +117,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `llama.cpp Go 启动器
 
 用法:
+  llama-launcher -v                     只打印版本号并退出
   llama-launcher [--root DIR] [--config FILE] <子命令> [选项] [-- llama.cpp参数]
   llama-launcher                         进入中文交互菜单
 

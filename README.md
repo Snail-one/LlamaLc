@@ -1,5 +1,7 @@
 # llama.cpp Windows Go 启动器
 
+[![CI](https://github.com/Snail-one/LlamaLc/actions/workflows/ci.yml/badge.svg)](https://github.com/Snail-one/LlamaLc/actions/workflows/ci.yml)
+
 一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户只需运行 `llama-launcher.exe`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
 
 实现只使用 Go 标准库。启动参数以 [llama.cpp 官方 Server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) 为准。
@@ -20,6 +22,14 @@ GOOS=windows GOARCH=amd64 go build -o llama-launcher.exe ./cmd/llama-launcher
 ```
 
 项目不提交编译后的 exe。把 `llama-launcher.exe` 放到 llama.cpp Windows 可执行文件所在目录即可。
+
+查看当前版本只使用 `-v`：
+
+```powershell
+.\llama-launcher.exe -v
+```
+
+该命令只打印版本号并退出，不会创建配置或扫描目录。交互菜单标题也会显示相同版本。
 
 ## 目录布局
 
@@ -168,3 +178,14 @@ GET http://127.0.0.1:29856/models
 ## 从旧脚本迁移
 
 PowerShell 与 BAT 业务入口已删除。旧版路径保持兼容：已有 `bin/router-models.ini` 会继续优先使用且不会被自动覆盖；`bin/router-models.auto.ini` 仍是自动生成位置。原先只使用 `models/` 和 `mmproj/` 的用户只需新增 `llama-launcher.exe`，Embedding 与 Rerank 模型分别放入新目录即可。
+
+## CI/CD 与发版
+
+GitHub Actions 会在 `main` push 和 Pull Request 时运行测试、`go vet`、Windows amd64 交叉编译，并保存短期构建产物。推送形如 `v1.0.0` 的 Git tag 会触发正式发版：版本号注入 exe，随后上传 ZIP 和 `SHA256SUMS.txt` 到 GitHub Release。
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Dependabot 每周检查 Go Modules 与 GitHub Actions 更新。

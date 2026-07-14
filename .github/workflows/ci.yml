@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  build:
+    name: Build Windows amd64
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          VERSION: dev-${{ github.sha }}
+        run: >-
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build
+          -trimpath
+          -ldflags "-s -w -X github.com/joker/llama-launcher/internal/launcher.Version=${VERSION}"
+          -o llama-launcher.exe
+          ./cmd/llama-launcher
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: llama-launcher-windows-amd64
+          path: llama-launcher.exe
+          if-no-files-found: error
+          retention-days: 14

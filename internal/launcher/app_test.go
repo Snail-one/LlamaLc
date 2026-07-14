@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,27 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	}
 	if len(fake.commands) != 0 {
 		t.Fatalf("cancelled launch executed process: %#v", fake.commands)
+	}
+	if !strings.Contains(out.String(), Version) {
+		t.Fatalf("menu header does not contain version %q: %s", Version, out.String())
+	}
+}
+
+func TestVersionFlagOnlyPrintsVersion(t *testing.T) {
+	oldVersion := Version
+	Version = "v9.8.7-test"
+	t.Cleanup(func() { Version = oldVersion })
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	fake := &fakeExecutor{}
+	code := Main([]string{"-v"}, bytes.NewBuffer(nil), out, errOut, fake)
+	if code != 0 {
+		t.Fatalf("version returned %d: %s", code, errOut.String())
+	}
+	if out.String() != "v9.8.7-test\n" {
+		t.Fatalf("unexpected version output: %q", out.String())
+	}
+	if errOut.Len() != 0 || len(fake.commands) != 0 {
+		t.Fatalf("version inspection had side effects: stderr=%q commands=%#v", errOut.String(), fake.commands)
 	}
 }

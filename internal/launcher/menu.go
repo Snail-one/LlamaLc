@@ -22,7 +22,7 @@ func (app *Application) RunMenu() int {
 	app.Stdin = m.reader
 	for {
 		fmt.Fprintf(app.Stdout, `
-llama.cpp Go 启动器
+llama.cpp Go 启动器 %s
 根目录: %s
 
   1. 单模型 API 服务
@@ -32,7 +32,7 @@ llama.cpp Go 启动器
   5. 多模型 Router
   6. CLI 命令行聊天
   0. 退出
-`, app.Root)
+`, Version, app.Root)
 		choice, err := m.readChoice("请选择", 1, 0, 6)
 		if errors.Is(err, io.EOF) {
 			return 0
