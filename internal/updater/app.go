@@ -15,7 +15,7 @@ import (
 
 const (
 	stagedLauncherPrefix = ".llama-launcher-new-"
-	stagedUpdaterPrefix  = ".llama-updater-new-"
+	stagedUpdaterPrefix  = ".llamaup-new-"
 )
 
 func Main(args []string, stdout, stderr io.Writer) int {
@@ -71,7 +71,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "用法: llama-updater apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid>")
+	fmt.Fprintln(w, "用法: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid>")
 }
 
 func executableRoot() (string, error) {
@@ -127,7 +127,7 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 	}
 	bin := filepath.Join(root, "bin")
 	launcherTargetName := "llama-launcher"
-	updaterTargetName := "llama-updater"
+	updaterTargetName := "llamaup"
 	if goos == "windows" {
 		launcherTargetName += ".exe"
 		updaterTargetName += ".exe"

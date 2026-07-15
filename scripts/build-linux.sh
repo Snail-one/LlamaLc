@@ -26,5 +26,5 @@ OUTPUT_DIR="${ROOT_DIR}/dist/windows-${TARGET_ARCH}/llama.cpp/bin"
 
 echo "Windows 部署树已生成: ${OUTPUT_DIR}"
 if command -v file >/dev/null 2>&1; then
-    file "${OUTPUT_DIR}/llama-launcher.exe" "${OUTPUT_DIR}/llama-updater.exe"
+    file "${OUTPUT_DIR}/llama-launcher.exe" "${OUTPUT_DIR}/llamaup.exe"
 fi

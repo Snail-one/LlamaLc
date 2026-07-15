@@ -24,9 +24,9 @@ func TestApplyUpdateUsesFixedTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcherTarget := filepath.Join(bin, "llama-launcher")
-	updaterTarget := filepath.Join(bin, "llama-updater")
+	updaterTarget := filepath.Join(bin, "llamaup")
 	launcherSourceName := ".llama-launcher-new-test"
-	updaterSourceName := ".llama-updater-new-test"
+	updaterSourceName := ".llamaup-new-test"
 	for path, content := range map[string]string{
 		launcherTarget:                         "old launcher",
 		updaterTarget:                          "old updater",
@@ -56,5 +56,8 @@ func TestRejectsArbitrarySourceName(t *testing.T) {
 	}
 	if err := validateStagedName(".llama-launcher-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
 		t.Fatal("accepted launcher staging name as updater staging name")
+	}
+	if err := validateStagedName(".llama-updater-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
+		t.Fatal("accepted legacy updater staging name")
 	}
 }

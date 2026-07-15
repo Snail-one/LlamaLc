@@ -527,7 +527,7 @@ func TestCopyExecutableRemovesPartialDestinationOnFailure(t *testing.T) {
 	if err := os.Mkdir(sourceDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	destination := filepath.Join(root, ".llama-updater-new-12345")
+	destination := filepath.Join(root, ".llamaup-new-12345")
 	if err := copyAndSyncExecutable(sourceDirectory, destination); err == nil {
 		t.Fatal("copying a directory unexpectedly succeeded")
 	}
@@ -956,16 +956,19 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ephemeral := filepath.Join(bin, ".llama-updater-run-12345.exe")
-	legacy := filepath.Join(bin, "llama-updater.exe")
+	ephemeral := filepath.Join(bin, ".llamaup-run-12345.exe")
+	legacyEphemeral := filepath.Join(bin, ".llama-updater-run-23456.exe")
+	officialUpdater := filepath.Join(bin, "llamaup.exe")
 	unrelated := filepath.Join(bin, "keep.exe")
-	unsafeDirectory := filepath.Join(bin, ".llama-updater-run-67890.exe")
+	unsafeDirectory := filepath.Join(bin, ".llamaup-run-67890.exe")
 	unmarkedDirectory := filepath.Join(bin, ".launcher-update-12345")
 	markedDirectory := filepath.Join(bin, ".launcher-update-67890")
 	nonGeneratedName := filepath.Join(bin, ".llama-launcher-new-user-notes.exe")
 	touchFile(t, ephemeral)
 	ageForAutomaticCleanup(t, ephemeral)
-	touchFile(t, legacy)
+	touchFile(t, legacyEphemeral)
+	ageForAutomaticCleanup(t, legacyEphemeral)
+	touchFile(t, officialUpdater)
 	touchFile(t, unrelated)
 	touchFile(t, nonGeneratedName)
 	if err := os.Mkdir(unsafeDirectory, 0o755); err != nil {
@@ -989,7 +992,10 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	if _, err := os.Stat(ephemeral); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ephemeral updater residual was not removed: %v", err)
 	}
-	for _, path := range []string{legacy, unrelated, unsafeDirectory, unmarkedDirectory, nonGeneratedName} {
+	if _, err := os.Stat(legacyEphemeral); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy ephemeral updater residual was not removed: %v", err)
+	}
+	for _, path := range []string{officialUpdater, unrelated, unsafeDirectory, unmarkedDirectory, nonGeneratedName} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("cleanup removed %s: %v", path, err)
 		}
@@ -1062,7 +1068,7 @@ func TestPendingCleanupRefusesRegularFile(t *testing.T) {
 func TestStandaloneUpdaterReplacesFixedLauncherTarget(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	launcherPath := filepath.Join(root, "bin", "llama-launcher")
-	updaterPath := filepath.Join(root, "bin", "llama-updater")
+	updaterPath := filepath.Join(root, "bin", "llamaup")
 	if err := os.MkdirAll(filepath.Dir(launcherPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

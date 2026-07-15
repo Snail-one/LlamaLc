@@ -10,7 +10,7 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-for program in llama-launcher llama-updater; do
+for program in llama-launcher llamaup; do
     if [[ ! -d "${ROOT_DIR}/cmd/${program}" ]]; then
         echo "错误: 缺少程序入口 cmd/${program}" >&2
         exit 1
@@ -31,12 +31,21 @@ fi
 OUTPUT_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}/llama.cpp"
 mkdir -p "${OUTPUT_ROOT}/bin"
 
+LEGACY_UPDATER_OUTPUT="${OUTPUT_ROOT}/bin/llama-updater${OUTPUT_SUFFIX}"
+if [[ -d "${LEGACY_UPDATER_OUTPUT}" && ! -L "${LEGACY_UPDATER_OUTPUT}" ]]; then
+    echo "错误: 旧更新器输出路径被目录占用，拒绝清理: ${LEGACY_UPDATER_OUTPUT}" >&2
+    exit 1
+fi
+if [[ -e "${LEGACY_UPDATER_OUTPUT}" || -L "${LEGACY_UPDATER_OUTPUT}" ]]; then
+    rm -f -- "${LEGACY_UPDATER_OUTPUT}"
+fi
+
 LDFLAGS="-s -w"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Version=${VERSION}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Commit=${COMMIT}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.BuildDate=${BUILD_DATE}"
 
-for program in llama-launcher llama-updater; do
+for program in llama-launcher llamaup; do
     output_file="${OUTPUT_ROOT}/bin/${program}${OUTPUT_SUFFIX}"
     (
         cd "${ROOT_DIR}"
@@ -55,7 +64,7 @@ if [[ "${TARGET_OS}" == "windows" ]]; then
     else
         WINRES=(go run github.com/tc-hib/go-winres@v0.3.3)
     fi
-    for program in llama-launcher llama-updater; do
+    for program in llama-launcher llamaup; do
         output_file="${OUTPUT_ROOT}/bin/${program}.exe"
         (
             cd "${ROOT_DIR}"

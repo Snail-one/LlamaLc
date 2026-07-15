@@ -65,6 +65,9 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		fmt.Fprintf(stderr, "错误: 未知子命令 %q\n", remaining[0])
 		return 1
 	}
+	if err := migrateLegacyUpdater(root, goos, stdout); err != nil {
+		fmt.Fprintln(stderr, "警告: 无法迁移旧正式更新器:", err)
+	}
 	manager := updateManagerFactory(root, probe, stdout, stderr)
 	manager.GOOS = goos
 	cleanupAtomicWriteTemps(root, stderr)

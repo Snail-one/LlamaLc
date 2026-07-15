@@ -89,12 +89,10 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 		for _, entry := range entries {
 			name := entry.Name()
 			path := filepath.Join(bin, name)
-			runningUpdaterTemp := numericTempSuffix(name, ".llama-updater-run-", "") ||
-				numericTempSuffix(name, ".llama-updater-run-", ".exe")
+			runningUpdaterTemp := isRunningUpdaterTemp(name)
 			executableTemp := runningUpdaterTemp || numericTempSuffix(name, ".llama-launcher-new-", "") ||
 				numericTempSuffix(name, ".llama-launcher-new-", ".exe") ||
-				numericTempSuffix(name, ".llama-updater-new-", "") ||
-				numericTempSuffix(name, ".llama-updater-new-", ".exe")
+				isStagedUpdaterTemp(name)
 			if executableTemp {
 				if entry.Type().IsRegular() {
 					kind := "启动器更新残留"

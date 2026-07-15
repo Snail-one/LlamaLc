@@ -11,7 +11,7 @@ import (
 
 func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, updaterTarget string, release GitHubRelease) error {
 	bin := filepath.Dir(launcherTarget)
-	newUpdater, err := stageUnixExecutable(updaterSource, bin, ".llama-updater-new-")
+	newUpdater, err := stageUnixExecutable(updaterSource, bin, stagedUpdaterTempPrefix)
 	if err != nil {
 		return err
 	}

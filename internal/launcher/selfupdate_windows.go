@@ -12,11 +12,11 @@ import (
 
 func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, updaterTarget string, release GitHubRelease) error {
 	bin := filepath.Dir(launcherTarget)
-	runningUpdater, err := stageUpdateExecutable(updaterTarget, bin, ".llama-updater-run-*.exe")
+	runningUpdater, err := stageUpdateExecutable(updaterTarget, bin, runningUpdaterTempPrefix+"*.exe")
 	if err != nil {
 		return err
 	}
-	newUpdater, err := stageUpdateExecutable(updaterSource, bin, ".llama-updater-new-*.exe")
+	newUpdater, err := stageUpdateExecutable(updaterSource, bin, stagedUpdaterTempPrefix+"*.exe")
 	if err != nil {
 		_ = os.Remove(runningUpdater)
 		return err

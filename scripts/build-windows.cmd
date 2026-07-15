@@ -38,8 +38,8 @@ if not exist "cmd\llama-launcher" (
     echo Error: cmd\llama-launcher was not found.
     exit /b 1
 )
-if not exist "cmd\llama-updater" (
-    echo Error: cmd\llama-updater was not found.
+if not exist "cmd\llamaup" (
+    echo Error: cmd\llamaup was not found.
     exit /b 1
 )
 
@@ -51,6 +51,15 @@ if not defined MODULE_PATH (
 
 set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
 if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
+if exist "!OUTPUT_DIR!\llama-updater.exe\NUL" (
+    echo Error: legacy updater output path is a directory: !OUTPUT_DIR!\llama-updater.exe
+    exit /b 1
+)
+if exist "!OUTPUT_DIR!\llama-updater.exe" del /F /Q "!OUTPUT_DIR!\llama-updater.exe"
+if exist "!OUTPUT_DIR!\llama-updater.exe" (
+    echo Error: unable to remove legacy updater output: !OUTPUT_DIR!\llama-updater.exe
+    exit /b 1
+)
 
 where go-winres >nul 2>nul
 if errorlevel 1 (
@@ -64,7 +73,7 @@ set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
 set "CGO_ENABLED=0"
 
-for %%P in (llama-launcher llama-updater) do (
+for %%P in (llama-launcher llamaup) do (
     go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\%%P.exe" ".\cmd\%%P"
     if errorlevel 1 (
         echo Build failed: %%P
@@ -72,7 +81,7 @@ for %%P in (llama-launcher llama-updater) do (
     )
 )
 
-for %%P in (llama-launcher llama-updater) do (
+for %%P in (llama-launcher llamaup) do (
     !WINRES_COMMAND! patch --in windows-manifest.json --no-backup "!OUTPUT_DIR!\%%P.exe"
     if errorlevel 1 (
         echo Failed to embed the asInvoker manifest: %%P
@@ -87,7 +96,7 @@ for %%P in (llama-launcher llama-updater) do (
 
 echo Build complete: %CD%\!OUTPUT_DIR!
 echo   llama-launcher.exe
-echo   llama-updater.exe
+echo   llamaup.exe
 echo Version: !VERSION!
 echo Commit: !COMMIT!
 echo Build date: !BUILD_DATE!
