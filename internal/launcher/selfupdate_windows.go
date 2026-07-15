@@ -12,7 +12,7 @@ import (
 )
 
 func (manager *UpdateManager) installLauncherBinary(ctx context.Context, source, target string, release GitHubRelease) error {
-	tool, err := updaterToolEnsurer(ctx, manager, release)
+	tool, err := ephemeralUpdaterPreparer(ctx, manager, release)
 	if err != nil {
 		return fmt.Errorf("无法准备独立更新器: %w", err)
 	}
@@ -32,6 +32,7 @@ func (manager *UpdateManager) installLauncherBinary(ctx context.Context, source,
 	defer func() {
 		if !handoffStarted {
 			_ = os.Remove(temporaryPath)
+			_ = os.Remove(tool)
 		}
 	}()
 	command := exec.Command(tool,

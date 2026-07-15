@@ -10,8 +10,7 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-PROGRAMS=("llama-launcher" "llama-updater")
-for program in "${PROGRAMS[@]}"; do
+for program in llama-launcher llama-updater; do
     if [[ ! -d "${ROOT_DIR}/cmd/${program}" ]]; then
         echo "错误: 缺少程序入口 cmd/${program}" >&2
         exit 1
@@ -31,14 +30,19 @@ if [[ "${TARGET_OS}" == "windows" ]]; then
 fi
 OUTPUT_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}/llama.cpp"
 mkdir -p "${OUTPUT_ROOT}/bin"
+ASSET_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}"
 
 LDFLAGS="-s -w"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Version=${VERSION}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Commit=${COMMIT}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.BuildDate=${BUILD_DATE}"
 
-for program in "${PROGRAMS[@]}"; do
-    output_file="${OUTPUT_ROOT}/bin/${program}${OUTPUT_SUFFIX}"
+for program in llama-launcher llama-updater; do
+    if [[ "${program}" == "llama-launcher" ]]; then
+        output_file="${OUTPUT_ROOT}/bin/${program}${OUTPUT_SUFFIX}"
+    else
+        output_file="${ASSET_ROOT}/llama-updater-${VERSION}-${TARGET_OS}-${TARGET_ARCH}${OUTPUT_SUFFIX}"
+    fi
     (
         cd "${ROOT_DIR}"
         GOOS="${TARGET_OS}" GOARCH="${TARGET_ARCH}" CGO_ENABLED=0 go build \

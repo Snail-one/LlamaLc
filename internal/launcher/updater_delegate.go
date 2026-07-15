@@ -11,13 +11,6 @@ import (
 
 var errUpdaterHandoff = errors.New("已将操作交给独立更新器")
 
-func updaterExecutableName(goos string) string {
-	if goos == "windows" {
-		return "llama-updater.exe"
-	}
-	return "llama-updater"
-}
-
 func updaterAssetName(tag, goos, goarch string) string {
 	ext := ""
 	if goos == "windows" {
@@ -49,11 +42,7 @@ func updaterReleaseAssets(release GitHubRelease, goos, goarch string) (GitHubAss
 	return updater, sums, nil
 }
 
-func ensureUpdaterTool(ctx context.Context, manager *UpdateManager, release GitHubRelease) (string, error) {
-	target := filepath.Join(manager.Root, "bin", updaterExecutableName(manager.GOOS))
-	if updaterToolMatches(target, release.TagName, manager) {
-		return target, nil
-	}
+func prepareEphemeralUpdater(ctx context.Context, manager *UpdateManager, release GitHubRelease) (string, error) {
 	asset, sums, err := updaterReleaseAssets(release, manager.GOOS, manager.GOARCH)
 	if err != nil {
 		return "", err
@@ -94,16 +83,25 @@ func ensureUpdaterTool(ctx context.Context, manager *UpdateManager, release GitH
 	if !updaterToolMatches(source, release.TagName, manager) {
 		return "", fmt.Errorf("独立更新器嵌入版本与 Release %s 不一致", release.TagName)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".llama-updater-new-")
+	temporaryPattern := ".llama-updater-run-*"
+	if manager.GOOS == "windows" {
+		temporaryPattern += ".exe"
+	}
+	temporary, err := os.CreateTemp(filepath.Join(manager.Root, "bin"), temporaryPattern)
 	if err != nil {
 		return "", err
 	}
 	temporaryPath := temporary.Name()
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
 	if err := temporary.Close(); err != nil {
 		return "", err
 	}
 	_ = os.Remove(temporaryPath)
-	defer os.Remove(temporaryPath)
 	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
 		return "", err
 	}
@@ -112,11 +110,9 @@ func ensureUpdaterTool(ctx context.Context, manager *UpdateManager, release GitH
 			return "", err
 		}
 	}
-	if err := replaceFile(temporaryPath, target); err != nil {
-		return "", fmt.Errorf("无法安装独立更新器: %w", err)
-	}
-	fmt.Fprintf(manager.Stdout, "独立更新器 %s 已安装到 %s\n", release.TagName, target)
-	return target, nil
+	keep = true
+	fmt.Fprintf(manager.Stdout, "临时独立更新器 %s 已准备到 %s\n", release.TagName, temporaryPath)
+	return temporaryPath, nil
 }
 
 func updaterToolMatches(path, version string, manager *UpdateManager) bool {
@@ -137,4 +133,4 @@ func updaterToolMatches(path, version string, manager *UpdateManager) bool {
 	return strings.Contains(strings.ToLower(output), "version:   "+strings.ToLower(version))
 }
 
-var updaterToolEnsurer = ensureUpdaterTool
+var ephemeralUpdaterPreparer = prepareEphemeralUpdater

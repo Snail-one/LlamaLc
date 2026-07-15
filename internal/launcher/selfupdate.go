@@ -203,6 +203,24 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
+		isEphemeralUpdater := strings.HasPrefix(name, ".llama-updater-run-")
+		isLegacyUpdater := name == "llama-updater.exe" || name == "llama-updater"
+		if isEphemeralUpdater || isLegacyUpdater {
+			path := filepath.Join(bin, name)
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				fmt.Fprintf(stderr, "警告: 无法检查更新器残留 %s: %v\n", path, infoErr)
+				continue
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				fmt.Fprintf(stderr, "警告: 拒绝清理不是普通文件的更新器残留: %s\n", path)
+				continue
+			}
+			if err := os.Remove(path); err != nil {
+				fmt.Fprintf(stderr, "警告: 无法清理更新器残留 %s: %v\n", path, err)
+			}
+			continue
+		}
 		if !strings.HasPrefix(name, ".llama-launcher-new-") &&
 			!strings.HasPrefix(name, ".llama-updater-new-") &&
 			!strings.HasPrefix(name, ".updater-bootstrap-") &&

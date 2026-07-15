@@ -10,7 +10,7 @@
 
 ### Linux 原生构建
 
-`build-only.sh` 默认构建当前 Linux 架构的 launcher 和独立 updater，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入可直接运行的 `dist/<os>-<arch>/llama.cpp/bin/` 部署树：
+`build-only.sh` 默认构建当前 Linux 架构的 launcher 和最小 updater，自动读取 `go.mod` 模块路径、Git 版本和提交。部署树只包含 launcher；updater 作为按需下载的独立资产放在 `dist/<os>-<arch>/`：
 
 ```sh
 ./build-only.sh
@@ -36,9 +36,9 @@ GOOS=windows GOARCH=amd64 ./build-only.sh
 
 ```text
 dist/linux-amd64/llama.cpp/bin/llama-launcher
-dist/linux-amd64/llama.cpp/bin/llama-updater
+dist/linux-amd64/llama-updater-<version>-linux-amd64
 dist/windows-amd64/llama.cpp/bin/llama-launcher.exe
-dist/windows-amd64/llama.cpp/bin/llama-updater.exe
+dist/windows-amd64/llama-updater-<version>-windows-amd64.exe
 ```
 
 ### Windows 启动器一键构建
@@ -67,7 +67,7 @@ Windows 下双击 `scripts/build-windows.cmd`，或在终端运行：
 .\scripts\build-windows.cmd v1.2.3 arm64
 ```
 
-`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe` 和 `llama-updater.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
+`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe`，并在 `dist/windows-<arch>/` 生成 Release 风格命名的独立 updater 资产。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
 
 `llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 
@@ -107,8 +107,7 @@ llama.cpp/
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
-   ├─ llama-launcher.exe / llama-launcher
-   └─ llama-updater.exe / llama-updater
+   └─ llama-launcher.exe / llama-launcher
 ```
 
 根目录旧版平铺的 `llama-server`、`llama-cli`（以及 `.exe` 版本）会被完全忽略，既不迁移也不删除。更新默认删除上一个受管版本；Windows 文件占用导致暂时无法删除时，会写入 `pending_cleanup`，下次管理命令重试。模型文件不属于更新范围。
@@ -117,7 +116,7 @@ llama.cpp/
 
 除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。安装、检查和下载更新均由当前启动器直接完成，不会先启动或更新独立 updater。Windows 仅在新 launcher 已下载、完成双重 SHA-256 校验并通过版本探测后，才获取同一 Release 的最小 updater；它只等待当前进程退出，并把固定暂存文件原子替换到 `bin/llama-launcher.exe`，不包含联网、解压或 llama.cpp 管理功能。普通启动不会联网，也不会自动检查更新。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。安装、检查和下载更新均由当前启动器直接完成，不会先启动或更新独立 updater。Windows 仅在新 launcher 已下载、完成双重 SHA-256 校验并通过版本探测后，才获取同一 Release 的最小 updater，并复制为 `bin/.llama-updater-run-*.exe`；它只等待当前进程退出，并把固定暂存文件原子替换到 `bin/llama-launcher.exe`。临时 updater 随后直接退出，由新版 launcher 下次启动清理；如果文件仍被占用则警告并在后续启动重试。新版也会清理旧架构遗留的常驻 `bin/llama-updater[.exe]`。普通启动不会联网，也不会自动检查更新。
 
 ## 安装与手动更新
 
@@ -315,7 +314,7 @@ GET http://127.0.0.1:29856/models
 
 ## 进程与退出码
 
-启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。Windows 自更新时，最小 updater 只接受 `bin` 下由 launcher 创建的 `.llama-launcher-new-*.exe` 文件名，替换目标固定为同目录的 `llama-launcher.exe`，不能通过参数指定任意目标路径。
+启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。Windows 自更新时，最小 updater 只接受 `bin` 下由 launcher 创建的 `.llama-launcher-new-*.exe` 文件名，替换目标固定为同目录的 `llama-launcher.exe`，不能通过参数指定任意目标路径。launcher 的残留清理也只删除 `bin` 下 `.llama-updater-run-*` 前缀的普通文件，拒绝目录、符号链接和重解析点。
 
 ## 旧布局说明
 

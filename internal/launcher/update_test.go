@@ -448,6 +448,8 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	executable := filepath.Join(root, "bin", "llama-launcher.exe")
 	touchFile(t, executable)
+	staleUpdater := filepath.Join(root, "bin", ".llama-updater-run-stale.exe")
+	touchFile(t, staleUpdater)
 	oldExecutablePath := executablePath
 	executablePath = func() (string, error) { return executable, nil }
 	t.Cleanup(func() { executablePath = oldExecutablePath })
@@ -476,20 +478,20 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	probe := &fakeInstallationProbe{}
 	oldFactory := updateManagerFactory
 	updaterRequested := false
-	oldEnsurer := updaterToolEnsurer
+	oldPreparer := ephemeralUpdaterPreparer
 	updateManagerFactory = func(factoryRoot string, factoryProbe InstallationProbe, stdout, stderr io.Writer) *UpdateManager {
 		return &UpdateManager{
 			Root: factoryRoot, GOOS: "windows", GOARCH: "amd64", Client: client,
 			Probe: factoryProbe, LauncherProbe: factoryProbe, Stdout: stdout, Stderr: stderr,
 		}
 	}
-	updaterToolEnsurer = func(context.Context, *UpdateManager, GitHubRelease) (string, error) {
+	ephemeralUpdaterPreparer = func(context.Context, *UpdateManager, GitHubRelease) (string, error) {
 		updaterRequested = true
 		return "", errors.New("install must not request the standalone updater")
 	}
 	t.Cleanup(func() {
 		updateManagerFactory = oldFactory
-		updaterToolEnsurer = oldEnsurer
+		ephemeralUpdaterPreparer = oldPreparer
 	})
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -499,6 +501,9 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	}
 	if updaterRequested {
 		t.Fatal("maintenance install requested the standalone updater")
+	}
+	if _, err := os.Stat(staleUpdater); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale ephemeral updater was not cleaned on startup: %v", err)
 	}
 	for _, want := range []string{"llama.cpp 安装完成，正在进入主菜单", "实际探测文件:", "llama.cpp Go 启动器"} {
 		if !strings.Contains(stdout.String(), want) {
@@ -795,7 +800,7 @@ func TestUpdaterAssetNamingAndReleaseSelection(t *testing.T) {
 	}
 }
 
-func TestEnsureUpdaterToolDownloadsAndVerifiesProvidedRelease(t *testing.T) {
+func TestPrepareEphemeralUpdaterDownloadsAndVerifiesProvidedRelease(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -833,18 +838,54 @@ func TestEnsureUpdaterToolDownloadsAndVerifiesProvidedRelease(t *testing.T) {
 		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
 	}
 
-	path, err := ensureUpdaterTool(context.Background(), manager, release)
+	path, err := prepareEphemeralUpdater(context.Background(), manager, release)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if apiRequested {
-		t.Fatal("ensureUpdaterTool unexpectedly queried the GitHub release API")
+		t.Fatal("prepareEphemeralUpdater unexpectedly queried the GitHub release API")
 	}
-	if path != filepath.Join(root, "bin", "llama-updater.exe") {
+	if filepath.Dir(path) != filepath.Join(root, "bin") || !strings.HasPrefix(filepath.Base(path), ".llama-updater-run-") || !strings.HasSuffix(path, ".exe") {
 		t.Fatalf("updater path=%s", path)
 	}
 	if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, updaterData) {
-		t.Fatalf("installed updater content=%q err=%v", content, err)
+		t.Fatalf("ephemeral updater content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bin", "llama-updater.exe")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("persistent updater unexpectedly created: %v", err)
+	}
+}
+
+func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ephemeral := filepath.Join(bin, ".llama-updater-run-old.exe")
+	legacy := filepath.Join(bin, "llama-updater.exe")
+	unrelated := filepath.Join(bin, "keep.exe")
+	unsafeDirectory := filepath.Join(bin, ".llama-updater-run-directory.exe")
+	touchFile(t, ephemeral)
+	touchFile(t, legacy)
+	touchFile(t, unrelated)
+	if err := os.Mkdir(unsafeDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stderr := &bytes.Buffer{}
+	cleanupLauncherTemps(root, stderr)
+	for _, path := range []string{ephemeral, legacy} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("updater residual was not removed %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{unrelated, unsafeDirectory} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup removed %s: %v", path, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "拒绝清理不是普通文件") {
+		t.Fatalf("unsafe residual warning missing: %s", stderr)
 	}
 }
 
