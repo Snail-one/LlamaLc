@@ -34,16 +34,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "APP_NAME="
-for /f "delims=" %%D in ('dir /b /ad "cmd" 2^>nul') do (
-    if defined APP_NAME (
-        echo Error: cmd must contain exactly one program entry directory.
-        exit /b 1
-    )
-    set "APP_NAME=%%D"
+if not exist "cmd\llama-launcher" (
+    echo Error: cmd\llama-launcher was not found.
+    exit /b 1
 )
-if not defined APP_NAME (
-    echo Error: no program entry directory was found under cmd.
+if not exist "cmd\llama-updater" (
+    echo Error: cmd\llama-updater was not found.
     exit /b 1
 )
 
@@ -61,13 +57,17 @@ set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
 set "CGO_ENABLED=0"
 
-go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\!APP_NAME!.exe" ".\cmd\!APP_NAME!"
-if errorlevel 1 (
-    echo Build failed.
-    exit /b 1
+for %%P in (llama-launcher llama-updater) do (
+    go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\%%P.exe" ".\cmd\%%P"
+    if errorlevel 1 (
+        echo Build failed: %%P
+        exit /b 1
+    )
 )
 
-echo Build complete: %CD%\!OUTPUT_DIR!\!APP_NAME!.exe
+echo Build complete: %CD%\!OUTPUT_DIR!
+echo   llama-launcher.exe
+echo   llama-updater.exe
 echo Version: !VERSION!
 echo Commit: !COMMIT!
 echo Build date: !BUILD_DATE!

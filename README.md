@@ -10,7 +10,7 @@
 
 ### Linux 原生构建
 
-`build-only.sh` 默认构建当前 Linux 架构，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入可直接运行的 `dist/<os>-<arch>/llama.cpp/bin/` 部署树：
+`build-only.sh` 默认构建当前 Linux 架构的 launcher 和独立 updater，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入可直接运行的 `dist/<os>-<arch>/llama.cpp/bin/` 部署树：
 
 ```sh
 ./build-only.sh
@@ -36,7 +36,9 @@ GOOS=windows GOARCH=amd64 ./build-only.sh
 
 ```text
 dist/linux-amd64/llama.cpp/bin/llama-launcher
+dist/linux-amd64/llama.cpp/bin/llama-updater
 dist/windows-amd64/llama.cpp/bin/llama-launcher.exe
+dist/windows-amd64/llama.cpp/bin/llama-updater.exe
 ```
 
 ### Windows 启动器一键构建
@@ -65,7 +67,7 @@ Windows 下双击 `scripts/build-windows.cmd`，或在终端运行：
 .\scripts\build-windows.cmd v1.2.3 arm64
 ```
 
-`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
+`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe` 和 `llama-updater.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
 
 `llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 
@@ -105,7 +107,8 @@ llama.cpp/
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
-   └─ llama-launcher.exe / llama-launcher
+   ├─ llama-launcher.exe / llama-launcher
+   └─ llama-updater.exe / llama-updater
 ```
 
 根目录旧版平铺的 `llama-server`、`llama-cli`（以及 `.exe` 版本）会被完全忽略，既不迁移也不删除。更新默认删除上一个受管版本；Windows 文件占用导致暂时无法删除时，会写入 `pending_cleanup`，下次管理命令重试。模型文件不属于更新范围。
@@ -319,7 +322,7 @@ GET http://127.0.0.1:29856/models
 
 ## 自动发版
 
-推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。资产固定命名为 `llama-launcher-<version>-<os>-<arch>.zip|tar.gz`；每个 archive 只含 `llama.cpp/bin/llama-launcher[.exe]`，并发布覆盖四个 archive 的 `SHA256SUMS.txt`。工作流会校验 archive 结构和二进制中的嵌入版本后才发布。
+推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。Launcher archive 固定命名为 `llama-launcher-<version>-<os>-<arch>.zip|tar.gz`，且只含 `llama.cpp/bin/llama-launcher[.exe]`；独立 updater 资产命名为 `llama-updater-<version>-<os>-<arch>[.exe]`。`SHA256SUMS.txt` 覆盖全部八个资产，工作流会校验 archive 结构和二进制中的嵌入版本后才发布。
 
 ```sh
 git tag v1.0.0

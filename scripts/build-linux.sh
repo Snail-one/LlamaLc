@@ -22,11 +22,9 @@ fi
 
 GOOS=windows GOARCH="${TARGET_ARCH}" "${ROOT_DIR}/build-only.sh"
 
-ENTRY_DIR="$(find "${ROOT_DIR}/cmd" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-APP_NAME="$(basename -- "${ENTRY_DIR}")"
-OUTPUT_FILE="${ROOT_DIR}/dist/windows-${TARGET_ARCH}/llama.cpp/bin/${APP_NAME}.exe"
+OUTPUT_DIR="${ROOT_DIR}/dist/windows-${TARGET_ARCH}/llama.cpp/bin"
 
-echo "Windows 部署树已生成: ${OUTPUT_FILE}"
+echo "Windows 部署树已生成: ${OUTPUT_DIR}"
 if command -v file >/dev/null 2>&1; then
-    file "${OUTPUT_FILE}"
+    file "${OUTPUT_DIR}/llama-launcher.exe" "${OUTPUT_DIR}/llama-updater.exe"
 fi
