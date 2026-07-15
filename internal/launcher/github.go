@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -41,11 +40,12 @@ type GitHubRelease struct {
 }
 
 type GitHubClient struct {
-	HTTP          *http.Client
-	DirectHTTP    *http.Client
-	ProxyResolver func(*http.Request) (*url.URL, error)
-	APIBase       string
-	Token         string
+	HTTP            *http.Client
+	DirectHTTP      *http.Client
+	ProxyResolver   func(*http.Request) (*url.URL, error)
+	APIBase         string
+	Token           string
+	DownloadLogRoot string
 }
 
 func NewGitHubClient() *GitHubClient {
@@ -187,29 +187,72 @@ func (client *GitHubClient) usesSystemProxy(request *http.Request) bool {
 }
 
 type progressWriter struct {
-	writer io.Writer
-	out    io.Writer
-	name   string
-	total  int64
-	done   int64
-	last   time.Time
+	writer   io.Writer
+	out      io.Writer
+	name     string
+	total    int64
+	done     int64
+	last     time.Time
+	start    time.Time
+	shown    bool
+	doneLine bool
 }
 
 func (writer *progressWriter) Write(data []byte) (int, error) {
 	n, err := writer.writer.Write(data)
 	writer.done += int64(n)
 	if writer.out != nil && (time.Since(writer.last) >= 200*time.Millisecond || writer.done == writer.total) {
-		percent := "?"
-		if writer.total > 0 {
-			percent = strconv.FormatInt(writer.done*100/writer.total, 10)
-		}
-		fmt.Fprintf(writer.out, "\r下载 %s: %d/%d 字节 (%s%%)", writer.name, writer.done, writer.total, percent)
+		writer.render()
 		writer.last = time.Now()
 		if writer.done == writer.total {
 			fmt.Fprintln(writer.out)
+			writer.doneLine = true
 		}
 	}
 	return n, err
+}
+
+func (writer *progressWriter) render() {
+	const width = 30
+	percent, filled := int64(0), 0
+	if writer.total > 0 {
+		percent = writer.done * 100 / writer.total
+		filled = int(writer.done * width / writer.total)
+		if filled > width {
+			filled = width
+		}
+	}
+	bar := strings.Repeat("=", filled)
+	if filled < width {
+		bar += ">" + strings.Repeat("-", width-filled-1)
+	}
+	elapsed := time.Since(writer.start).Seconds()
+	speed := float64(0)
+	if elapsed > 0 {
+		speed = float64(writer.done) / elapsed
+	}
+	fmt.Fprintf(writer.out, "\r下载 %s [%s] %3d%% %s/%s %s/s", writer.name, bar, percent, humanBytes(float64(writer.done)), humanBytes(float64(writer.total)), humanBytes(speed))
+	writer.shown = true
+}
+
+func (writer *progressWriter) finishFailure() {
+	if writer.out != nil && writer.shown && !writer.doneLine {
+		fmt.Fprintln(writer.out)
+		writer.doneLine = true
+	}
+}
+
+func humanBytes(value float64) string {
+	units := []string{"B", "KiB", "MiB", "GiB"}
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%.0f %s", value, units[unit])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
 func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, destination string, out io.Writer) (string, error) {
@@ -233,22 +276,51 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 	if err != nil {
 		return "", err
 	}
+	usesProxy := client.usesSystemProxy(req)
+	route := "直连"
+	if usesProxy {
+		route = "系统代理"
+	}
+	if out != nil {
+		fmt.Fprintf(out, "下载开始: %s（%s，%s）\n", asset.Name, humanBytes(float64(asset.Size)), route)
+	}
+	client.logDownload(out, fmt.Sprintf("START asset=%q size=%d route=%s host=%q destination=%q", asset.Name, asset.Size, route, parsed.Hostname(), destination))
 	digest, requestErr, retryable := client.downloadAttempt(req, asset, destination, expected, out, client.httpClient())
-	if requestErr == nil || !retryable || ctx.Err() != nil || !client.usesSystemProxy(req) || client.directHTTPClient() == nil {
+	if requestErr == nil || !retryable || ctx.Err() != nil || !usesProxy || client.directHTTPClient() == nil {
+		if requestErr == nil {
+			client.logDownload(out, fmt.Sprintf("COMPLETE asset=%q size=%d route=%s sha256=%s", asset.Name, asset.Size, route, digest))
+			if out != nil {
+				fmt.Fprintf(out, "下载完成: %s（SHA-256: %s）\n", asset.Name, digest[:12]+"…")
+			}
+		} else {
+			client.logDownload(out, fmt.Sprintf("FAILED asset=%q route=%s error=%q", asset.Name, route, requestErr))
+		}
 		return digest, requestErr
 	}
 	if out != nil {
-		fmt.Fprintf(out, "\n系统代理下载失败，正在直连重试 %s……\n", asset.Name)
+		fmt.Fprintf(out, "系统代理下载失败，正在直连重试 %s……\n", asset.Name)
 	}
+	client.logDownload(out, fmt.Sprintf("RETRY_DIRECT asset=%q proxy_error=%q", asset.Name, requestErr))
 	directRequest, err := newDownloadRequest(ctx, parsed.String())
 	if err != nil {
 		return "", err
 	}
 	digest, directErr, _ := client.downloadAttempt(directRequest, asset, destination, expected, out, client.directHTTPClient())
 	if directErr != nil {
+		client.logDownload(out, fmt.Sprintf("FAILED asset=%q route=直连 proxy_error=%q direct_error=%q", asset.Name, requestErr, directErr))
 		return "", fmt.Errorf("下载 %s 经系统代理失败（%v），直连重试也失败: %w", asset.Name, requestErr, directErr)
 	}
+	client.logDownload(out, fmt.Sprintf("COMPLETE asset=%q size=%d route=直连 sha256=%s", asset.Name, asset.Size, digest))
+	if out != nil {
+		fmt.Fprintf(out, "下载完成: %s（SHA-256: %s）\n", asset.Name, digest[:12]+"…")
+	}
 	return digest, nil
+}
+
+func (client *GitHubClient) logDownload(out io.Writer, event string) {
+	if err := appendDownloadLog(client.DownloadLogRoot, event); err != nil && out != nil {
+		fmt.Fprintf(out, "警告: %v\n", err)
+	}
 }
 
 func newDownloadRequest(ctx context.Context, endpoint string) (*http.Request, error) {
@@ -288,12 +360,14 @@ func (client *GitHubClient) downloadAttempt(req *http.Request, asset GitHubAsset
 	}()
 	hash := sha256.New()
 	limited := &io.LimitedReader{R: response.Body, N: maxAssetDownload + 1}
-	progress := &progressWriter{writer: io.MultiWriter(file, hash), out: out, name: asset.Name, total: asset.Size}
+	progress := &progressWriter{writer: io.MultiWriter(file, hash), out: out, name: asset.Name, total: asset.Size, start: time.Now()}
 	written, copyErr := io.Copy(progress, limited)
 	if copyErr != nil {
+		progress.finishFailure()
 		return "", fmt.Errorf("下载 %s 中断: %w", asset.Name, copyErr), true
 	}
 	if written != asset.Size || limited.N <= 0 {
+		progress.finishFailure()
 		return "", fmt.Errorf("资产 %s 下载字节数不符: %d != %d", asset.Name, written, asset.Size), true
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))

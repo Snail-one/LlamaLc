@@ -24,9 +24,11 @@ type UpdateManager struct {
 }
 
 func NewUpdateManager(root string, probe InstallationProbe, stdout, stderr io.Writer) *UpdateManager {
+	client := NewGitHubClient()
+	client.DownloadLogRoot = root
 	return &UpdateManager{
 		Root: root, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
-		Client: NewGitHubClient(), Probe: probe, LauncherProbe: OSInstallationProbe{}, Stdout: stdout, Stderr: stderr,
+		Client: client, Probe: probe, LauncherProbe: OSInstallationProbe{}, Stdout: stdout, Stderr: stderr,
 	}
 }
 

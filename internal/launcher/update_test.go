@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -169,6 +170,51 @@ func TestDownloadUsesTLSAndVerifiesDigest(t *testing.T) {
 	}
 }
 
+func TestDownloadProgressBarAndPersistentLog(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 2048)
+	hash := sha256.Sum256(payload)
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := &GitHubClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: int64(len(payload)), Request: request}, nil
+		})},
+		ProxyResolver:   func(*http.Request) (*url.URL, error) { return nil, nil },
+		DownloadLogRoot: root,
+	}
+	asset := GitHubAsset{Name: "runtime.tar.gz", BrowserDownloadURL: "https://downloads.example/runtime.tar.gz", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	output := &bytes.Buffer{}
+	if _, err := client.Download(context.Background(), asset, filepath.Join(t.TempDir(), "runtime.tar.gz"), output); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"下载开始", "[==============================]", "100%", "2.0 KiB/2.0 KiB", "/s", "下载完成"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("progress output missing %q: %q", want, output.String())
+		}
+	}
+	logPath := filepath.Join(root, ConfigDirectoryName, DownloadLogName)
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"START", "route=直连", "COMPLETE", hex.EncodeToString(hash[:])} {
+		if !strings.Contains(string(logData), want) {
+			t.Fatalf("download log missing %q: %s", want, logData)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("download log permissions=%v", info.Mode().Perm())
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -297,6 +343,10 @@ func TestDownloadFallsBackToDirectAfterProxyInterruption(t *testing.T) {
 	payload := []byte("complete direct payload")
 	hash := sha256.Sum256(payload)
 	proxyURL, _ := url.Parse("http://127.0.0.1:7890")
+	logRoot := filepath.Join(t.TempDir(), "llama.cpp")
+	if err := os.MkdirAll(logRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	client := &GitHubClient{
 		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(&failingReader{}), ContentLength: int64(len(payload)), Request: request}, nil
@@ -304,7 +354,8 @@ func TestDownloadFallsBackToDirectAfterProxyInterruption(t *testing.T) {
 		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: int64(len(payload)), Request: request}, nil
 		})},
-		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		ProxyResolver:   func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		DownloadLogRoot: logRoot,
 	}
 	asset := GitHubAsset{Name: "runtime.tar.gz", BrowserDownloadURL: "https://downloads.example/runtime.tar.gz", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
 	destination := filepath.Join(t.TempDir(), "runtime.tar.gz")
@@ -315,6 +366,10 @@ func TestDownloadFallsBackToDirectAfterProxyInterruption(t *testing.T) {
 	data, err := os.ReadFile(destination)
 	if err != nil || !bytes.Equal(data, payload) || !strings.Contains(output.String(), "直连重试") {
 		t.Fatalf("download fallback mismatch: data=%q err=%v output=%q", data, err, output)
+	}
+	logData, err := os.ReadFile(filepath.Join(logRoot, ConfigDirectoryName, DownloadLogName))
+	if err != nil || !strings.Contains(string(logData), "RETRY_DIRECT") || !strings.Contains(string(logData), "route=直连") {
+		t.Fatalf("fallback log mismatch: %s err=%v", logData, err)
 	}
 }
 
