@@ -912,6 +912,14 @@ func TestRecoveryInstallPreservesUnknownRuntimeAndCorruptState(t *testing.T) {
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("corrupt state was not preserved in recovery directory: %v err=%v", matches, err)
 	}
+	metadataMatches, err := filepath.Glob(filepath.Join(recovery, ".llamalc-recovery.json*"))
+	if err != nil || len(metadataMatches) != 1 {
+		t.Fatalf("recovery metadata was not written: %v err=%v", metadataMatches, err)
+	}
+	metadataData, err := os.ReadFile(metadataMatches[0])
+	if err != nil || !bytes.Contains(metadataData, []byte(`"original_path"`)) || !bytes.Contains(metadataData, []byte(`"reason"`)) {
+		t.Fatalf("recovery metadata is incomplete: %s err=%v", metadataData, err)
+	}
 	if !strings.Contains(stdout.String(), "旧目录未自动删除") {
 		t.Fatalf("recovery preservation was not reported: stdout=%s stderr=%s", stdout, stderr)
 	}

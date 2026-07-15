@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	buildversion "github.com/joker/llama-launcher/internal/version"
 )
@@ -252,6 +253,15 @@ type installRecoveryQuarantine struct {
 	runtimeOrphan string
 }
 
+const recoveryMetadataSchema = 1
+
+type recoveryMetadata struct {
+	Schema       int    `json:"schema"`
+	CreatedAt    string `json:"created_at"`
+	OriginalPath string `json:"original_path"`
+	Reason       string `json:"reason"`
+}
+
 func installWithQuarantinedRuntime(ctx context.Context, manager *UpdateManager, release GitHubRelease, backend string) error {
 	quarantine, err := createInstallRecoveryQuarantine(manager.Root)
 	if err != nil {
@@ -303,6 +313,24 @@ func preserveRecoveryRuntime(root, orphan string) (string, error) {
 	}
 	if err := os.Rename(orphan, destination); err != nil {
 		return "", err
+	}
+	metadata := recoveryMetadata{
+		Schema:       recoveryMetadataSchema,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		OriginalPath: managedRuntimeRoot(root),
+		Reason:       "更新状态缺失或损坏，无法确认旧运行时中所有文件的归属",
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return destination, err
+	}
+	data = append(data, '\n')
+	metadataPath, err := uniqueMissingPath(filepath.Join(destination, ".llamalc-recovery.json"))
+	if err != nil {
+		return destination, err
+	}
+	if err := writeFileExclusive(metadataPath, data, 0o600); err != nil {
+		return destination, fmt.Errorf("无法写入恢复元数据: %w", err)
 	}
 	if err := syncDirectory(dataDirectory); err != nil {
 		return destination, err

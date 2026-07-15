@@ -134,6 +134,16 @@ func markManagedTempDirectory(parent, path string) error {
 }
 
 func removeMarkedTempDirectory(parent, path string) error {
+	if err := validateMarkedTempDirectory(parent, path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return os.RemoveAll(filepath.Clean(path))
+}
+
+func validateMarkedTempDirectory(parent, path string) error {
 	parent = filepath.Clean(parent)
 	path = filepath.Clean(path)
 	if filepath.Dir(path) != parent {
@@ -141,7 +151,7 @@ func removeMarkedTempDirectory(parent, path string) error {
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return os.ErrNotExist
 	}
 	if err != nil {
 		return err
@@ -179,7 +189,7 @@ func removeMarkedTempDirectory(parent, path string) error {
 	}); err != nil {
 		return err
 	}
-	return os.RemoveAll(path)
+	return nil
 }
 
 func numericTempSuffix(name, prefix, suffix string) bool {

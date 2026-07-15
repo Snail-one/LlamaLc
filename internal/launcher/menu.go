@@ -53,9 +53,10 @@ Router 与本地工具
   8. 更新启动器
   9. 重置 API key
 
+  d. 清理与恢复
   q. 退出
 `, buildversion.Version, app.llamaVersionDisplay(), app.Root)
-		choice, err := m.readChoice("请选择", 1, 1, 9)
+		choice, err := m.readMainChoice()
 		if errors.Is(err, io.EOF) {
 			return 0
 		}
@@ -319,6 +320,165 @@ func (m *menu) runChoice(choice int) error {
 		return m.updateComponent(componentLauncher, "启动器")
 	case 9:
 		return m.resetAPIKey()
+	case 10:
+		return m.runCleanupMenu()
+	}
+	return nil
+}
+
+func (m *menu) readMainChoice() (int, error) {
+	for {
+		line, err := m.readLine("请选择 [1]: ")
+		if err != nil {
+			return 0, err
+		}
+		if line == "" {
+			return 1, nil
+		}
+		if strings.EqualFold(line, "d") {
+			return 10, nil
+		}
+		value, err := strconv.Atoi(line)
+		if err == nil && value >= 1 && value <= 9 {
+			return value, nil
+		}
+		fmt.Fprintln(m.app.Stderr, "请输入 1 到 9、d 或 q。")
+	}
+}
+
+func (m *menu) runCleanupMenu() error {
+	for {
+		candidates, warnings := scanCleanupCandidates(m.app.Root)
+		fmt.Fprintln(m.app.Stdout, "\n清理与恢复")
+		fmt.Fprintln(m.app.Stdout, "自动清理项经过严格命名、文件类型或所有权标记验证；其余项目必须逐个确认。")
+		for _, warning := range warnings {
+			fmt.Fprintln(m.app.Stderr, "警告:", warning)
+		}
+		if len(candidates) == 0 {
+			fmt.Fprintln(m.app.Stdout, "未发现需要处理的残留或恢复目录。")
+		} else {
+			for index, candidate := range candidates {
+				mode := "需确认"
+				if candidate.Automatic {
+					mode = "可安全清理"
+				}
+				fmt.Fprintf(m.app.Stdout, "  %d. [%s] %s（%s）\n", index+1, mode, candidate.Kind, cleanupSizeDisplay(candidate))
+				fmt.Fprintf(m.app.Stdout, "     %s\n", candidate.Path)
+				fmt.Fprintf(m.app.Stdout, "     原因: %s\n", candidate.Reason)
+			}
+		}
+		fmt.Fprintln(m.app.Stdout, "\n  a. 清理全部已验证安全残留")
+		fmt.Fprintln(m.app.Stdout, "  q. 返回主菜单")
+		line, err := m.readLine("请选择项目编号或操作: ")
+		if errors.Is(err, errMenuBack) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if strings.EqualFold(line, "a") {
+			cleaned := 0
+			for _, candidate := range candidates {
+				if !candidate.Automatic {
+					continue
+				}
+				if err := deleteCleanupCandidate(m.app.Root, candidate, true); err != nil {
+					fmt.Fprintf(m.app.Stderr, "警告: 无法清理 %s: %v\n", candidate.Path, err)
+					continue
+				}
+				cleaned++
+				fmt.Fprintln(m.app.Stdout, "已清理:", candidate.Path)
+			}
+			if cleaned == 0 {
+				fmt.Fprintln(m.app.Stdout, "没有可自动清理的安全残留。")
+			}
+			continue
+		}
+		index, parseErr := strconv.Atoi(line)
+		if parseErr != nil || index < 1 || index > len(candidates) {
+			fmt.Fprintln(m.app.Stderr, "请输入有效项目编号、a 或 q。")
+			continue
+		}
+		if err := m.manageCleanupCandidate(candidates[index-1]); err != nil {
+			if errors.Is(err, errMenuBack) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
+	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), candidate.Reason, candidate.Path)
+	fmt.Fprintln(m.app.Stdout, "  v. 查看目录内容")
+	fmt.Fprintln(m.app.Stdout, "  o. 使用系统文件管理器打开")
+	fmt.Fprintln(m.app.Stdout, "  d. 永久删除")
+	fmt.Fprintln(m.app.Stdout, "  Enter. 返回列表")
+	line, err := m.readLine("请选择操作: ")
+	if err != nil {
+		return err
+	}
+	switch strings.ToLower(line) {
+	case "":
+		return nil
+	case "v":
+		return m.viewCleanupCandidate(candidate)
+	case "o":
+		if err := launchCleanupPath(candidate.Path); err != nil {
+			return fmt.Errorf("无法打开目录 %s: %w", candidate.Path, err)
+		}
+		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", candidate.Path)
+		return nil
+	case "d":
+		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", candidate.Path)
+		confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(m.app.Stdout, "已取消，未修改任何文件。")
+			return nil
+		}
+		if err := deleteCleanupCandidate(m.app.Root, candidate, false); err != nil {
+			return err
+		}
+		fmt.Fprintln(m.app.Stdout, "已删除:", candidate.Path)
+		return nil
+	default:
+		fmt.Fprintln(m.app.Stderr, "请输入 v、o、d，或直接按 Enter 返回。")
+		return nil
+	}
+}
+
+func (m *menu) viewCleanupCandidate(candidate cleanupCandidate) error {
+	info, err := os.Lstat(candidate.Path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(m.app.Stdout, "普通文件: %s（%s）\n", candidate.Path, cleanupSizeDisplay(candidate))
+		return nil
+	}
+	entries, err := os.ReadDir(candidate.Path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(m.app.Stdout, "目录内容（最多显示 50 项）:")
+	limit := len(entries)
+	if limit > 50 {
+		limit = 50
+	}
+	for _, entry := range entries[:limit] {
+		kind := "文件"
+		if entry.IsDir() {
+			kind = "目录"
+		} else if entry.Type()&os.ModeSymlink != 0 {
+			kind = "链接"
+		}
+		fmt.Fprintf(m.app.Stdout, "  [%s] %s\n", kind, entry.Name())
+	}
+	if len(entries) > limit {
+		fmt.Fprintf(m.app.Stdout, "  ……另有 %d 项未显示\n", len(entries)-limit)
 	}
 	return nil
 }

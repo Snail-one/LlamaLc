@@ -90,6 +90,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	for _, want := range []string{
 		"API 服务", "Router 与本地工具", "维护",
 		"7. 更新 llama.cpp", "8. 更新启动器", "9. 重置 API key",
+		"d. 清理与恢复",
 		"将联网检查并更新启动器，是否继续",
 	} {
 		if !strings.Contains(stdout.String(), want) {
