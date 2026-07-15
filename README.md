@@ -117,7 +117,7 @@ llama.cpp/
 
 除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。安装和检查更新均由当前 launcher 直接完成，不会运行 updater。launcher 更新 archive 固定同时包含新版 launcher 和新版 updater，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Windows 会把当前 `bin/llama-updater.exe` 复制为 `bin/.llama-updater-run-*.exe`；临时副本等待 launcher 退出，先替换正式 updater，再替换 launcher，随后直接退出。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。普通启动不会联网，也不会自动检查更新。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。修复安装时，无法由有效状态文件证明归属的旧 `data/llama.cpp` 不会被自动删除，而会保留为 `data/llama.cpp-recovery[-N]` 恢复备份。安装和检查更新均由当前 launcher 直接完成，不会运行 updater。launcher 更新 archive 固定同时包含新版 launcher 和新版 updater，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Windows 会把当前 `bin/llama-updater.exe` 复制为 `bin/.llama-updater-run-*.exe`；临时副本等待 launcher 退出，先替换正式 updater，再替换 launcher，随后直接退出。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。普通启动不会联网，也不会自动检查更新。
 
 ## 安装与手动更新
 
@@ -321,7 +321,7 @@ GET http://127.0.0.1:29856/models
 
 ## 进程与退出码
 
-启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。Windows 自更新时，最小 updater 只接受 `bin` 下由 launcher 创建的 `.llama-updater-new-*.exe` 和 `.llama-launcher-new-*.exe` 文件名，替换目标固定为同目录的正式 updater 和 launcher，不能通过参数指定任意目标路径。launcher 的残留清理也只删除 `bin` 下 `.llama-updater-run-*` 前缀的普通文件，拒绝目录、符号链接和重解析点。
+启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。Windows 自更新时，最小 updater 只接受 `bin` 下由 launcher 创建的 `.llama-updater-new-*.exe` 和 `.llama-launcher-new-*.exe` 文件名，替换目标固定为同目录的正式 updater 和 launcher，不能通过参数指定任意目标路径。残留清理只处理严格匹配随机数字后缀的临时文件；递归清理更新暂存目录前还必须验证目录内的 launcher 所有权标记，并拒绝目录符号链接、重解析点和特殊文件。配置原子写入留下的严格命名普通临时文件会在下次启动清理，同名前缀目录及非标准名称不会被删除。
 
 ## 旧布局说明
 

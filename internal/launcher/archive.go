@@ -133,6 +133,13 @@ func extractZIPFile(entry *zip.File, target string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = output.Close()
+			_ = os.Remove(target)
+		}
+	}()
 	written, copyErr := io.Copy(output, io.LimitReader(input, int64(entry.UncompressedSize64)+1))
 	closeErr := output.Close()
 	if copyErr != nil {
@@ -144,6 +151,7 @@ func extractZIPFile(entry *zip.File, target string, mode os.FileMode) error {
 	if written != int64(entry.UncompressedSize64) {
 		return fmt.Errorf("ZIP 条目大小不符: %s", entry.Name)
 	}
+	complete = true
 	return nil
 }
 
@@ -195,6 +203,13 @@ func extractTarGZ(archivePath, destination string, budget *extractBudget, out io
 		if err != nil {
 			return err
 		}
+		complete := false
+		defer func() {
+			if !complete {
+				_ = output.Close()
+				_ = os.Remove(target)
+			}
+		}()
 		written, copyErr := io.Copy(output, io.LimitReader(reader, header.Size+1))
 		closeErr := output.Close()
 		if copyErr != nil {
@@ -206,6 +221,7 @@ func extractTarGZ(archivePath, destination string, budget *extractBudget, out io
 		if written != header.Size {
 			return fmt.Errorf("TAR 条目大小不符: %s", header.Name)
 		}
+		complete = true
 		if out != nil {
 			fmt.Fprintf(out, "\r解压: %d 字节 (%d 项)", budget.Bytes, budget.Entries)
 		}

@@ -104,6 +104,46 @@ func TestUpdateStateRejectsEscapesAndSymlinkRuntime(t *testing.T) {
 	}
 }
 
+func TestUpdateStateRejectsUnsafeCleanupTargets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	state := UpdateState{
+		Schema: 1, LlamaTag: "b2", Backend: "cpu", ActiveRuntime: "data/llama.cpp/b2-cpu",
+		Assets: []InstalledAsset{{Name: "a.zip", SHA256: testDigest}},
+	}
+	for _, pending := range [][]string{
+		{"data/llama.cpp/b2-cpu"},
+		{"data/llama.cpp/user-files"},
+		{"data/llama.cpp/b1-cpu/nested"},
+		{"data/llama.cpp/b1-cpu", "data/llama.cpp/b1-cpu"},
+	} {
+		state.PendingCleanup = pending
+		if err := ValidateUpdateState(root, state); err == nil {
+			t.Fatalf("unsafe pending cleanup accepted: %v", pending)
+		}
+	}
+}
+
+func TestWriteUpdateStateValidatesConfigPathBeforeCreating(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	external := t.TempDir()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, ConfigDirectoryName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	state := UpdateState{
+		Schema: 1, LlamaTag: "b1", Backend: "cpu", ActiveRuntime: "data/llama.cpp/b1-cpu",
+		Assets: []InstalledAsset{{Name: "a.zip", SHA256: testDigest}},
+	}
+	if err := WriteUpdateState(root, state); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("symlink config directory accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(external, UpdateStateName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("write escaped through config symlink: %v", err)
+	}
+}
+
 func TestSafeArchiveRejectsZIPSlipDuplicateAndTarLink(t *testing.T) {
 	makeZIP := func(entries []string) string {
 		path := filepath.Join(t.TempDir(), "bad.zip")
@@ -139,6 +179,40 @@ func TestSafeArchiveRejectsZIPSlipDuplicateAndTarLink(t *testing.T) {
 	_ = file.Close()
 	if err := ExtractArchive(tarPath, t.TempDir(), newExtractBudget(), io.Discard); err == nil || !strings.Contains(err.Error(), "链接") {
 		t.Fatalf("TAR link accepted: %v", err)
+	}
+}
+
+func TestTruncatedArchiveRemovesPartialExtractedFile(t *testing.T) {
+	var raw bytes.Buffer
+	writer := tar.NewWriter(&raw)
+	if err := writer.WriteHeader(&tar.Header{Name: "partial.bin", Mode: 0o600, Size: 64, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	// Bypass tar.Writer so the valid header advertises more bytes than exist.
+	if _, err := raw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "truncated.tar.gz")
+	archive, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(archive)
+	if _, err := gz.Write(raw.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	if err := ExtractArchive(archivePath, destination, newExtractBudget(), io.Discard); err == nil {
+		t.Fatal("truncated TAR unexpectedly succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(destination, "partial.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial extracted file remained: %v", err)
 	}
 }
 
@@ -447,6 +521,21 @@ func TestLauncherArchiveRequiresLauncherAndUpdaterOnly(t *testing.T) {
 	}
 }
 
+func TestCopyExecutableRemovesPartialDestinationOnFailure(t *testing.T) {
+	root := t.TempDir()
+	sourceDirectory := filepath.Join(root, "source-directory")
+	if err := os.Mkdir(sourceDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, ".llama-updater-new-12345")
+	if err := copyAndSyncExecutable(sourceDirectory, destination); err == nil {
+		t.Fatal("copying a directory unexpectedly succeeded")
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial executable remained after copy failure: %v", err)
+	}
+}
+
 func makeWindowsRuntimeZIP(t *testing.T, tag string) []byte {
 	t.Helper()
 	var output bytes.Buffer
@@ -472,7 +561,7 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	executable := filepath.Join(root, "bin", "llama-launcher.exe")
 	touchFile(t, executable)
-	staleUpdater := filepath.Join(root, "bin", ".llama-updater-run-stale.exe")
+	staleUpdater := filepath.Join(root, "bin", ".llama-updater-run-12345.exe")
 	touchFile(t, staleUpdater)
 	oldExecutablePath := executablePath
 	executablePath = func() (string, error) { return executable, nil }
@@ -588,7 +677,63 @@ func TestManagedRuntimeInstallAndAtomicVersionSwitch(t *testing.T) {
 	}
 }
 
-func TestRecoveryInstallReplacesOrphanedSameVersionRuntime(t *testing.T) {
+func TestForceUpdateRefusesUntrackedTargetDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payloads := map[string][]byte{"b1": makeRuntimeTar(t, "b1"), "b2": makeRuntimeTar(t, "b2")}
+	probe := &fakeInstallationProbe{}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payloads["b1"]),
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+	if err := manager.InstallLlama(context.Background(), releaseWithRuntime(t, "b1", payloads["b1"]), "cpu", false, false, false); err != nil {
+		t.Fatal(err)
+	}
+	untracked := filepath.Join(managedRuntimeRoot(root), "b2-cpu")
+	if err := os.Mkdir(untracked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(untracked, "user-file")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.Client = runtimeDownloadClient(payloads["b2"])
+	err := manager.InstallLlama(context.Background(), releaseWithRuntime(t, "b2", payloads["b2"]), "cpu", true, false, true)
+	if err == nil || !strings.Contains(err.Error(), "拒绝覆盖") {
+		t.Fatalf("untracked target was accepted: %v", err)
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "keep" {
+		t.Fatalf("untracked target was changed: %q err=%v", content, err)
+	}
+}
+
+func TestInstallValidatesRuntimePathBeforeCreating(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	external := t.TempDir()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "data")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	payload := makeRuntimeTar(t, "b1")
+	probe := &fakeInstallationProbe{}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payload),
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+	err := manager.InstallLlama(context.Background(), releaseWithRuntime(t, "b1", payload), "cpu", false, false, false)
+	if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("runtime parent symlink accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(external, "llama.cpp")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime directory escaped through symlink: %v", err)
+	}
+}
+
+func TestRecoveryInstallPreservesOrphanedSameVersionRuntime(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -623,8 +768,9 @@ func TestRecoveryInstallReplacesOrphanedSameVersionRuntime(t *testing.T) {
 	if err != nil || !exists || state.LlamaTag != "b1" || state.Backend != "cpu" {
 		t.Fatalf("bad recovered state: %#v exists=%v err=%v", state, exists, err)
 	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("orphaned same-version runtime was retained: %v", err)
+	recoveryMarker := filepath.Join(root, "data", "llama.cpp-recovery", "b1-cpu", "old-runtime-marker")
+	if content, err := os.ReadFile(recoveryMarker); err != nil || string(content) != "old" {
+		t.Fatalf("orphaned runtime was not preserved: %q err=%v", content, err)
 	}
 	entries, err := os.ReadDir(managedRuntimeRoot(root))
 	if err != nil {
@@ -680,7 +826,7 @@ func TestInstallCommandDetectsOrphanAndConfirmsBeforeChangingIt(t *testing.T) {
 	if code != 1 || commandErr == nil || !strings.Contains(commandErr.Error(), "已取消") {
 		t.Fatalf("code=%d err=%v", code, commandErr)
 	}
-	if !strings.Contains(stderr.String(), "未找到 config/update-state.json") || !strings.Contains(stdout.String(), "隔离现有 data/llama.cpp") {
+	if !strings.Contains(stderr.String(), "未找到 config/update-state.json") || !strings.Contains(stdout.String(), "保留为恢复备份") {
 		t.Fatalf("missing recovery warning or confirmation: stdout=%s stderr=%s", stdout, stderr)
 	}
 	if downloadStarted {
@@ -727,49 +873,47 @@ func TestRecoveryInstallFailureRestoresRuntimeAndState(t *testing.T) {
 	}
 }
 
-func TestRecoveryCleanupFailureIsRecordedAndRetried(t *testing.T) {
+func TestRecoveryInstallPreservesUnknownRuntimeAndCorruptState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	legacy := filepath.Join(managedRuntimeRoot(root), "legacy")
 	if err := os.MkdirAll(legacy, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	marker := filepath.Join(legacy, "user-file")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(UpdateStatePath(root)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(UpdateStatePath(root), []byte("{broken-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	payload := makeRuntimeTar(t, "b2")
-	stderr := &bytes.Buffer{}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	probe := &fakeInstallationProbe{}
 	manager := &UpdateManager{
 		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payload),
-		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: stderr,
+		Probe: probe, LauncherProbe: probe, Stdout: stdout, Stderr: stderr,
 	}
-	originalRemove := removeRecoveryTree
-	removeRecoveryTree = func(path string) error {
-		if strings.HasPrefix(filepath.Base(path), ".orphan-recovery") {
-			return errors.New("file is in use")
-		}
-		return os.RemoveAll(path)
-	}
-	t.Cleanup(func() { removeRecoveryTree = originalRemove })
 
 	if err := installWithQuarantinedRuntime(context.Background(), manager, releaseWithRuntime(t, "b2", payload), "cpu"); err != nil {
 		t.Fatal(err)
 	}
 	state, exists, err := LoadUpdateState(root)
-	if err != nil || !exists || len(state.PendingCleanup) != 1 {
-		t.Fatalf("pending cleanup state=%#v exists=%v err=%v", state, exists, err)
+	if err != nil || !exists || len(state.PendingCleanup) != 0 {
+		t.Fatalf("recovered state=%#v exists=%v err=%v", state, exists, err)
 	}
-	pendingPath := filepath.Join(root, filepath.FromSlash(state.PendingCleanup[0]))
-	if _, err := os.Stat(pendingPath); err != nil {
-		t.Fatalf("pending cleanup directory missing: %v", err)
+	recovery := filepath.Join(root, "data", "llama.cpp-recovery")
+	if content, err := os.ReadFile(filepath.Join(recovery, "legacy", "user-file")); err != nil || string(content) != "keep" {
+		t.Fatalf("unknown runtime file was not preserved: %q err=%v", content, err)
 	}
-	removeRecoveryTree = originalRemove
-	if err := manager.RetryPendingCleanup(); err != nil {
-		t.Fatal(err)
+	matches, err := filepath.Glob(filepath.Join(recovery, ".update-state.json.corrupt*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("corrupt state was not preserved in recovery directory: %v err=%v", matches, err)
 	}
-	state, _, err = LoadUpdateState(root)
-	if err != nil || len(state.PendingCleanup) != 0 {
-		t.Fatalf("pending cleanup was not cleared: %#v err=%v", state, err)
-	}
-	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pending cleanup directory still exists: %v", err)
+	if !strings.Contains(stdout.String(), "旧目录未自动删除") {
+		t.Fatalf("recovery preservation was not reported: stdout=%s stderr=%s", stdout, stderr)
 	}
 }
 
@@ -803,28 +947,101 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ephemeral := filepath.Join(bin, ".llama-updater-run-old.exe")
+	ephemeral := filepath.Join(bin, ".llama-updater-run-12345.exe")
 	legacy := filepath.Join(bin, "llama-updater.exe")
 	unrelated := filepath.Join(bin, "keep.exe")
-	unsafeDirectory := filepath.Join(bin, ".llama-updater-run-directory.exe")
+	unsafeDirectory := filepath.Join(bin, ".llama-updater-run-67890.exe")
+	unmarkedDirectory := filepath.Join(bin, ".launcher-update-12345")
+	markedDirectory := filepath.Join(bin, ".launcher-update-67890")
+	nonGeneratedName := filepath.Join(bin, ".llama-launcher-new-user-notes.exe")
 	touchFile(t, ephemeral)
 	touchFile(t, legacy)
 	touchFile(t, unrelated)
+	touchFile(t, nonGeneratedName)
 	if err := os.Mkdir(unsafeDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(unmarkedDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	touchFile(t, filepath.Join(unmarkedDirectory, "user-file"))
+	if err := os.Mkdir(markedDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := markManagedTempDirectory(bin, markedDirectory); err != nil {
+		t.Fatal(err)
+	}
+	touchFile(t, filepath.Join(markedDirectory, "download.part"))
 	stderr := &bytes.Buffer{}
 	cleanupLauncherTemps(root, stderr)
 	if _, err := os.Stat(ephemeral); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ephemeral updater residual was not removed: %v", err)
 	}
-	for _, path := range []string{legacy, unrelated, unsafeDirectory} {
+	for _, path := range []string{legacy, unrelated, unsafeDirectory, unmarkedDirectory, nonGeneratedName} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("cleanup removed %s: %v", path, err)
 		}
 	}
-	if !strings.Contains(stderr.String(), "拒绝清理不是普通文件") {
+	if _, err := os.Stat(markedDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marked staging directory was not removed: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "拒绝清理不是普通文件") || !strings.Contains(stderr.String(), "所有权标记") {
 		t.Fatalf("unsafe residual warning missing: %s", stderr)
+	}
+}
+
+func TestCleanupRuntimeTempsRequiresOwnershipMarker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	base := managedRuntimeRoot(root)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marked := filepath.Join(base, ".staging-12345")
+	unmarked := filepath.Join(base, ".staging-67890")
+	for _, path := range []string{marked, unmarked} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := markManagedTempDirectory(base, marked); err != nil {
+		t.Fatal(err)
+	}
+	touchFile(t, filepath.Join(marked, "partial-download"))
+	touchFile(t, filepath.Join(unmarked, "user-file"))
+	stderr := &bytes.Buffer{}
+	cleanupRuntimeTemps(root, stderr)
+	if _, err := os.Stat(marked); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marked runtime staging was not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(unmarked, "user-file")); err != nil {
+		t.Fatalf("unmarked directory was changed: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "所有权标记") {
+		t.Fatalf("unmarked directory warning missing: %s", stderr)
+	}
+}
+
+func TestPendingCleanupRefusesRegularFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	path := filepath.Join(managedRuntimeRoot(root), "b1-cpu")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("user data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := UpdateState{PendingCleanup: []string{"data/llama.cpp/b1-cpu"}}
+	stderr := &bytes.Buffer{}
+	manager := &UpdateManager{Root: root, Stderr: stderr}
+	manager.retryPendingCleanup(&state)
+	if len(state.PendingCleanup) != 1 {
+		t.Fatal("unsafe cleanup entry was removed from retry state")
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != "user data" {
+		t.Fatalf("regular user file was changed: %q err=%v", content, err)
+	}
+	if !strings.Contains(stderr.String(), "不是普通目录") {
+		t.Fatalf("unsafe cleanup warning missing: %s", stderr)
 	}
 }
 

@@ -418,17 +418,27 @@ func EnsureRuntimeDirectories(root string) ([]string, error) {
 	}
 
 	var created []string
+	rollbackCreated := func() {
+		for index := len(created) - 1; index >= 0; index-- {
+			// Remove only empty directories. If another process or the user placed
+			// anything inside, preserve it rather than using RemoveAll.
+			_ = os.Remove(created[index])
+		}
+	}
 	for _, directory := range missing {
 		if err := os.MkdirAll(directory.path, directory.perm); err != nil {
-			return created, fmt.Errorf("无法创建运行目录 %s: %w", directory.path, err)
-		}
-		if err := validateManagedPath(root, directory.path, "新建运行目录", false, true); err != nil {
-			return created, err
-		}
-		if err := applyFilePermissions(directory.path, directory.perm); err != nil {
-			return created, fmt.Errorf("无法设置运行目录权限 %s: %w", directory.path, err)
+			rollbackCreated()
+			return nil, fmt.Errorf("无法创建运行目录 %s: %w", directory.path, err)
 		}
 		created = append(created, directory.path)
+		if err := validateManagedPath(root, directory.path, "新建运行目录", false, true); err != nil {
+			rollbackCreated()
+			return nil, err
+		}
+		if err := applyFilePermissions(directory.path, directory.perm); err != nil {
+			rollbackCreated()
+			return nil, fmt.Errorf("无法设置运行目录权限 %s: %w", directory.path, err)
+		}
 	}
 	return created, nil
 }

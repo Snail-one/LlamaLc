@@ -242,6 +242,39 @@ func TestWriteDefaultConfigIsExclusive(t *testing.T) {
 	}
 }
 
+func TestCleanupAtomicWriteTempsPreservesUnownedPaths(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, ConfigDirectoryName)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(directory, "."+DefaultConfigName+".tmp-12345")
+	unowned := filepath.Join(directory, "."+DefaultConfigName+".tmp-notes")
+	unsafeDirectory := filepath.Join(directory, "."+DefaultAPIKeyName+".tmp-67890")
+	if err := os.WriteFile(managed, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unowned, []byte("user notes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(unsafeDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stderr := &strings.Builder{}
+	cleanupAtomicWriteTemps(root, stderr)
+	if _, err := os.Stat(managed); !os.IsNotExist(err) {
+		t.Fatalf("managed atomic temp was not removed: %v", err)
+	}
+	for _, path := range []string{unowned, unsafeDirectory} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup removed unowned path %s: %v", path, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "拒绝清理不是普通文件") {
+		t.Fatalf("unsafe directory warning missing: %s", stderr)
+	}
+}
+
 func TestManagedDirectoriesRejectSymlinks(t *testing.T) {
 	root := t.TempDir()
 	external := t.TempDir()

@@ -67,9 +67,11 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	}
 	manager := updateManagerFactory(root, probe, stdout, stderr)
 	manager.GOOS = goos
+	cleanupAtomicWriteTemps(root, stderr)
 	if len(remaining) == 0 || !isManagementCommand(remaining[0]) {
 		cleanupLauncherTemps(root, stderr)
 	}
+	cleanupRuntimeTemps(root, stderr)
 	if len(remaining) > 0 && isManagementCommand(remaining[0]) {
 		code, commandErr := runManagementCommand(context.Background(), manager, remaining[0], remaining[1:], stdin, false)
 		if errors.Is(commandErr, errUpdaterHandoff) {

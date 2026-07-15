@@ -42,12 +42,37 @@ func (manager *UpdateManager) retryPendingCleanup(state *UpdateState) {
 			continue
 		}
 		path := filepath.Join(manager.Root, clean)
-		if err := os.RemoveAll(path); err != nil {
+		if err := removePendingRuntimeDirectory(manager.Root, path); err != nil {
 			remaining = append(remaining, relative)
 			fmt.Fprintf(manager.Stderr, "警告: 仍无法清理旧运行时 %s: %v\n", path, err)
 		}
 	}
 	state.PendingCleanup = remaining
+}
+
+func removePendingRuntimeDirectory(root, path string) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	clean, err := validateRuntimeChildPath(filepath.ToSlash(relative))
+	if err != nil || !validPendingCleanupName(filepath.Base(clean)) {
+		return fmt.Errorf("拒绝清理未登记格式的运行时目录: %s", path)
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("拒绝清理不是普通目录的运行时路径: %s", path)
+	}
+	if err := validateManagedPath(managedRuntimeRoot(root), path, "待清理运行时", false, true); err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
 }
 
 func (manager *UpdateManager) RetryPendingCleanup() error {
@@ -124,6 +149,9 @@ func (manager *UpdateManager) installResolvedLlama(ctx context.Context, release 
 		total += asset.Size
 	}
 	base := managedRuntimeRoot(manager.Root)
+	if err := validateManagedPath(manager.Root, base, "受管运行时根目录", true, true); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
@@ -138,6 +166,9 @@ func (manager *UpdateManager) installResolvedLlama(ctx context.Context, release 
 		return err
 	}
 	defer func() { os.RemoveAll(staging) }()
+	if err := markManagedTempDirectory(base, staging); err != nil {
+		return err
+	}
 	downloads := filepath.Join(staging, "downloads")
 	extracted := filepath.Join(staging, "runtime")
 	if err := os.Mkdir(downloads, 0o700); err != nil {
@@ -204,6 +235,13 @@ func (manager *UpdateManager) installResolvedLlama(ctx context.Context, release 
 		if !force {
 			return fmt.Errorf("目标运行时目录已存在: %s", target)
 		}
+		if !existed {
+			return fmt.Errorf("拒绝覆盖未登记的运行时目录: %s", target)
+		}
+		oldClean, oldPathErr := validateRuntimeChildPath(oldState.ActiveRuntime)
+		if oldPathErr != nil || filepath.Clean(filepath.Join(manager.Root, oldClean)) != filepath.Clean(target) {
+			return fmt.Errorf("拒绝覆盖不属于当前活动版本的运行时目录: %s", target)
+		}
 		backup = filepath.Join(base, ".old-"+directoryName)
 		backup, err = uniqueMissingPath(backup)
 		if err != nil {
@@ -242,7 +280,7 @@ func (manager *UpdateManager) installResolvedLlama(ctx context.Context, release 
 		}
 	}
 	if cleanup != "" {
-		if err := os.RemoveAll(cleanup); err != nil {
+		if err := removePendingRuntimeDirectory(manager.Root, cleanup); err != nil {
 			cleanupRelative, _ := filepath.Rel(manager.Root, cleanup)
 			newState.PendingCleanup = append(newState.PendingCleanup, filepath.ToSlash(cleanupRelative))
 			if stateErr := WriteUpdateState(manager.Root, newState); stateErr != nil {

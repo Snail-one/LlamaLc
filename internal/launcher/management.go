@@ -91,7 +91,7 @@ func runManagementCommand(ctx context.Context, manager *UpdateManager, name stri
 		}
 		description := fmt.Sprintf("安装 llama.cpp %s (%s)", release.TagName, selected)
 		if repairState {
-			description += "，并隔离现有 data/llama.cpp（安装成功后清理）"
+			description += "，并将现有 data/llama.cpp 保留为恢复备份"
 		}
 		if err := requireConfirmation(stdin, manager.Stdout, *yes, interactiveOverride, description); err != nil {
 			return 1, err
@@ -264,28 +264,50 @@ func installWithQuarantinedRuntime(ctx context.Context, manager *UpdateManager, 
 		return err
 	}
 	if quarantine.runtimeOrphan != "" {
-		if err := removeRecoveryTree(quarantine.runtimeOrphan); err != nil {
-			state, exists, stateErr := LoadUpdateState(manager.Root)
-			if stateErr != nil || !exists {
-				return fmt.Errorf("新运行时已启用，但无法记录待清理目录 %s: %w", quarantine.runtimeOrphan, err)
+		preserved, err := preserveRecoveryRuntime(manager.Root, quarantine.runtimeOrphan)
+		if err != nil {
+			location := quarantine.runtimeOrphan
+			if preserved != "" {
+				location = preserved
 			}
-			relative, relativeErr := filepath.Rel(manager.Root, quarantine.runtimeOrphan)
-			if relativeErr != nil {
-				return fmt.Errorf("新运行时已启用，但无法记录待清理目录: %w", relativeErr)
+			fmt.Fprintf(manager.Stderr, "警告: 新运行时已启用；旧目录未删除并保留在 %s，但无法整理恢复目录: %v\n", location, err)
+		} else {
+			fmt.Fprintf(manager.Stdout, "旧目录未自动删除，已保留为恢复备份: %s\n", preserved)
+			if quarantine.stateBackup != "" {
+				stateDestination, stateErr := uniqueMissingPath(filepath.Join(preserved, ".update-state.json.corrupt"))
+				if stateErr == nil {
+					stateErr = os.Rename(quarantine.stateBackup, stateDestination)
+				}
+				if stateErr != nil {
+					fmt.Fprintf(manager.Stderr, "警告: 损坏的旧状态仍保留在 %s: %v\n", quarantine.stateBackup, stateErr)
+				}
 			}
-			state.PendingCleanup = appendUniqueString(state.PendingCleanup, filepath.ToSlash(relative))
-			if stateErr := WriteUpdateState(manager.Root, state); stateErr != nil {
-				return fmt.Errorf("新运行时已启用，但无法记录待清理目录 %s: %w", quarantine.runtimeOrphan, stateErr)
-			}
-			fmt.Fprintf(manager.Stderr, "警告: 已隔离的旧运行时暂时无法删除，已记录待清理: %s\n", quarantine.runtimeOrphan)
 		}
-	}
-	if quarantine.stateBackup != "" {
-		if err := os.Remove(quarantine.stateBackup); err != nil {
-			fmt.Fprintf(manager.Stderr, "警告: 无法删除已隔离的旧状态 %s: %v\n", quarantine.stateBackup, err)
-		}
+	} else if quarantine.stateBackup != "" {
+		fmt.Fprintf(manager.Stderr, "警告: 损坏的旧状态未自动删除，保留在: %s\n", quarantine.stateBackup)
 	}
 	return nil
+}
+
+func preserveRecoveryRuntime(root, orphan string) (string, error) {
+	dataDirectory := filepath.Join(root, "data")
+	if err := validateManagedPath(root, dataDirectory, "恢复备份父目录", false, true); err != nil {
+		return "", err
+	}
+	if err := validateManagedPath(managedRuntimeRoot(root), orphan, "待保留的恢复目录", false, true); err != nil {
+		return "", err
+	}
+	destination, err := uniqueMissingPath(filepath.Join(dataDirectory, "llama.cpp-recovery"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(orphan, destination); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(dataDirectory); err != nil {
+		return destination, err
+	}
+	return destination, nil
 }
 
 func createInstallRecoveryQuarantine(root string) (installRecoveryQuarantine, error) {
@@ -423,15 +445,6 @@ func validateRecoveryRuntimeTree(root, runtimeRoot string) error {
 		}
 		return nil
 	})
-}
-
-func appendUniqueString(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
 }
 
 func resolveBackendInput(release GitHubRelease, manager *UpdateManager, requested string, stdin io.Reader, interactive, reselectMissing bool) (string, error) {

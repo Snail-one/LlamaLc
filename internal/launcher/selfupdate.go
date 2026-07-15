@@ -84,6 +84,9 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 		return err
 	}
 	defer os.RemoveAll(staging)
+	if err := markManagedTempDirectory(filepath.Join(manager.Root, "bin"), staging); err != nil {
+		return err
+	}
 	sumsPath := filepath.Join(staging, sums.Name)
 	if _, err := manager.Client.Download(ctx, sums, sumsPath, manager.Stdout); err != nil {
 		return err
@@ -196,15 +199,24 @@ func copyAndSyncExecutable(source, destination string) error {
 	if err != nil {
 		return err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = output.Close()
+			_ = os.Remove(destination)
+		}
+	}()
 	if _, err := io.Copy(output, input); err != nil {
-		output.Close()
 		return err
 	}
 	if err := output.Sync(); err != nil {
-		output.Close()
 		return err
 	}
-	return output.Close()
+	if err := output.Close(); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 func cleanupLauncherTemps(root string, stderr io.Writer) {
@@ -220,7 +232,13 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, ".llama-updater-run-") {
+		isExecutableTemp := numericTempSuffix(name, ".llama-updater-run-", "") ||
+			numericTempSuffix(name, ".llama-updater-run-", ".exe") ||
+			numericTempSuffix(name, ".llama-launcher-new-", "") ||
+			numericTempSuffix(name, ".llama-launcher-new-", ".exe") ||
+			numericTempSuffix(name, ".llama-updater-new-", "") ||
+			numericTempSuffix(name, ".llama-updater-new-", ".exe")
+		if isExecutableTemp {
 			path := filepath.Join(bin, name)
 			info, infoErr := entry.Info()
 			if infoErr != nil {
@@ -236,15 +254,37 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 			}
 			continue
 		}
-		if !strings.HasPrefix(name, ".llama-launcher-new-") &&
-			!strings.HasPrefix(name, ".llama-updater-new-") &&
-			!strings.HasPrefix(name, ".updater-bootstrap-") &&
-			!strings.HasPrefix(name, ".launcher-update-") {
+		if !numericTempSuffix(name, ".launcher-update-", "") {
 			continue
 		}
 		path := filepath.Join(bin, name)
-		if err := os.RemoveAll(path); err != nil {
+		if err := removeMarkedTempDirectory(bin, path); err != nil {
 			fmt.Fprintf(stderr, "警告: 无法清理启动器更新残留 %s: %v\n", path, err)
+		}
+	}
+}
+
+func cleanupRuntimeTemps(root string, stderr io.Writer) {
+	base := managedRuntimeRoot(root)
+	if _, err := os.Lstat(base); errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err := validateManagedPath(root, base, "受管运行时根目录", false, true); err != nil {
+		fmt.Fprintf(stderr, "警告: 无法检查运行时更新残留: %v\n", err)
+		return
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		fmt.Fprintf(stderr, "警告: 无法扫描运行时更新残留: %v\n", err)
+		return
+	}
+	for _, entry := range entries {
+		if !numericTempSuffix(entry.Name(), ".staging-", "") {
+			continue
+		}
+		path := filepath.Join(base, entry.Name())
+		if err := removeMarkedTempDirectory(base, path); err != nil {
+			fmt.Fprintf(stderr, "警告: 无法清理运行时更新残留 %s: %v\n", path, err)
 		}
 	}
 }

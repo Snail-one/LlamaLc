@@ -55,6 +55,56 @@ func validateRuntimeRelativePath(value string, allowEmpty bool) (string, error) 
 	return clean, nil
 }
 
+func validateRuntimeChildPath(value string) (string, error) {
+	clean, err := validateRuntimeRelativePath(value, false)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Clean(filepath.FromSlash(ManagedRuntimeBase))
+	relative, err := filepath.Rel(base, clean)
+	if err != nil || relative == "." || filepath.Dir(relative) != "." {
+		return "", fmt.Errorf("受管运行时必须是 %s 的直接子目录: %q", ManagedRuntimeBase, value)
+	}
+	return clean, nil
+}
+
+func validHistoricalRuntimeName(name string) bool {
+	if name == "" || sanitizeRuntimeName(name) != name {
+		return false
+	}
+	separator := strings.IndexByte(name, '-')
+	if separator < 0 || separator == len(name)-1 {
+		return false
+	}
+	_, err := LlamaBuildNumber(name[:separator])
+	return err == nil
+}
+
+func validPendingCleanupName(name string) bool {
+	if validHistoricalRuntimeName(name) {
+		return true
+	}
+	if strings.HasPrefix(name, ".old-") {
+		return validHistoricalRuntimeName(strings.TrimPrefix(name, ".old-"))
+	}
+	if name == ".orphan-recovery" {
+		return true
+	}
+	if !strings.HasPrefix(name, ".orphan-recovery-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(name, ".orphan-recovery-")
+	if suffix == "" {
+		return false
+	}
+	for _, character := range suffix {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func LoadUpdateState(root string) (UpdateState, bool, error) {
 	path := UpdateStatePath(root)
 	if err := validateManagedPath(root, path, "更新状态文件", true, false); err != nil {
@@ -109,11 +159,34 @@ func ValidateUpdateState(root string, state UpdateState) error {
 	if err := validateManagedPath(root, base, "受管运行时根目录", true, true); err != nil {
 		return err
 	}
+	active, err := validateRuntimeChildPath(state.ActiveRuntime)
+	if err != nil {
+		return err
+	}
+	expectedActive := filepath.Join(filepath.Clean(filepath.FromSlash(ManagedRuntimeBase)), sanitizeRuntimeName(state.LlamaTag+"-"+state.Backend))
+	if active != expectedActive {
+		return fmt.Errorf("活动运行时路径与 llama tag/后端不匹配: %q", state.ActiveRuntime)
+	}
+	seenCleanup := make(map[string]bool, len(state.PendingCleanup))
 	paths := append([]string{state.ActiveRuntime}, state.PendingCleanup...)
-	for _, relative := range paths {
-		clean, err := validateRuntimeRelativePath(relative, false)
+	for index, relative := range paths {
+		clean, err := validateRuntimeChildPath(relative)
 		if err != nil {
 			return err
+		}
+		if index > 0 {
+			if clean == active {
+				return errors.New("待清理目录不能指向活动运行时")
+			}
+			name := filepath.Base(clean)
+			if !validPendingCleanupName(name) {
+				return fmt.Errorf("待清理目录名称不属于启动器保留格式: %q", relative)
+			}
+			key := strings.ToLower(clean)
+			if seenCleanup[key] {
+				return fmt.Errorf("更新状态包含重复待清理目录: %q", relative)
+			}
+			seenCleanup[key] = true
 		}
 		absolute := filepath.Join(root, clean)
 		if err := validateManagedPath(base, absolute, "受管运行时", true, true); err != nil {
@@ -133,6 +206,9 @@ func WriteUpdateState(root string, state UpdateState) error {
 		return err
 	}
 	directory := filepath.Join(root, ConfigDirectoryName)
+	if err := validateManagedPath(root, directory, "配置目录", true, true); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("无法创建配置目录: %w", err)
 	}
