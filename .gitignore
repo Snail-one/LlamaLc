@@ -4,6 +4,9 @@
 /Server_README.md
 /config/router-models.ini
 /config/router-models.auto.ini
+/config/update-state.json
+/config/update-state.json.corrupt*
+/data/
 /bin/llama-launcher.exe
 
 # Build output and llama.cpp Windows distribution

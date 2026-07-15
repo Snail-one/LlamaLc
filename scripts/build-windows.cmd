@@ -53,20 +53,21 @@ if not defined MODULE_PATH (
     exit /b 1
 )
 
-if not exist "bin" mkdir "bin"
+set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
+if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
 
 echo Building Windows !TARGET_ARCH! version !VERSION!...
 set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
 set "CGO_ENABLED=0"
 
-go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "bin\!APP_NAME!.exe" ".\cmd\!APP_NAME!"
+go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\!APP_NAME!.exe" ".\cmd\!APP_NAME!"
 if errorlevel 1 (
     echo Build failed.
     exit /b 1
 )
 
-echo Build complete: %CD%\bin\!APP_NAME!.exe
+echo Build complete: %CD%\!OUTPUT_DIR!\!APP_NAME!.exe
 echo Version: !VERSION!
 echo Commit: !COMMIT!
 echo Build date: !BUILD_DATE!

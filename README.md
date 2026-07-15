@@ -1,6 +1,6 @@
 # llama.cpp Windows/Linux Go 启动器
 
-一个不依赖 PowerShell 的 `llama.cpp` 启动器。Windows 用户运行 `bin/llama-launcher.exe`，Linux 用户运行 `bin/llama-launcher`，即可启动生成模型、Embedding、Rerank、多模型 Router 或命令行聊天。
+一个不依赖 PowerShell 的 `llama.cpp` 启动器。部署根目录必须字面命名为 `llama.cpp`；Windows 用户只从 `llama.cpp/bin/llama-launcher.exe`、Linux 用户只从 `llama.cpp/bin/llama-launcher` 执行命令。启动器可从官方 GitHub Releases 安装和手动更新受管的 llama.cpp 运行时。
 
 实现只使用 Go 标准库。启动参数以 [llama.cpp 官方 Server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) 为准。
 
@@ -10,11 +10,11 @@
 
 ### Linux 原生构建
 
-`build-only.sh` 默认构建当前 Linux 架构，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入 `dist/`：
+`build-only.sh` 默认构建当前 Linux 架构，自动读取 `go.mod` 模块路径、Git 版本和提交，并将产物写入可直接运行的 `dist/<os>-<arch>/llama.cpp/bin/` 部署树：
 
 ```sh
 ./build-only.sh
-./dist/llama-launcher_linux_amd64 --version
+./dist/linux-amd64/llama.cpp/bin/llama-launcher --version
 ```
 
 可通过环境变量覆盖目标平台和所有版本信息：
@@ -35,8 +35,8 @@ GOOS=windows GOARCH=amd64 ./build-only.sh
 输出文件会根据入口程序、目标系统和架构自动命名，例如：
 
 ```text
-dist/llama-launcher_linux_amd64
-dist/llama-launcher_windows_amd64.exe
+dist/linux-amd64/llama.cpp/bin/llama-launcher
+dist/windows-amd64/llama.cpp/bin/llama-launcher.exe
 ```
 
 ### Windows 启动器一键构建
@@ -65,7 +65,7 @@ Windows 下双击 `scripts/build-windows.cmd`，或在终端运行：
 .\scripts\build-windows.cmd v1.2.3 arm64
 ```
 
-`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `bin/llama-launcher.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
+`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
 
 `llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 
@@ -85,14 +85,15 @@ Commit:    abc1234
 BuildDate: 2026-07-14T12:00:00Z
 ```
 
-版本查询直接输出并以状态码 `0` 退出，不要求位于 `bin/`，不会创建配置、扫描模型或启动服务器。其他命令仍会强制检查启动器必须位于 `bin/`。交互菜单标题显示其中的版本号。
+版本查询直接输出并以状态码 `0` 退出，不会创建配置、扫描模型或启动服务器，但和其他用户命令一样要求启动器位于字面名为 `llama.cpp` 的根目录下的 `bin/`。交互菜单标题显示其中的版本号。
 
 ## 目录布局
 
 ```text
 llama.cpp/
-├─ llama-server.exe / llama-server  # Windows / Linux
-├─ llama-cli.exe / llama-cli        # Windows / Linux
+├─ data/
+│  └─ llama.cpp/
+│     └─ <tag>-<backend>/          # 受管 server、cli 和运行库
 ├─ models/                        # 自动创建；生成/聊天模型：gguf、bin、ggml
 ├─ embeddings/                    # 自动创建；Embedding 模型：gguf
 ├─ rerank/                        # 自动创建；Rerank 模型：gguf
@@ -100,22 +101,48 @@ llama.cpp/
 ├─ config/                        # 验证安装位置后自动创建
 │  ├─ launcher.json              # 首次运行自动生成
 │  ├─ launcher.api-key           # 传给 llama-server 的私有 key 文件
+│  ├─ update-state.json          # 私有的活动版本、后端和摘要状态
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
    └─ llama-launcher.exe / llama-launcher
 ```
 
+根目录旧版平铺的 `llama-server`、`llama-cli`（以及 `.exe` 版本）会被完全忽略，既不迁移也不删除。更新默认删除上一个受管版本；Windows 文件占用导致暂时无法删除时，会写入 `pending_cleanup`，下次管理命令重试。模型文件不属于更新范围。
+
 模型目录会递归扫描并稳定排序。`llama-server`、`llama-cli`、模型文件、四个模型目录、`config/` 和受管理配置文件均必须是真实的普通文件或目录，不允许使用符号链接或 Windows 重解析点。Router 只接收 GGUF，API model id 使用完整 GGUF 文件名；如果三个模型目录中存在同名文件，启动器会列出所有冲突并拒绝生成配置，避免静默覆盖。
 
-除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），并检查直接父目录必须名为 `bin`。随后按当前系统检查根目录中的 `llama-server.exe`（Windows）或 `llama-server`（Linux），在根目录执行 `--version`，只有命令在 30 秒内成功退出、输出不超过 1 MiB 且内容可识别时，才读取配置和创建目录。任何位置、平台、文件、运行库或版本探测错误都不会创建配置或模型目录。
+除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-根目录固定为 `bin` 的上一级；模型目录、配置文件和 Router 文件位置也全部固定。`--root` 与 `--config` 已移除，传入时会直接报错，防止意外把文件写到其他位置。顶层帮助、子命令帮助和未知命令不会执行 server 探测或初始化磁盘；`-v`、`--version`、`version` 则可以在任意位置查询启动器版本。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。普通启动不会联网，也不会自动检查更新。
+
+## 安装与手动更新
+
+```sh
+# 后端必须手动选择；可用值由当前官方 Release 动态列出
+bin/llama-launcher install --backend cpu
+bin/llama-launcher install --version b9637 --backend vulkan
+
+# 只读检查，默认检查两个组件
+bin/llama-launcher check-update
+bin/llama-launcher check-update --component llama --json
+
+# 默认依次更新 llama.cpp 和启动器
+bin/llama-launcher update --yes
+bin/llama-launcher update --component llama --backend cpu --yes
+bin/llama-launcher update --component launcher --launcher-version v1.2.3 --yes
+```
+
+CLI 写入默认要求终端确认；stdin 不是交互终端时必须提供 `--yes`。同版本默认不操作，`--force` 可重装；降级默认拒绝，只有 `--allow-downgrade` 才允许。后续 llama.cpp 更新沿用已保存后端；新版不再提供该后端时不会自动切换，交互模式要求重新选择，非交互模式列出可用值并报错。
+
+元数据来自 `api.github.com` 上的 `Snail-one/LlamaLc` 和 `ggml-org/llama.cpp` Releases。可用 `LLAMALC_GITHUB_TOKEN` 提高 API 限额，认证头只发送给 `api.github.com`。网络默认遵循系统的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY` 设置。所有下载必须是 HTTPS 且带 GitHub API SHA-256 digest；启动器还会和 Release 的 `SHA256SUMS.txt` 交叉校验。CUDA 后端会把匹配的运行库资产作为同一选择整体下载。
+
+根目录固定为 `bin` 的上一级；模型目录、配置文件和 Router 文件位置也全部固定。`--root` 与 `--config` 已移除，传入时会直接报错，防止意外把文件写到其他位置。顶层帮助、子命令帮助、未知命令和版本查询都不会执行 server 探测或初始化磁盘。
 
 探测成功后会同时打印实际执行的 server 文件与识别到的版本，例如：
 
 ```text
-实际探测文件: E:\llama.cpp\llama-server.exe
+实际探测文件: E:\llama.cpp\data\llama.cpp\b9637-cpu\llama-b9637\llama-server.exe
 已识别 llama.cpp: version: 10002 (a7312ae94)
 ```
 
@@ -287,7 +314,7 @@ GET http://127.0.0.1:29856/models
 
 ## 自动发版
 
-推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：使用当前稳定 Go 工具链运行测试与 `go vet`，交叉编译 Windows amd64 版本，将 tag、提交哈希和 UTC 构建时间注入 exe，随后上传 ZIP 和 `SHA256SUMS.txt` 到 GitHub Release。普通 push 和 Pull Request 不运行工作流。
+推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。资产固定命名为 `llama-launcher-<version>-<os>-<arch>.zip|tar.gz`；每个 archive 只含 `llama.cpp/bin/llama-launcher[.exe]`，并发布覆盖四个 archive 的 `SHA256SUMS.txt`。工作流会校验 archive 结构和二进制中的嵌入版本后才发布。
 
 ```sh
 git tag v1.0.0

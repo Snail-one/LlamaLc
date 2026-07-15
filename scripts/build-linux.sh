@@ -24,12 +24,9 @@ GOOS=windows GOARCH="${TARGET_ARCH}" "${ROOT_DIR}/build-only.sh"
 
 ENTRY_DIR="$(find "${ROOT_DIR}/cmd" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 APP_NAME="$(basename -- "${ENTRY_DIR}")"
-SOURCE_FILE="${ROOT_DIR}/dist/${APP_NAME}_windows_${TARGET_ARCH}.exe"
-OUTPUT_FILE="${ROOT_DIR}/bin/${APP_NAME}.exe"
-mkdir -p "${ROOT_DIR}/bin"
-cp "${SOURCE_FILE}" "${OUTPUT_FILE}"
+OUTPUT_FILE="${ROOT_DIR}/dist/windows-${TARGET_ARCH}/llama.cpp/bin/${APP_NAME}.exe"
 
-echo "Windows 启动器已复制到: ${OUTPUT_FILE}"
+echo "Windows 部署树已生成: ${OUTPUT_FILE}"
 if command -v file >/dev/null 2>&1; then
     file "${OUTPUT_FILE}"
 fi

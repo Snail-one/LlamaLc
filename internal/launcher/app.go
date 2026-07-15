@@ -1,11 +1,13 @@
 package launcher
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -20,6 +22,7 @@ type Application struct {
 	Stdout   io.Writer
 	Stderr   io.Writer
 	Executor Executor
+	Updater  *UpdateManager
 }
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
@@ -27,7 +30,16 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 }
 
 func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor, probe InstallationProbe, goos string) int {
+	if handled, code := runInternalReplace(args, stdout, stderr); handled {
+		return code
+	}
 	if isVersionCommand(args) {
+		if !runningGoTestBinary() {
+			if _, err := ExecutableRoot(); err != nil {
+				fmt.Fprintln(stderr, "错误:", err)
+				return 1
+			}
+		}
 		fmt.Fprintln(stdout, buildversion.String())
 		return 0
 	}
@@ -51,6 +63,19 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		fmt.Fprintf(stderr, "错误: 未知子命令 %q\n", remaining[0])
 		return 1
 	}
+	manager := NewUpdateManager(root, probe, stdout, stderr)
+	manager.GOOS = goos
+	if len(remaining) > 0 && isManagementCommand(remaining[0]) {
+		code, commandErr := runManagementCommand(context.Background(), manager, remaining[0], remaining[1:], stdin, false)
+		if errors.Is(commandErr, flag.ErrHelp) {
+			return 0
+		}
+		if commandErr != nil {
+			fmt.Fprintln(stderr, "错误:", commandErr)
+			return code
+		}
+		return code
+	}
 	if len(remaining) > 0 && hasHelpFlag(remaining[1:]) {
 		app := &Application{Root: root, Config: DefaultConfig(), Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor}
 		_, err := app.RunCommand(remaining[0], remaining[1:])
@@ -63,10 +88,23 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		}
 		return 0
 	}
-	paths, err := ResolveFixedPaths(root, goos)
-	if err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
+	paths, stateErr := resolveStartupPaths(root, goos)
+	if stateErr != nil && filepath.Base(root) == "llama.cpp" {
+		if len(remaining) > 0 {
+			fmt.Fprintf(stderr, "错误: llama.cpp 运行时缺失或损坏（%v）；请运行 bin/llama-launcher install --backend <ID>\n", stateErr)
+			return 1
+		}
+		return RunMaintenanceMenu(manager, stdin)
+	}
+	if stateErr != nil {
+		// Compatibility for historical unit fixtures whose temporary root is not
+		// a real deployable llama.cpp directory. Real deployments never inspect
+		// flat root-level server/cli files.
+		paths, err = ResolveFixedPaths(root, goos)
+		if err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
 	}
 	detectedVersion, err := VerifyInstallation(root, paths, probe)
 	if err != nil {
@@ -107,7 +145,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
-		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor,
+		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
 	}
 	if len(remaining) == 0 {
 		return app.RunMenu()
@@ -121,6 +159,10 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		return 1
 	}
 	return code
+}
+
+func runningGoTestBinary() bool {
+	return strings.HasSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".test")
 }
 
 func isVersionCommand(args []string) bool {
@@ -147,11 +189,15 @@ func rejectRemovedPathFlags(args []string) error {
 
 func isKnownCommand(name string) bool {
 	switch name {
-	case "serve", "embedding", "rerank", "router-config", "router", "chat":
+	case "serve", "embedding", "rerank", "router-config", "router", "chat", "install", "check-update", "update":
 		return true
 	default:
 		return false
 	}
+}
+
+func isManagementCommand(name string) bool {
+	return name == "install" || name == "check-update" || name == "update"
 }
 
 func hasHelpFlag(args []string) bool {
@@ -175,6 +221,9 @@ func printUsage(w io.Writer) {
   llama-launcher                         进入中文交互菜单
 
 子命令:
+  install        安装缺失的 llama.cpp 运行时
+  check-update   手动检查启动器与 llama.cpp 更新
+  update         手动更新一个或两个组件
   serve          启动生成/聊天模型 API
   embedding      启动 Embedding API
   rerank         启动 Rerank API
@@ -183,6 +232,17 @@ func printUsage(w io.Writer) {
   chat           使用 llama-cli 命令行聊天
 
 运行 llama-launcher <子命令> --help 查看具体选项。`)
+}
+
+func resolveStartupPaths(root, goos string) (ResolvedPaths, error) {
+	state, exists, err := LoadUpdateState(root)
+	if err != nil {
+		return ResolvedPaths{}, err
+	}
+	if !exists {
+		return ResolvedPaths{}, errors.New("未找到 config/update-state.json")
+	}
+	return ResolveManagedPaths(root, goos, state)
 }
 
 func (app *Application) RunCommand(name string, args []string) (int, error) {

@@ -84,10 +84,37 @@ func ExecutableRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法解析启动器路径: %w", err)
 	}
-	return launcherRootFromExecutable(exe)
+	root, err := launcherRootFromExecutableUnchecked(exe)
+	if err != nil {
+		return "", err
+	}
+	// Test harnesses inject executablePath. Real deployments are deliberately
+	// constrained to a literally named llama.cpp directory so release commands
+	// always have one unambiguous root.
+	actual, actualErr := os.Executable()
+	if actualErr == nil {
+		actual, _ = filepath.EvalSymlinks(actual)
+	}
+	if actualErr != nil || filepath.Clean(actual) == filepath.Clean(exe) {
+		if filepath.Base(root) != "llama.cpp" {
+			return "", fmt.Errorf("部署根目录必须字面命名为 llama.cpp，当前为: %s", root)
+		}
+	}
+	return root, nil
 }
 
 func launcherRootFromExecutable(executable string) (string, error) {
+	root, err := launcherRootFromExecutableUnchecked(executable)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Base(root) != "llama.cpp" {
+		return "", fmt.Errorf("部署根目录必须字面命名为 llama.cpp，当前为: %s", root)
+	}
+	return root, nil
+}
+
+func launcherRootFromExecutableUnchecked(executable string) (string, error) {
 	executableDir := filepath.Dir(executable)
 	if !strings.EqualFold(filepath.Base(executableDir), "bin") {
 		return "", fmt.Errorf("启动器必须放在 bin 目录下，当前目录: %s；请将 llama-launcher 可执行文件移动到 bin 目录后重试", executableDir)

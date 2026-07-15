@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -41,9 +42,10 @@ llama.cpp Go 启动器 %s
   4. 生成手动 Router 配置
   5. 多模型 Router
   6. CLI 命令行聊天
+  7. 检查并更新启动器与 llama.cpp
   q. 退出
 `, buildversion.Version, app.Root)
-		choice, err := m.readChoice("请选择", 1, 1, 6)
+		choice, err := m.readChoice("请选择", 1, 1, 7)
 		if errors.Is(err, io.EOF) {
 			return 0
 		}
@@ -273,6 +275,23 @@ func (m *menu) runChoice(choice int) error {
 			return err
 		}
 		return m.confirmAndRun("chat", append(args, runtimeArgs...))
+	case 7:
+		if m.app.Updater == nil {
+			return errors.New("更新器未初始化")
+		}
+		confirmed, err := m.readYesNo("将联网检查并更新启动器与 llama.cpp，是否继续", false)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(m.app.Stdout, "已取消。")
+			return m.pause()
+		}
+		_, err = runManagementCommand(context.Background(), m.app.Updater, "update", []string{"--component", "all", "--yes"}, m.reader, true)
+		if err != nil {
+			return err
+		}
+		return m.pause()
 	}
 	return nil
 }

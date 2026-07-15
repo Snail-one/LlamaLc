@@ -34,9 +34,10 @@ OUTPUT_SUFFIX=""
 if [[ "${TARGET_OS}" == "windows" ]]; then
     OUTPUT_SUFFIX=".exe"
 fi
-OUTPUT_FILE="${ROOT_DIR}/dist/${APP_NAME}_${TARGET_OS}_${TARGET_ARCH}${OUTPUT_SUFFIX}"
+OUTPUT_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}/llama.cpp"
+OUTPUT_FILE="${OUTPUT_ROOT}/bin/${APP_NAME}${OUTPUT_SUFFIX}"
 
-mkdir -p "${ROOT_DIR}/dist"
+mkdir -p "${OUTPUT_ROOT}/bin"
 
 LDFLAGS="-s -w"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Version=${VERSION}"

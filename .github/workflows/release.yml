@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -14,54 +13,67 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish release
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
           check-latest: true
 
-      - name: Test
-        run: go test ./...
+      - name: Test and vet
+        run: |
+          go test ./...
+          go vet ./...
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Build and package Windows amd64
+      - name: Build four launcher archives
         env:
           VERSION: ${{ github.ref_name }}
           COMMIT: ${{ github.sha }}
         run: |
-          ENTRY_DIR="$(find cmd -mindepth 1 -maxdepth 1 -type d -print -quit)"
-          APP_NAME="$(basename "${ENTRY_DIR}")"
-          MODULE_PATH="$(go list -m)"
-          BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          mkdir -p dist/package/bin
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
-            -trimpath \
-            -ldflags "-s -w -X ${MODULE_PATH}/internal/version.Version=${VERSION} -X ${MODULE_PATH}/internal/version.Commit=${COMMIT} -X ${MODULE_PATH}/internal/version.BuildDate=${BUILD_DATE}" \
-            -o "dist/package/bin/${APP_NAME}.exe" \
-            "./${ENTRY_DIR}"
-          cp README.md launcher.example.json dist/package/
-          cd dist/package
-          zip -r "../${APP_NAME}-${VERSION}-windows-amd64.zip" \
-            bin README.md launcher.example.json
-          cd ..
-          sha256sum ./*.zip > SHA256SUMS.txt
+          set -euo pipefail
+          module="$(go list -m)"
+          build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            suffix=""
+            archive_ext="tar.gz"
+            if [ "${goos}" = windows ]; then
+              suffix=".exe"
+              archive_ext="zip"
+            fi
+            package="$(mktemp -d)"
+            mkdir -p "${package}/llama.cpp/bin"
+            binary="${package}/llama.cpp/bin/llama-launcher${suffix}"
+            GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
+              -o "${binary}" ./cmd/llama-launcher
+            grep -aFq "${VERSION}" "${binary}"
+            archive="dist/llama-launcher-${VERSION}-${goos}-${goarch}.${archive_ext}"
+            if [ "${goos}" = windows ]; then
+              (cd "${package}" && zip -q -r "${GITHUB_WORKSPACE}/${archive}" llama.cpp)
+              test "$(unzip -Z1 "${archive}" | grep -v '/$')" = "llama.cpp/bin/llama-launcher.exe"
+            else
+              tar -C "${package}" -czf "${archive}" llama.cpp
+              test "$(tar -tzf "${archive}" | grep -v '/$')" = "llama.cpp/bin/llama-launcher"
+            fi
+            rm -rf "${package}"
+          done
+          (cd dist && sha256sum llama-launcher-* > SHA256SUMS.txt)
+          test "$(wc -l < dist/SHA256SUMS.txt)" -eq 4
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          dist/*.zip
-          dist/SHA256SUMS.txt
-          --generate-notes
-          --verify-tag
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/llama-launcher-* \
+            dist/SHA256SUMS.txt \
+            --generate-notes \
+            --verify-tag

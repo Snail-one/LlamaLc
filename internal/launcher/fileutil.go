@@ -110,3 +110,17 @@ func writeAndSync(file *os.File, data []byte) error {
 	}
 	return file.Close()
 }
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	// Windows does not permit syncing directory handles; replaceFile provides
+	// the strongest primitive available there.
+	if err := directory.Sync(); err != nil && os.PathSeparator != '\\' {
+		return err
+	}
+	return nil
+}
