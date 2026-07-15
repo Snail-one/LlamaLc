@@ -54,6 +54,9 @@ llama.cpp: %s
 		if errors.Is(err, errMenuBack) {
 			return 0
 		}
+		if errors.Is(err, errUpdaterHandoff) {
+			return 0
+		}
 		if err != nil {
 			fmt.Fprintln(app.Stderr, "错误:", err)
 			continue
@@ -311,7 +314,7 @@ func (m *menu) runChoice(choice int) error {
 			fmt.Fprintln(m.app.Stdout, "已取消。")
 			return m.pause()
 		}
-		_, err = runManagementCommand(context.Background(), m.app.Updater, "update", []string{"--component", "all", "--yes"}, m.reader, true)
+		_, err = delegateManagement(context.Background(), m.app.Updater, []string{"update", "--component", "all", "--yes"}, m.reader, true, true)
 		if err != nil {
 			return err
 		}

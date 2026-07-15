@@ -35,9 +35,6 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Exe
 }
 
 func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor, probe InstallationProbe, goos string) int {
-	if handled, code := runInternalReplace(args, stdout, stderr); handled {
-		return code
-	}
 	if isVersionCommand(args) {
 		if !runningGoTestBinary() {
 			if _, err := ExecutableRoot(); err != nil {
@@ -71,7 +68,11 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	manager := updateManagerFactory(root, probe, stdout, stderr)
 	manager.GOOS = goos
 	if len(remaining) > 0 && isManagementCommand(remaining[0]) {
-		code, commandErr := runManagementCommand(context.Background(), manager, remaining[0], remaining[1:], stdin, false)
+		handoff := remaining[0] == "update"
+		code, commandErr := delegateManagement(context.Background(), manager, remaining, stdin, false, handoff)
+		if errors.Is(commandErr, errUpdaterHandoff) {
+			return code
+		}
 		if errors.Is(commandErr, flag.ErrHelp) {
 			return 0
 		}

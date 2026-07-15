@@ -403,6 +403,26 @@ func makeRuntimeTar(t *testing.T, tag string) []byte {
 	return output.Bytes()
 }
 
+func makeLauncherTar(t *testing.T, executable []byte) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	gz := gzip.NewWriter(&output)
+	writer := tar.NewWriter(gz)
+	if err := writer.WriteHeader(&tar.Header{Name: "llama.cpp/bin/llama-launcher", Mode: 0o755, Size: int64(len(executable)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(executable); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
 func makeWindowsRuntimeZIP(t *testing.T, tag string) []byte {
 	t.Helper()
 	var output bytes.Buffer
@@ -455,13 +475,23 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	}
 	probe := &fakeInstallationProbe{}
 	oldFactory := updateManagerFactory
+	oldEnsurer, oldRunner := updaterToolEnsurer, updaterManagementRunner
+	var delegatedManager *UpdateManager
 	updateManagerFactory = func(factoryRoot string, factoryProbe InstallationProbe, stdout, stderr io.Writer) *UpdateManager {
-		return &UpdateManager{
+		delegatedManager = &UpdateManager{
 			Root: factoryRoot, GOOS: "windows", GOARCH: "amd64", Client: client,
 			Probe: factoryProbe, LauncherProbe: factoryProbe, Stdout: stdout, Stderr: stderr,
 		}
+		return delegatedManager
 	}
-	t.Cleanup(func() { updateManagerFactory = oldFactory })
+	updaterToolEnsurer = func(context.Context, *UpdateManager) (string, error) { return executable, nil }
+	updaterManagementRunner = func(_ string, _ string, _ string, args []string, stdin io.Reader, _ io.Writer, _ io.Writer, interactive, _ bool) (int, error) {
+		return runManagementCommand(context.Background(), delegatedManager, args[0], args[1:], stdin, interactive)
+	}
+	t.Cleanup(func() {
+		updateManagerFactory = oldFactory
+		updaterToolEnsurer, updaterManagementRunner = oldEnsurer, oldRunner
+	})
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	code := mainWithProbe(nil, bytes.NewBufferString("1\n1\ny\nq\n"), stdout, stderr, &fakeExecutor{}, probe, "windows")
@@ -743,5 +773,144 @@ func TestRecoveryRefusesSymlinkWithoutChangingRuntime(t *testing.T) {
 	}
 	if target, err := os.Readlink(link); err != nil || target != outside {
 		t.Fatalf("unsafe runtime was changed: target=%q err=%v", target, err)
+	}
+}
+
+func TestUpdaterAssetNamingAndReleaseSelection(t *testing.T) {
+	if got := updaterAssetName("v1.2.3", "windows", "amd64"); got != "llama-updater-v1.2.3-windows-amd64.exe" {
+		t.Fatalf("windows updater asset=%q", got)
+	}
+	if got := updaterAssetName("v1.2.3", "linux", "arm64"); got != "llama-updater-v1.2.3-linux-arm64" {
+		t.Fatalf("linux updater asset=%q", got)
+	}
+	release := GitHubRelease{TagName: "v1.2.3", Assets: []GitHubAsset{
+		testAsset("llama-updater-v1.2.3-windows-amd64.exe"),
+		testAsset("SHA256SUMS.txt"),
+	}}
+	updater, sums, err := updaterReleaseAssets(release, "windows", "amd64")
+	if err != nil || updater.Name == "" || sums.Name != "SHA256SUMS.txt" {
+		t.Fatalf("updater=%#v sums=%#v err=%v", updater, sums, err)
+	}
+}
+
+func TestEnsureUpdaterToolDownloadsAndVerifiesSeparateAsset(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := "v1.2.3"
+	updaterName := updaterAssetName(tag, "windows", "amd64")
+	updaterData := []byte("standalone updater")
+	updaterHash := sha256.Sum256(updaterData)
+	sumsData := []byte(hex.EncodeToString(updaterHash[:]) + "  " + updaterName + "\n")
+	sumsHash := sha256.Sum256(sumsData)
+	release := GitHubRelease{TagName: tag, Assets: []GitHubAsset{
+		{Name: updaterName, Size: int64(len(updaterData)), Digest: "sha256:" + hex.EncodeToString(updaterHash[:]), BrowserDownloadURL: "https://downloads.example/updater"},
+		{Name: "SHA256SUMS.txt", Size: int64(len(sumsData)), Digest: "sha256:" + hex.EncodeToString(sumsHash[:]), BrowserDownloadURL: "https://downloads.example/sums"},
+	}}
+	releaseData, err := json.Marshal(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &GitHubClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body := updaterData
+			switch {
+			case request.URL.Hostname() == "api.github.com":
+				body = releaseData
+			case strings.Contains(request.URL.Path, "sums"):
+				body = sumsData
+			}
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK", Header: make(http.Header),
+				Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+			}, nil
+		})},
+		APIBase: githubAPIBase, ProxyResolver: func(*http.Request) (*url.URL, error) { return nil, nil },
+	}
+	probe := &fakeInstallationProbe{output: "Version:   " + tag + "\nCommit: test\n"}
+	manager := &UpdateManager{
+		Root: root, GOOS: "windows", GOARCH: "amd64", Client: client,
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+
+	path, err := ensureUpdaterTool(context.Background(), manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(root, "bin", "llama-updater.exe") {
+		t.Fatalf("updater path=%s", path)
+	}
+	if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, updaterData) {
+		t.Fatalf("installed updater content=%q err=%v", content, err)
+	}
+}
+
+func TestDelegateManagementUsesStandaloneRunner(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	manager := &UpdateManager{Root: root, GOOS: "windows", GOARCH: "amd64", Stdout: io.Discard, Stderr: io.Discard}
+	oldEnsurer, oldRunner := updaterToolEnsurer, updaterManagementRunner
+	t.Cleanup(func() { updaterToolEnsurer, updaterManagementRunner = oldEnsurer, oldRunner })
+	updaterToolEnsurer = func(context.Context, *UpdateManager) (string, error) {
+		return `C:\llama.cpp\bin\llama-updater.exe`, nil
+	}
+	var gotArgs []string
+	var gotInteractive, gotHandoff bool
+	updaterManagementRunner = func(_ string, _ string, _ string, args []string, _ io.Reader, _ io.Writer, _ io.Writer, interactive, handoff bool) (int, error) {
+		gotArgs = append([]string(nil), args...)
+		gotInteractive, gotHandoff = interactive, handoff
+		return 0, errUpdaterHandoff
+	}
+
+	code, err := delegateManagement(context.Background(), manager, []string{"update", "--component", "all"}, bytes.NewBuffer(nil), true, true)
+	if code != 0 || !errors.Is(err, errUpdaterHandoff) {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	if strings.Join(gotArgs, " ") != "update --component all" || !gotInteractive || !gotHandoff {
+		t.Fatalf("args=%v interactive=%v handoff=%v", gotArgs, gotInteractive, gotHandoff)
+	}
+}
+
+func TestStandaloneUpdaterReplacesFixedLauncherTarget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	launcherPath := filepath.Join(root, "bin", "llama-launcher")
+	if err := os.MkdirAll(filepath.Dir(launcherPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcherPath, []byte("old launcher"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := "v1.2.3"
+	archiveName := launcherAssetName(tag, "linux", "amd64")
+	newLauncher := []byte("new launcher")
+	archiveData := makeLauncherTar(t, newLauncher)
+	archiveHash := sha256.Sum256(archiveData)
+	sumsData := []byte(hex.EncodeToString(archiveHash[:]) + "  " + archiveName + "\n")
+	sumsHash := sha256.Sum256(sumsData)
+	release := GitHubRelease{TagName: tag, Assets: []GitHubAsset{
+		{Name: archiveName, Size: int64(len(archiveData)), Digest: "sha256:" + hex.EncodeToString(archiveHash[:]), BrowserDownloadURL: "https://downloads.example/launcher"},
+		{Name: "SHA256SUMS.txt", Size: int64(len(sumsData)), Digest: "sha256:" + hex.EncodeToString(sumsHash[:]), BrowserDownloadURL: "https://downloads.example/sums"},
+	}}
+	client := &GitHubClient{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := archiveData
+		if strings.Contains(request.URL.Path, "sums") {
+			body = sumsData
+		}
+		return &http.Response{
+			StatusCode: 200, Status: "200 OK", Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+		}, nil
+	})}}
+	probe := &fakeInstallationProbe{output: "Version:   " + tag + "\nCommit: test\n"}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: client,
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+
+	if err := manager.UpdateLauncher(context.Background(), release, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(launcherPath); err != nil || !bytes.Equal(content, newLauncher) {
+		t.Fatalf("launcher target content=%q err=%v", content, err)
 	}
 }

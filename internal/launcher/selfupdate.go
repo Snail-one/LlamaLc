@@ -118,12 +118,12 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 	if !strings.Contains(strings.ToLower(probeOutput), wantVersionLine) {
 		return fmt.Errorf("新启动器嵌入版本与 Release %s 不一致%s", release.TagName, formatProbeOutput(probeOutput))
 	}
-	current, err := os.Executable()
-	if err != nil {
-		return err
+	currentName := "llama-launcher"
+	if manager.GOOS == "windows" {
+		currentName += ".exe"
 	}
-	current, err = filepath.EvalSymlinks(current)
-	if err != nil {
+	current := filepath.Join(manager.Root, "bin", currentName)
+	if err := validateManagedPath(manager.Root, current, "当前启动器", false, false); err != nil {
 		return err
 	}
 	return installLauncherBinary(wantPath, current, release.TagName, manager.Stdout)
@@ -203,7 +203,10 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, ".llama-launcher-new-") && !strings.HasPrefix(name, ".launcher-update-") {
+		if !strings.HasPrefix(name, ".llama-launcher-new-") &&
+			!strings.HasPrefix(name, ".llama-updater-new-") &&
+			!strings.HasPrefix(name, ".updater-bootstrap-") &&
+			!strings.HasPrefix(name, ".launcher-update-") {
 			continue
 		}
 		path := filepath.Join(bin, name)

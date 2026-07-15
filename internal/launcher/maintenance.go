@@ -41,7 +41,7 @@ llama.cpp 维护模式
 		case "q":
 			return maintenanceMenuResult{input: reader}
 		case "1":
-			code, commandErr := runManagementCommand(context.Background(), manager, "install", nil, reader, true)
+			code, commandErr := delegateManagement(context.Background(), manager, []string{"install"}, reader, true, false)
 			if commandErr != nil {
 				fmt.Fprintln(manager.Stderr, "错误:", commandErr)
 				if errors.Is(err, io.EOF) {
@@ -55,7 +55,14 @@ llama.cpp 维护模式
 			fmt.Fprintln(manager.Stdout, "llama.cpp 安装完成，正在进入主菜单……")
 			return maintenanceMenuResult{installed: true, input: reader}
 		case "2":
-			code, commandErr := runManagementCommand(context.Background(), manager, "update", []string{"--component", "launcher"}, reader, true)
+			if confirmErr := requireConfirmation(reader, manager.Stdout, false, true, "更新启动器"); confirmErr != nil {
+				fmt.Fprintln(manager.Stderr, "错误:", confirmErr)
+				continue
+			}
+			code, commandErr := delegateManagement(context.Background(), manager, []string{"update", "--component", "launcher", "--yes"}, reader, false, true)
+			if errors.Is(commandErr, errUpdaterHandoff) {
+				return maintenanceMenuResult{code: code, input: reader}
+			}
 			if commandErr != nil {
 				fmt.Fprintln(manager.Stderr, "错误:", commandErr)
 				if errors.Is(err, io.EOF) {

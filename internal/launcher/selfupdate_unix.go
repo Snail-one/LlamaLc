@@ -35,5 +35,3 @@ func installLauncherBinary(source, target, version string, out io.Writer) error 
 	fmt.Fprintf(out, "启动器已更新到 %s；请重新运行命令。\n", version)
 	return nil
 }
-
-func runInternalReplace(_ []string, _ io.Writer, _ io.Writer) (bool, int) { return false, 0 }
