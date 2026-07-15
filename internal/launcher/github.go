@@ -49,10 +49,11 @@ type GitHubClient struct {
 }
 
 func NewGitHubClient() *GitHubClient {
+	proxyResolver := newSystemProxyResolver()
 	proxyTransport := http.DefaultTransport.(*http.Transport).Clone()
 	// Explicitly retain the operating environment's proxy rules. This honors
 	// HTTP_PROXY, HTTPS_PROXY and NO_PROXY, including their lowercase forms.
-	proxyTransport.Proxy = http.ProxyFromEnvironment
+	proxyTransport.Proxy = proxyResolver
 	directTransport := http.DefaultTransport.(*http.Transport).Clone()
 	directTransport.Proxy = nil
 	redirectPolicy := func(request *http.Request, via []*http.Request) error {
@@ -70,7 +71,7 @@ func NewGitHubClient() *GitHubClient {
 	return &GitHubClient{
 		HTTP:          &http.Client{Transport: proxyTransport, Timeout: 0, CheckRedirect: redirectPolicy},
 		DirectHTTP:    &http.Client{Transport: directTransport, Timeout: 0, CheckRedirect: redirectPolicy},
-		ProxyResolver: http.ProxyFromEnvironment,
+		ProxyResolver: proxyResolver,
 		APIBase:       githubAPIBase,
 		Token:         strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN")),
 	}
@@ -178,12 +179,16 @@ func (client *GitHubClient) directHTTPClient() *http.Client {
 }
 
 func (client *GitHubClient) usesSystemProxy(request *http.Request) bool {
+	proxyURL, err := client.resolveSystemProxy(request)
+	return err != nil || proxyURL != nil
+}
+
+func (client *GitHubClient) resolveSystemProxy(request *http.Request) (*url.URL, error) {
 	resolver := client.ProxyResolver
 	if resolver == nil {
 		resolver = http.ProxyFromEnvironment
 	}
-	proxyURL, err := resolver(request)
-	return err != nil || proxyURL != nil
+	return resolver(request)
 }
 
 type progressWriter struct {
@@ -276,15 +281,24 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 	if err != nil {
 		return "", err
 	}
-	usesProxy := client.usesSystemProxy(req)
+	proxyURL, proxyErr := client.resolveSystemProxy(req)
+	usesProxy := proxyErr != nil || proxyURL != nil
 	route := "直连"
+	proxyHost := ""
 	if usesProxy {
 		route = "系统代理"
+		if proxyURL != nil {
+			proxyHost = proxyURL.Host
+		}
 	}
 	if out != nil {
-		fmt.Fprintf(out, "下载开始: %s（%s，%s）\n", asset.Name, humanBytes(float64(asset.Size)), route)
+		displayRoute := route
+		if proxyHost != "" {
+			displayRoute += " " + proxyHost
+		}
+		fmt.Fprintf(out, "下载开始: %s（%s，%s）\n", asset.Name, humanBytes(float64(asset.Size)), displayRoute)
 	}
-	client.logDownload(out, fmt.Sprintf("START asset=%q size=%d route=%s host=%q destination=%q", asset.Name, asset.Size, route, parsed.Hostname(), destination))
+	client.logDownload(out, fmt.Sprintf("START asset=%q size=%d route=%s proxy=%q host=%q destination=%q", asset.Name, asset.Size, route, proxyHost, parsed.Hostname(), destination))
 	digest, requestErr, retryable := client.downloadAttempt(req, asset, destination, expected, out, client.httpClient())
 	if requestErr == nil || !retryable || ctx.Err() != nil || !usesProxy || client.directHTTPClient() == nil {
 		if requestErr == nil {
