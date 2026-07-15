@@ -57,7 +57,4 @@ func TestRejectsArbitrarySourceName(t *testing.T) {
 	if err := validateStagedName(".llama-launcher-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
 		t.Fatal("accepted launcher staging name as updater staging name")
 	}
-	if err := validateStagedName(".llama-updater-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
-		t.Fatal("accepted legacy updater staging name")
-	}
 }

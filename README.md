@@ -117,7 +117,7 @@ llama.cpp/
 
 除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。修复安装时，无法由有效状态文件证明归属的旧 `data/llama.cpp` 不会被自动删除，而会保留为 `data/llama.cpp-recovery[-N]` 恢复备份。安装和检查更新均由当前 launcher 直接完成，不会运行 llamaup。launcher 更新 archive 固定同时包含新版 launcher 和新版 llamaup，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Windows 会把当前 `bin/llamaup.exe` 复制为 `bin/.llamaup-run-*.exe`；临时副本等待 launcher 退出，先替换正式 llamaup，再替换 launcher，随后直接退出。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。首次从旧版升级时，新 launcher 会把精确路径 `bin/llama-updater[.exe]` 安全迁移为 `bin/llamaup[.exe]`。普通启动不会联网，也不会自动检查更新。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。修复安装时，无法由有效状态文件证明归属的旧 `data/llama.cpp` 不会被自动删除，而会保留为 `data/llama.cpp-recovery[-N]` 恢复备份。安装和检查更新均由当前 launcher 直接完成，不会运行 llamaup。launcher 更新 archive 固定同时包含新版 launcher 和新版 llamaup，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Windows 会把当前 `bin/llamaup.exe` 复制为 `bin/.llamaup-run-*.exe`；临时副本等待 launcher 退出，先替换正式 llamaup，再替换 launcher，随后直接退出。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。普通启动不会联网，也不会自动检查更新。
 
 ## 安装与手动更新
 
@@ -179,7 +179,7 @@ Router 与本地工具
 
 首次正常启动会自动生成 128 位 URL-safe API key 并写入私有的 `config/launcher.api-key`。后续启动直接使用该文件，不再询问是否重置。需要轮换密钥时选择主菜单的 `9. 重置 API key`，确认后会原子写入新的随机 key，旧 key 立即失效。版本和帮助命令不读取或修改 key。
 
-主菜单输入 `d` 进入“清理与恢复”。启动器会扫描配置原子写入残留、启动器与运行时更新暂存、已登记待清理运行时、未登记运行时目录以及 `data/llama.cpp-recovery[-N]` 恢复备份，并显示类型、大小、产生原因和完整路径。严格验证过命名、文件类型或所有权标记且至少 24 小时没有修改的项目可批量安全清理；近期临时项会标记为“可能正在使用”并拒绝删除，避免多个 launcher 同时运行时互相破坏。Windows 更新交接使用的 `.llamaup-run-*` 运行副本是例外：新版 launcher 会立即尝试删除，若进程仍占用则保留并在后续启动重试；旧版 `.llama-updater-run-*` 残留也会继续识别。恢复备份、无标记暂存和未登记目录必须逐个选择，可先查看内容或使用系统文件管理器打开，永久删除前还会再次确认。目标在扫描后被替换、包含链接或特殊文件时会拒绝删除；已登记待清理运行时删除成功后会同步移出 `pending_cleanup`。
+主菜单输入 `d` 进入“清理与恢复”。启动器会扫描配置原子写入残留、启动器与运行时更新暂存、已登记待清理运行时、未登记运行时目录以及 `data/llama.cpp-recovery[-N]` 恢复备份，并显示类型、大小、产生原因和完整路径。严格验证过命名、文件类型或所有权标记且至少 24 小时没有修改的项目可批量安全清理；近期临时项会标记为“可能正在使用”并拒绝删除，避免多个 launcher 同时运行时互相破坏。Windows 更新交接使用的 `.llamaup-run-*` 运行副本是例外：新版 launcher 会立即尝试删除，若进程仍占用则保留并在后续启动重试。恢复备份、无标记暂存和未登记目录必须逐个选择，可先查看内容或使用系统文件管理器打开，永久删除前还会再次确认。目标在扫描后被替换、包含链接或特殊文件时会拒绝删除；已登记待清理运行时删除成功后会同步移出 `pending_cleanup`。
 
 新建恢复备份时会在备份目录写入 `.llamalc-recovery.json[-N]`，记录原路径、UTC 创建时间和保留原因；如果旧目录中已有同名文件，启动器会选择新名称而不会覆盖。删除整个恢复备份后不会留下其元数据文件。
 
@@ -334,7 +334,7 @@ GET http://127.0.0.1:29856/models
 
 ## 自动发版
 
-推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。Archive 固定命名为 `llama-launcher-<version>-<os>-<arch>.zip|tar.gz`。为了让旧 launcher 也能识别新版，每个 archive 仍必须且只能包含兼容条目 `llama.cpp/bin/llama-launcher[.exe]` 与 `llama.cpp/bin/llama-updater[.exe]`；安装后的正式更新器名称是 `llamaup[.exe]`。`SHA256SUMS.txt` 覆盖四个平台 archive，工作流会校验 archive 结构和两个二进制中的嵌入版本后才发布。
+推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。Archive 固定命名为 `llama-launcher-<version>-<os>-<arch>.zip|tar.gz`，每个 archive 必须且只能包含 `llama.cpp/bin/llama-launcher[.exe]` 与 `llama.cpp/bin/llamaup[.exe]`。`SHA256SUMS.txt` 覆盖四个平台 archive，工作流会校验 archive 结构和两个二进制中的嵌入版本后才发布。
 
 ```sh
 git tag v1.0.0

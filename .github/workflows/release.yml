@@ -58,7 +58,7 @@ jobs:
               -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
               -o "${binary}" ./cmd/llama-launcher
             grep -aFq "${VERSION}" "${binary}"
-            updater="${package}/llama.cpp/bin/llama-updater${suffix}"
+            updater="${package}/llama.cpp/bin/llamaup${suffix}"
             GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 go build \
               -trimpath \
               -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
@@ -73,10 +73,10 @@ jobs:
             archive="dist/llama-launcher-${VERSION}-${goos}-${goarch}.${archive_ext}"
             if [ "${goos}" = windows ]; then
               (cd "${package}" && zip -q -r "${GITHUB_WORKSPACE}/${archive}" llama.cpp)
-              test "$(unzip -Z1 "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher.exe' 'llama.cpp/bin/llama-updater.exe' | sort)"
+              test "$(unzip -Z1 "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher.exe' 'llama.cpp/bin/llamaup.exe' | sort)"
             else
               tar -C "${package}" -czf "${archive}" llama.cpp
-              test "$(tar -tzf "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher' 'llama.cpp/bin/llama-updater' | sort)"
+              test "$(tar -tzf "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher' 'llama.cpp/bin/llamaup' | sort)"
             fi
             rm -rf "${package}"
           done

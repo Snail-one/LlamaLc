@@ -484,7 +484,7 @@ func makeLauncherTar(t *testing.T, launcher, updater []byte) []byte {
 	writer := tar.NewWriter(gz)
 	for name, content := range map[string][]byte{
 		"llama.cpp/bin/llama-launcher": launcher,
-		"llama.cpp/bin/llama-updater":  updater,
+		"llama.cpp/bin/llamaup":        updater,
 	} {
 		if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
@@ -505,7 +505,7 @@ func makeLauncherTar(t *testing.T, launcher, updater []byte) []byte {
 func TestLauncherArchiveRequiresLauncherAndUpdaterOnly(t *testing.T) {
 	root := t.TempDir()
 	launcher := filepath.Join(root, "llama.cpp", "bin", "llama-launcher")
-	updater := filepath.Join(root, "llama.cpp", "bin", "llama-updater")
+	updater := filepath.Join(root, "llama.cpp", "bin", "llamaup")
 	touchFile(t, launcher)
 	if err := ensureOnlyLauncherFiles(root, launcher, updater); err == nil {
 		t.Fatal("archive without updater was accepted")
@@ -561,7 +561,7 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	executable := filepath.Join(root, "bin", "llama-launcher.exe")
 	touchFile(t, executable)
-	staleUpdater := filepath.Join(root, "bin", ".llama-updater-run-12345.exe")
+	staleUpdater := filepath.Join(root, "bin", ".llamaup-run-12345.exe")
 	touchFile(t, staleUpdater)
 	ageForAutomaticCleanup(t, staleUpdater)
 	oldExecutablePath := executablePath
@@ -957,7 +957,6 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 		t.Fatal(err)
 	}
 	ephemeral := filepath.Join(bin, ".llamaup-run-12345.exe")
-	legacyEphemeral := filepath.Join(bin, ".llama-updater-run-23456.exe")
 	officialUpdater := filepath.Join(bin, "llamaup.exe")
 	unrelated := filepath.Join(bin, "keep.exe")
 	unsafeDirectory := filepath.Join(bin, ".llamaup-run-67890.exe")
@@ -966,8 +965,6 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	nonGeneratedName := filepath.Join(bin, ".llama-launcher-new-user-notes.exe")
 	touchFile(t, ephemeral)
 	ageForAutomaticCleanup(t, ephemeral)
-	touchFile(t, legacyEphemeral)
-	ageForAutomaticCleanup(t, legacyEphemeral)
 	touchFile(t, officialUpdater)
 	touchFile(t, unrelated)
 	touchFile(t, nonGeneratedName)
@@ -991,9 +988,6 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	cleanupLauncherTemps(root, stderr)
 	if _, err := os.Stat(ephemeral); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ephemeral updater residual was not removed: %v", err)
-	}
-	if _, err := os.Stat(legacyEphemeral); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy ephemeral updater residual was not removed: %v", err)
 	}
 	for _, path := range []string{officialUpdater, unrelated, unsafeDirectory, unmarkedDirectory, nonGeneratedName} {
 		if _, err := os.Stat(path); err != nil {

@@ -31,15 +31,6 @@ fi
 OUTPUT_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}/llama.cpp"
 mkdir -p "${OUTPUT_ROOT}/bin"
 
-LEGACY_UPDATER_OUTPUT="${OUTPUT_ROOT}/bin/llama-updater${OUTPUT_SUFFIX}"
-if [[ -d "${LEGACY_UPDATER_OUTPUT}" && ! -L "${LEGACY_UPDATER_OUTPUT}" ]]; then
-    echo "错误: 旧更新器输出路径被目录占用，拒绝清理: ${LEGACY_UPDATER_OUTPUT}" >&2
-    exit 1
-fi
-if [[ -e "${LEGACY_UPDATER_OUTPUT}" || -L "${LEGACY_UPDATER_OUTPUT}" ]]; then
-    rm -f -- "${LEGACY_UPDATER_OUTPUT}"
-fi
-
 LDFLAGS="-s -w"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Version=${VERSION}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Commit=${COMMIT}"

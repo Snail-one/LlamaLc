@@ -15,12 +15,9 @@ import (
 var errUpdaterHandoff = errors.New("已将操作交给独立更新器")
 
 const (
-	installedUpdaterBaseName       = "llamaup"
-	releaseUpdaterBaseName         = "llama-updater"
-	runningUpdaterTempPrefix       = ".llamaup-run-"
-	stagedUpdaterTempPrefix        = ".llamaup-new-"
-	legacyRunningUpdaterTempPrefix = ".llama-updater-run-"
-	legacyStagedUpdaterTempPrefix  = ".llama-updater-new-"
+	updaterBaseName          = "llamaup"
+	runningUpdaterTempPrefix = ".llamaup-run-"
+	stagedUpdaterTempPrefix  = ".llamaup-new-"
 )
 
 func updaterExecutableName(base, goos string) string {
@@ -31,21 +28,13 @@ func updaterExecutableName(base, goos string) string {
 }
 
 func isRunningUpdaterTemp(name string) bool {
-	for _, prefix := range []string{runningUpdaterTempPrefix, legacyRunningUpdaterTempPrefix} {
-		if numericTempSuffix(name, prefix, "") || numericTempSuffix(name, prefix, ".exe") {
-			return true
-		}
-	}
-	return false
+	return numericTempSuffix(name, runningUpdaterTempPrefix, "") ||
+		numericTempSuffix(name, runningUpdaterTempPrefix, ".exe")
 }
 
 func isStagedUpdaterTemp(name string) bool {
-	for _, prefix := range []string{stagedUpdaterTempPrefix, legacyStagedUpdaterTempPrefix} {
-		if numericTempSuffix(name, prefix, "") || numericTempSuffix(name, prefix, ".exe") {
-			return true
-		}
-	}
-	return false
+	return numericTempSuffix(name, stagedUpdaterTempPrefix, "") ||
+		numericTempSuffix(name, stagedUpdaterTempPrefix, ".exe")
 }
 
 func launcherAssetName(tag, goos, goarch string) string {
@@ -96,13 +85,12 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 		fmt.Fprintln(manager.Stderr, "警告: 当前启动器版本为 dev，无法可靠判断新旧，将更新到稳定 Release。")
 	}
 	launcherName := "llama-launcher"
-	archiveUpdaterName := updaterExecutableName(releaseUpdaterBaseName, manager.GOOS)
-	installedUpdaterName := updaterExecutableName(installedUpdaterBaseName, manager.GOOS)
+	updaterName := updaterExecutableName(updaterBaseName, manager.GOOS)
 	if manager.GOOS == "windows" {
 		launcherName += ".exe"
 	}
 	currentLauncher := filepath.Join(manager.Root, "bin", launcherName)
-	currentUpdater := filepath.Join(manager.Root, "bin", installedUpdaterName)
+	currentUpdater := filepath.Join(manager.Root, "bin", updaterName)
 	if err := validateManagedPath(manager.Root, currentLauncher, "当前启动器", false, false); err != nil {
 		return err
 	}
@@ -149,7 +137,7 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 		return err
 	}
 	wantLauncher := filepath.Join(extracted, "llama.cpp", "bin", launcherName)
-	wantUpdater := filepath.Join(extracted, "llama.cpp", "bin", archiveUpdaterName)
+	wantUpdater := filepath.Join(extracted, "llama.cpp", "bin", updaterName)
 	if err := requireFile(wantLauncher, "新启动器"); err != nil {
 		return fmt.Errorf("Release archive 结构无效: %w", err)
 	}

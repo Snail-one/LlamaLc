@@ -51,15 +51,6 @@ if not defined MODULE_PATH (
 
 set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
 if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
-if exist "!OUTPUT_DIR!\llama-updater.exe\NUL" (
-    echo Error: legacy updater output path is a directory: !OUTPUT_DIR!\llama-updater.exe
-    exit /b 1
-)
-if exist "!OUTPUT_DIR!\llama-updater.exe" del /F /Q "!OUTPUT_DIR!\llama-updater.exe"
-if exist "!OUTPUT_DIR!\llama-updater.exe" (
-    echo Error: unable to remove legacy updater output: !OUTPUT_DIR!\llama-updater.exe
-    exit /b 1
-)
 
 where go-winres >nul 2>nul
 if errorlevel 1 (
