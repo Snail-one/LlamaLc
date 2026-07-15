@@ -41,31 +41,38 @@ type GitHubRelease struct {
 }
 
 type GitHubClient struct {
-	HTTP    *http.Client
-	APIBase string
-	Token   string
+	HTTP          *http.Client
+	DirectHTTP    *http.Client
+	ProxyResolver func(*http.Request) (*url.URL, error)
+	APIBase       string
+	Token         string
 }
 
 func NewGitHubClient() *GitHubClient {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	proxyTransport := http.DefaultTransport.(*http.Transport).Clone()
 	// Explicitly retain the operating environment's proxy rules. This honors
 	// HTTP_PROXY, HTTPS_PROXY and NO_PROXY, including their lowercase forms.
-	transport.Proxy = http.ProxyFromEnvironment
+	proxyTransport.Proxy = http.ProxyFromEnvironment
+	directTransport := http.DefaultTransport.(*http.Transport).Clone()
+	directTransport.Proxy = nil
+	redirectPolicy := func(request *http.Request, via []*http.Request) error {
+		if request.URL.Scheme != "https" {
+			return errors.New("拒绝重定向到非 HTTPS URL")
+		}
+		if !strings.EqualFold(request.URL.Hostname(), "api.github.com") {
+			request.Header.Del("Authorization")
+		}
+		if len(via) >= 10 {
+			return errors.New("重定向次数过多")
+		}
+		return nil
+	}
 	return &GitHubClient{
-		HTTP: &http.Client{Transport: transport, Timeout: 0, CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if request.URL.Scheme != "https" {
-				return errors.New("拒绝重定向到非 HTTPS URL")
-			}
-			if !strings.EqualFold(request.URL.Hostname(), "api.github.com") {
-				request.Header.Del("Authorization")
-			}
-			if len(via) >= 10 {
-				return errors.New("重定向次数过多")
-			}
-			return nil
-		}},
-		APIBase: githubAPIBase,
-		Token:   strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN")),
+		HTTP:          &http.Client{Transport: proxyTransport, Timeout: 0, CheckRedirect: redirectPolicy},
+		DirectHTTP:    &http.Client{Transport: directTransport, Timeout: 0, CheckRedirect: redirectPolicy},
+		ProxyResolver: http.ProxyFromEnvironment,
+		APIBase:       githubAPIBase,
+		Token:         strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN")),
 	}
 }
 
@@ -82,9 +89,29 @@ func (client *GitHubClient) Release(ctx context.Context, repository, tag string)
 	if err != nil || parsed.Scheme != "https" {
 		return GitHubRelease{}, fmt.Errorf("GitHub API 仅允许 HTTPS: %s", endpoint)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := client.newAPIRequest(ctx, endpoint, parsed)
 	if err != nil {
 		return GitHubRelease{}, err
+	}
+	release, requestErr := client.releaseAttempt(req, tag, client.httpClient())
+	if requestErr == nil || ctx.Err() != nil || !client.usesSystemProxy(req) || client.directHTTPClient() == nil {
+		return release, requestErr
+	}
+	directRequest, err := client.newAPIRequest(ctx, endpoint, parsed)
+	if err != nil {
+		return GitHubRelease{}, err
+	}
+	release, directErr := client.releaseAttempt(directRequest, tag, client.directHTTPClient())
+	if directErr != nil {
+		return GitHubRelease{}, fmt.Errorf("GitHub API 经系统代理失败（%v），直连重试也失败: %w", requestErr, directErr)
+	}
+	return release, nil
+}
+
+func (client *GitHubClient) newAPIRequest(ctx context.Context, endpoint string, parsed *url.URL) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -93,7 +120,11 @@ func (client *GitHubClient) Release(ctx context.Context, repository, tag string)
 	if strings.EqualFold(parsed.Hostname(), "api.github.com") && client.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+client.Token)
 	}
-	response, err := client.httpClient().Do(req)
+	return req, nil
+}
+
+func (client *GitHubClient) releaseAttempt(req *http.Request, tag string, httpClient *http.Client) (GitHubRelease, error) {
+	response, err := httpClient.Do(req)
 	if err != nil {
 		return GitHubRelease{}, fmt.Errorf("GitHub API 请求失败: %w", err)
 	}
@@ -139,6 +170,22 @@ func (client *GitHubClient) httpClient() *http.Client {
 	return NewGitHubClient().HTTP
 }
 
+func (client *GitHubClient) directHTTPClient() *http.Client {
+	if client.DirectHTTP != nil {
+		return client.DirectHTTP
+	}
+	return nil
+}
+
+func (client *GitHubClient) usesSystemProxy(request *http.Request) bool {
+	resolver := client.ProxyResolver
+	if resolver == nil {
+		resolver = http.ProxyFromEnvironment
+	}
+	proxyURL, err := resolver(request)
+	return err != nil || proxyURL != nil
+}
+
 type progressWriter struct {
 	writer io.Writer
 	out    io.Writer
@@ -177,28 +224,60 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return "", fmt.Errorf("资产下载仅允许 HTTPS: %s", asset.BrowserDownloadURL)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if _, err := os.Lstat(destination); err == nil {
+		return "", fmt.Errorf("下载目标已存在: %s", destination)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	req, err := newDownloadRequest(ctx, parsed.String())
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "LlamaLc-update-client")
-	response, err := client.httpClient().Do(req)
+	digest, requestErr, retryable := client.downloadAttempt(req, asset, destination, expected, out, client.httpClient())
+	if requestErr == nil || !retryable || ctx.Err() != nil || !client.usesSystemProxy(req) || client.directHTTPClient() == nil {
+		return digest, requestErr
+	}
+	if out != nil {
+		fmt.Fprintf(out, "\n系统代理下载失败，正在直连重试 %s……\n", asset.Name)
+	}
+	directRequest, err := newDownloadRequest(ctx, parsed.String())
 	if err != nil {
-		return "", fmt.Errorf("下载 %s 失败: %w", asset.Name, err)
+		return "", err
+	}
+	digest, directErr, _ := client.downloadAttempt(directRequest, asset, destination, expected, out, client.directHTTPClient())
+	if directErr != nil {
+		return "", fmt.Errorf("下载 %s 经系统代理失败（%v），直连重试也失败: %w", asset.Name, requestErr, directErr)
+	}
+	return digest, nil
+}
+
+func newDownloadRequest(ctx context.Context, endpoint string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "LlamaLc-update-client")
+	return req, nil
+}
+
+func (client *GitHubClient) downloadAttempt(req *http.Request, asset GitHubAsset, destination, expected string, out io.Writer, httpClient *http.Client) (string, error, bool) {
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("下载 %s 失败: %w", asset.Name, err), true
 	}
 	defer response.Body.Close()
 	if response.Request == nil || response.Request.URL.Scheme != "https" {
-		return "", fmt.Errorf("资产 %s 最终响应不是 HTTPS", asset.Name)
+		return "", fmt.Errorf("资产 %s 最终响应不是 HTTPS", asset.Name), true
 	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载 %s 返回 %s", asset.Name, response.Status)
+		return "", fmt.Errorf("下载 %s 返回 %s", asset.Name, response.Status), true
 	}
 	if response.ContentLength > maxAssetDownload || (response.ContentLength >= 0 && response.ContentLength != asset.Size) {
-		return "", fmt.Errorf("资产 %s Content-Length 与 API 不一致", asset.Name)
+		return "", fmt.Errorf("资产 %s Content-Length 与 API 不一致", asset.Name), true
 	}
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return "", err
+		return "", err, false
 	}
 	remove := true
 	defer func() {
@@ -212,23 +291,23 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 	progress := &progressWriter{writer: io.MultiWriter(file, hash), out: out, name: asset.Name, total: asset.Size}
 	written, copyErr := io.Copy(progress, limited)
 	if copyErr != nil {
-		return "", fmt.Errorf("下载 %s 中断: %w", asset.Name, copyErr)
+		return "", fmt.Errorf("下载 %s 中断: %w", asset.Name, copyErr), true
 	}
 	if written != asset.Size || limited.N <= 0 {
-		return "", fmt.Errorf("资产 %s 下载字节数不符: %d != %d", asset.Name, written, asset.Size)
+		return "", fmt.Errorf("资产 %s 下载字节数不符: %d != %d", asset.Name, written, asset.Size), true
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if !strings.EqualFold(actual, expected) {
-		return "", fmt.Errorf("资产 %s SHA-256 不匹配", asset.Name)
+		return "", fmt.Errorf("资产 %s SHA-256 不匹配", asset.Name), true
 	}
 	if err := file.Sync(); err != nil {
-		return "", err
+		return "", err, false
 	}
 	if err := file.Close(); err != nil {
-		return "", err
+		return "", err, false
 	}
 	remove = false
-	return actual, nil
+	return actual, nil, false
 }
 
 func digestHex(value string) (string, error) {

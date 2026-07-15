@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,6 +268,71 @@ func TestDownloadInterruptionRemovesPartialFile(t *testing.T) {
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("partial download remains: %v", err)
+	}
+}
+
+func TestAPIFallsBackToDirectAfterProxyFailure(t *testing.T) {
+	proxyURL, _ := url.Parse("http://127.0.0.1:7890")
+	proxyCalls, directCalls := 0, 0
+	client := &GitHubClient{
+		APIBase: "https://api.github.com",
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			proxyCalls++
+			return nil, errors.New("proxy unavailable")
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			directCalls++
+			body := `{"tag_name":"b123","assets":[]}`
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+	}
+	release, err := client.Release(context.Background(), llamaRepository, "")
+	if err != nil || release.TagName != "b123" || proxyCalls != 1 || directCalls != 1 {
+		t.Fatalf("API fallback failed: release=%#v err=%v proxy=%d direct=%d", release, err, proxyCalls, directCalls)
+	}
+}
+
+func TestDownloadFallsBackToDirectAfterProxyInterruption(t *testing.T) {
+	payload := []byte("complete direct payload")
+	hash := sha256.Sum256(payload)
+	proxyURL, _ := url.Parse("http://127.0.0.1:7890")
+	client := &GitHubClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(&failingReader{}), ContentLength: int64(len(payload)), Request: request}, nil
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: int64(len(payload)), Request: request}, nil
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+	}
+	asset := GitHubAsset{Name: "runtime.tar.gz", BrowserDownloadURL: "https://downloads.example/runtime.tar.gz", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	destination := filepath.Join(t.TempDir(), "runtime.tar.gz")
+	output := &bytes.Buffer{}
+	if _, err := client.Download(context.Background(), asset, destination, output); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(data, payload) || !strings.Contains(output.String(), "直连重试") {
+		t.Fatalf("download fallback mismatch: data=%q err=%v output=%q", data, err, output)
+	}
+}
+
+func TestNoProxyDoesNotPerformFallbackRetry(t *testing.T) {
+	directCalls := 0
+	client := &GitHubClient{
+		APIBase: "https://api.github.com",
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return nil, errors.New("direct connection failed")
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			directCalls++
+			return nil, errors.New("unexpected retry")
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return nil, nil },
+	}
+	if _, err := client.Release(context.Background(), llamaRepository, ""); err == nil || directCalls != 0 {
+		t.Fatalf("no-proxy request retried: err=%v direct=%d", err, directCalls)
 	}
 }
 

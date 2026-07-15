@@ -135,7 +135,7 @@ bin/llama-launcher update --component launcher --launcher-version v1.2.3 --yes
 
 CLI 写入默认要求终端确认；stdin 不是交互终端时必须提供 `--yes`。同版本默认不操作，`--force` 可重装；降级默认拒绝，只有 `--allow-downgrade` 才允许。后续 llama.cpp 更新沿用已保存后端；新版不再提供该后端时不会自动切换，交互模式要求重新选择，非交互模式列出可用值并报错。
 
-元数据来自 `api.github.com` 上的 `Snail-one/LlamaLc` 和 `ggml-org/llama.cpp` Releases。可用 `LLAMALC_GITHUB_TOKEN` 提高 API 限额，认证头只发送给 `api.github.com`。网络默认遵循系统的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY` 设置。所有下载必须是 HTTPS 且带 GitHub API SHA-256 digest；启动器还会和 Release 的 `SHA256SUMS.txt` 交叉校验。CUDA 后端会把匹配的运行库资产作为同一选择整体下载。
+元数据来自 `api.github.com` 上的 `Snail-one/LlamaLc` 和 `ggml-org/llama.cpp` Releases。可用 `LLAMALC_GITHUB_TOKEN` 提高 API 限额，认证头只发送给 `api.github.com`。网络默认遵循系统的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY` 设置：URL 命中系统代理时先通过代理访问，API 请求或下载失败后自动直连重试一次；没有系统代理或被 `NO_PROXY` 排除时直接访问。所有下载必须是 HTTPS 且带 GitHub API SHA-256 digest；启动器还会和 Release 的 `SHA256SUMS.txt` 交叉校验。CUDA 后端会把匹配的运行库资产作为同一选择整体下载。
 
 根目录固定为 `bin` 的上一级；模型目录、配置文件和 Router 文件位置也全部固定。`--root` 与 `--config` 已移除，传入时会直接报错，防止意外把文件写到其他位置。顶层帮助、子命令帮助、未知命令和版本查询都不会执行 server 探测或初始化磁盘。
 
