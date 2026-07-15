@@ -7,12 +7,60 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	managedTempMarkerName = ".llamalc-managed-temp"
 	managedTempMarkerData = "llama-launcher managed temporary directory\n"
 )
+
+const automaticCleanupMinAge = 24 * time.Hour
+
+var cleanupClock = time.Now
+
+func oldEnoughForAutomaticCleanup(info os.FileInfo) bool {
+	if info == nil || info.ModTime().IsZero() {
+		return false
+	}
+	age := cleanupClock().Sub(info.ModTime())
+	return age >= automaticCleanupMinAge
+}
+
+func oldEnoughForAutomaticCleanupPath(path string, info os.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	latest := info.ModTime()
+	if info.IsDir() {
+		if err := filepath.WalkDir(path, func(_ string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("包含符号链接或重解析点")
+			}
+			entryInfo, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if entryInfo.ModTime().After(latest) {
+				latest = entryInfo.ModTime()
+			}
+			return nil
+		}); err != nil {
+			return false
+		}
+	}
+	return oldEnoughForAutomaticCleanup(fileInfoWithModTime{FileInfo: info, modTime: latest})
+}
+
+type fileInfoWithModTime struct {
+	os.FileInfo
+	modTime time.Time
+}
+
+func (info fileInfoWithModTime) ModTime() time.Time { return info.modTime }
 
 func validateManagedPath(root, path, label string, allowMissing, wantDirectory bool) error {
 	root = filepath.Clean(root)
@@ -245,6 +293,9 @@ func cleanupAtomicWriteTemps(root string, stderr io.Writer) {
 		info, err := entry.Info()
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			fmt.Fprintf(stderr, "警告: 拒绝清理不是普通文件的配置写入残留: %s\n", path)
+			continue
+		}
+		if !oldEnoughForAutomaticCleanupPath(path, info) {
 			continue
 		}
 		if err := os.Remove(path); err != nil {

@@ -67,7 +67,7 @@ Router 与本地工具
 			return 0
 		}
 		if err != nil {
-			fmt.Fprintln(app.Stderr, "错误:", err)
+			fmt.Fprintln(app.Stderr, "错误:", safeTerminalText(err.Error()))
 			continue
 		}
 		clearTerminal(app.Stdout)
@@ -82,7 +82,7 @@ Router 与本地工具
 				clearBeforeMenu = true
 				continue
 			}
-			fmt.Fprintln(app.Stderr, "错误:", err)
+			fmt.Fprintln(app.Stderr, "错误:", safeTerminalText(err.Error()))
 			continue
 		}
 		clearBeforeMenu = true
@@ -352,7 +352,7 @@ func (m *menu) runCleanupMenu() error {
 		fmt.Fprintln(m.app.Stdout, "\n清理与恢复")
 		fmt.Fprintln(m.app.Stdout, "自动清理项经过严格命名、文件类型或所有权标记验证；其余项目必须逐个确认。")
 		for _, warning := range warnings {
-			fmt.Fprintln(m.app.Stderr, "警告:", warning)
+			fmt.Fprintln(m.app.Stderr, "警告:", safeTerminalText(warning))
 		}
 		if len(candidates) == 0 {
 			fmt.Fprintln(m.app.Stdout, "未发现需要处理的残留或恢复目录。")
@@ -361,10 +361,12 @@ func (m *menu) runCleanupMenu() error {
 				mode := "需确认"
 				if candidate.Automatic {
 					mode = "可安全清理"
+				} else if candidate.Recent {
+					mode = "可能正在使用"
 				}
 				fmt.Fprintf(m.app.Stdout, "  %d. [%s] %s（%s）\n", index+1, mode, candidate.Kind, cleanupSizeDisplay(candidate))
-				fmt.Fprintf(m.app.Stdout, "     %s\n", candidate.Path)
-				fmt.Fprintf(m.app.Stdout, "     原因: %s\n", candidate.Reason)
+				fmt.Fprintf(m.app.Stdout, "     %s\n", safeTerminalText(candidate.Path))
+				fmt.Fprintf(m.app.Stdout, "     原因: %s\n", safeTerminalText(candidate.Reason))
 			}
 		}
 		fmt.Fprintln(m.app.Stdout, "\n  a. 清理全部已验证安全残留")
@@ -383,11 +385,11 @@ func (m *menu) runCleanupMenu() error {
 					continue
 				}
 				if err := deleteCleanupCandidate(m.app.Root, candidate, true); err != nil {
-					fmt.Fprintf(m.app.Stderr, "警告: 无法清理 %s: %v\n", candidate.Path, err)
+					fmt.Fprintf(m.app.Stderr, "警告: 无法清理 %s: %v\n", safeTerminalText(candidate.Path), err)
 					continue
 				}
 				cleaned++
-				fmt.Fprintln(m.app.Stdout, "已清理:", candidate.Path)
+				fmt.Fprintln(m.app.Stdout, "已清理:", safeTerminalText(candidate.Path))
 			}
 			if cleaned == 0 {
 				fmt.Fprintln(m.app.Stdout, "没有可自动清理的安全残留。")
@@ -409,7 +411,7 @@ func (m *menu) runCleanupMenu() error {
 }
 
 func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
-	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), candidate.Reason, candidate.Path)
+	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), safeTerminalText(candidate.Reason), safeTerminalText(candidate.Path))
 	fmt.Fprintln(m.app.Stdout, "  v. 查看目录内容")
 	fmt.Fprintln(m.app.Stdout, "  o. 使用系统文件管理器打开")
 	fmt.Fprintln(m.app.Stdout, "  d. 永久删除")
@@ -427,10 +429,10 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 		if err := launchCleanupPath(candidate.Path); err != nil {
 			return fmt.Errorf("无法打开目录 %s: %w", candidate.Path, err)
 		}
-		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", candidate.Path)
+		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", safeTerminalText(candidate.Path))
 		return nil
 	case "d":
-		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", candidate.Path)
+		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", safeTerminalText(candidate.Path))
 		confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
 		if err != nil {
 			return err
@@ -442,7 +444,7 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 		if err := deleteCleanupCandidate(m.app.Root, candidate, false); err != nil {
 			return err
 		}
-		fmt.Fprintln(m.app.Stdout, "已删除:", candidate.Path)
+		fmt.Fprintln(m.app.Stdout, "已删除:", safeTerminalText(candidate.Path))
 		return nil
 	default:
 		fmt.Fprintln(m.app.Stderr, "请输入 v、o、d，或直接按 Enter 返回。")
@@ -456,7 +458,7 @@ func (m *menu) viewCleanupCandidate(candidate cleanupCandidate) error {
 		return err
 	}
 	if !info.IsDir() {
-		fmt.Fprintf(m.app.Stdout, "普通文件: %s（%s）\n", candidate.Path, cleanupSizeDisplay(candidate))
+		fmt.Fprintf(m.app.Stdout, "普通文件: %s（%s）\n", safeTerminalText(candidate.Path), cleanupSizeDisplay(candidate))
 		return nil
 	}
 	entries, err := os.ReadDir(candidate.Path)
@@ -475,7 +477,7 @@ func (m *menu) viewCleanupCandidate(candidate cleanupCandidate) error {
 		} else if entry.Type()&os.ModeSymlink != 0 {
 			kind = "链接"
 		}
-		fmt.Fprintf(m.app.Stdout, "  [%s] %s\n", kind, entry.Name())
+		fmt.Fprintf(m.app.Stdout, "  [%s] %s\n", kind, safeTerminalText(entry.Name()))
 	}
 	if len(entries) > limit {
 		fmt.Fprintf(m.app.Stdout, "  ……另有 %d 项未显示\n", len(entries)-limit)

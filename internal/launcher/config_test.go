@@ -254,6 +254,7 @@ func TestCleanupAtomicWriteTempsPreservesUnownedPaths(t *testing.T) {
 	if err := os.WriteFile(managed, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ageForAutomaticCleanup(t, managed)
 	if err := os.WriteFile(unowned, []byte("user notes"), 0o600); err != nil {
 		t.Fatal(err)
 	}

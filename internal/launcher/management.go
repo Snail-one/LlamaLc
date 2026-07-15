@@ -283,17 +283,20 @@ func installWithQuarantinedRuntime(ctx context.Context, manager *UpdateManager, 
 			fmt.Fprintf(manager.Stderr, "警告: 新运行时已启用；旧目录未删除并保留在 %s，但无法整理恢复目录: %v\n", location, err)
 		} else {
 			fmt.Fprintf(manager.Stdout, "旧目录未自动删除，已保留为恢复备份: %s\n", preserved)
-			if quarantine.stateBackup != "" {
-				stateDestination, stateErr := uniqueMissingPath(filepath.Join(preserved, ".update-state.json.corrupt"))
-				if stateErr == nil {
-					stateErr = os.Rename(quarantine.stateBackup, stateDestination)
-				}
-				if stateErr != nil {
-					fmt.Fprintf(manager.Stderr, "警告: 损坏的旧状态仍保留在 %s: %v\n", quarantine.stateBackup, stateErr)
-				}
+		}
+		if preserved != "" && quarantine.stateBackup != "" {
+			stateDestination, stateErr := uniqueMissingPath(filepath.Join(preserved, ".update-state.json.corrupt"))
+			if stateErr == nil {
+				stateErr = os.Rename(quarantine.stateBackup, stateDestination)
+			}
+			if stateErr == nil {
+				quarantine.stateBackup = ""
+			} else {
+				fmt.Fprintf(manager.Stderr, "警告: 无法把损坏的旧状态移入恢复备份: %v\n", stateErr)
 			}
 		}
-	} else if quarantine.stateBackup != "" {
+	}
+	if quarantine.stateBackup != "" {
 		fmt.Fprintf(manager.Stderr, "警告: 损坏的旧状态未自动删除，保留在: %s\n", quarantine.stateBackup)
 	}
 	return nil
@@ -331,6 +334,9 @@ func preserveRecoveryRuntime(root, orphan string) (string, error) {
 	}
 	if err := writeFileExclusive(metadataPath, data, 0o600); err != nil {
 		return destination, fmt.Errorf("无法写入恢复元数据: %w", err)
+	}
+	if err := syncDirectory(destination); err != nil {
+		return destination, err
 	}
 	if err := syncDirectory(dataDirectory); err != nil {
 		return destination, err

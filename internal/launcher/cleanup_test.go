@@ -3,11 +3,32 @@ package launcher
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func ageForAutomaticCleanup(t *testing.T, path string) {
+	t.Helper()
+	old := cleanupClock().Add(-automaticCleanupMinAge - time.Hour)
+	var paths []string
+	if err := filepath.Walk(path, func(current string, _ os.FileInfo, err error) error {
+		if err == nil {
+			paths = append(paths, current)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := len(paths) - 1; index >= 0; index-- {
+		if err := os.Chtimes(paths[index], old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestMainMenuUsesDForCleanupAndRecovery(t *testing.T) {
 	root := t.TempDir()
@@ -47,6 +68,7 @@ func TestScanCleanupCandidatesClassifiesOwnedAndReviewItems(t *testing.T) {
 	if err := markManagedTempDirectory(base, owned); err != nil {
 		t.Fatal(err)
 	}
+	ageForAutomaticCleanup(t, owned)
 	untracked := filepath.Join(base, "user-runtime")
 	if err := os.Mkdir(untracked, 0o755); err != nil {
 		t.Fatal(err)
@@ -71,6 +93,33 @@ func TestScanCleanupCandidatesClassifiesOwnedAndReviewItems(t *testing.T) {
 	}
 	if candidate, ok := byPath[recovery]; !ok || candidate.Automatic || candidate.Kind != "恢复备份" {
 		t.Fatalf("recovery classification=%#v exists=%v", candidate, ok)
+	}
+}
+
+func TestFreshOwnedTempIsProtectedFromCleanup(t *testing.T) {
+	root := t.TempDir()
+	base := managedRuntimeRoot(root)
+	target := filepath.Join(base, ".staging-12345")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := markManagedTempDirectory(base, target); err != nil {
+		t.Fatal(err)
+	}
+	touchFile(t, filepath.Join(target, "active-download"))
+	cleanupRuntimeTemps(root, io.Discard)
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("fresh owned temp was automatically removed: %v", err)
+	}
+	candidates, _ := scanCleanupCandidates(root)
+	if len(candidates) != 1 || candidates[0].Automatic || !candidates[0].Recent {
+		t.Fatalf("fresh temp classification=%#v", candidates)
+	}
+	if err := deleteCleanupCandidate(root, candidates[0], false); err == nil || !strings.Contains(err.Error(), "可能仍在使用") {
+		t.Fatalf("fresh temp manual deletion result=%v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("fresh temp changed after refused deletion: %v", err)
 	}
 }
 
@@ -164,13 +213,125 @@ func TestDeleteCleanupCandidateRefusesChangedTarget(t *testing.T) {
 	if err := os.RemoveAll(target); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target, []byte("replacement"), 0o600); err != nil {
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(target, "replacement")
+	if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := deleteCleanupCandidate(root, candidates[0], false); err == nil {
 		t.Fatal("changed target was deleted")
 	}
-	if content, err := os.ReadFile(target); err != nil || string(content) != "replacement" {
+	if content, err := os.ReadFile(replacement); err != nil || string(content) != "replacement" {
 		t.Fatalf("replacement target changed: %q err=%v", content, err)
+	}
+}
+
+func TestRegisteredPendingCleanupIsVisibleAndUpdatesState(t *testing.T) {
+	root := t.TempDir()
+	active := filepath.Join(managedRuntimeRoot(root), "b2-cpu")
+	pending := filepath.Join(managedRuntimeRoot(root), "b1-cpu")
+	for _, path := range []string{active, pending} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touchFile(t, filepath.Join(active, "llama-server"))
+	touchFile(t, filepath.Join(pending, "old-runtime"))
+	ageForAutomaticCleanup(t, pending)
+	state := UpdateState{
+		Schema: 1, LlamaTag: "b2", Backend: "cpu", ActiveRuntime: "data/llama.cpp/b2-cpu",
+		Assets:         []InstalledAsset{{Name: "runtime.tar.gz", SHA256: testDigest}},
+		PendingCleanup: []string{"data/llama.cpp/b1-cpu"},
+	}
+	if err := WriteUpdateState(root, state); err != nil {
+		t.Fatal(err)
+	}
+	candidates, _ := scanCleanupCandidates(root)
+	var selected *cleanupCandidate
+	for index := range candidates {
+		if candidates[index].Path == pending {
+			selected = &candidates[index]
+			break
+		}
+	}
+	if selected == nil || !selected.Automatic || selected.Kind != "已登记待清理运行时" {
+		t.Fatalf("pending cleanup classification=%#v candidates=%#v", selected, candidates)
+	}
+	if err := deleteCleanupCandidate(root, *selected, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending runtime was not deleted: %v", err)
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Fatalf("active runtime was changed: %v", err)
+	}
+	updated, exists, err := LoadUpdateState(root)
+	if err != nil || !exists || len(updated.PendingCleanup) != 0 {
+		t.Fatalf("pending state was not cleared: %#v exists=%v err=%v", updated, exists, err)
+	}
+}
+
+func TestCleanupRefusesCandidateContainingSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(managedRuntimeRoot(root), "user-runtime")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "important")
+	if err := os.WriteFile(external, []byte("important"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(target, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	candidates, _ := scanCleanupCandidates(root)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates=%#v", candidates)
+	}
+	if err := deleteCleanupCandidate(root, candidates[0], false); err == nil || !strings.Contains(err.Error(), "安全遍历") {
+		t.Fatalf("symlink candidate deletion result=%v", err)
+	}
+	if content, err := os.ReadFile(external); err != nil || string(content) != "important" {
+		t.Fatalf("symlink target changed: %q err=%v", content, err)
+	}
+}
+
+func TestRecoveryMetadataReadIsSizeLimited(t *testing.T) {
+	root := t.TempDir()
+	recovery := filepath.Join(root, "data", "llama.cpp-recovery")
+	if err := os.MkdirAll(recovery, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recovery, ".llamalc-recovery.json"), bytes.Repeat([]byte("x"), (64<<10)+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidates, _ := scanCleanupCandidates(root)
+	if len(candidates) != 1 || !strings.Contains(candidates[0].Reason, "没有可用元数据") {
+		t.Fatalf("oversized metadata classification=%#v", candidates)
+	}
+}
+
+func TestRecoveryMetadataIsEscapedForTerminalOutput(t *testing.T) {
+	root := t.TempDir()
+	recovery := filepath.Join(root, "data", "llama.cpp-recovery")
+	if err := os.MkdirAll(recovery, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := `{"schema":1,"created_at":"2026-07-15T00:00:00Z","original_path":"x","reason":"unsafe\u001b[31m\nline"}`
+	if err := os.WriteFile(filepath.Join(recovery, ".llamalc-recovery.json"), []byte(metadata), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidates, _ := scanCleanupCandidates(root)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates=%#v", candidates)
+	}
+	if strings.ContainsRune(candidates[0].Reason, '\x1b') || strings.Contains(candidates[0].Reason, "\nline") {
+		t.Fatalf("metadata control characters were not escaped: %q", candidates[0].Reason)
+	}
+	if !strings.Contains(candidates[0].Reason, `\u001B[31m\nline`) {
+		t.Fatalf("escaped metadata reason missing: %q", candidates[0].Reason)
 	}
 }

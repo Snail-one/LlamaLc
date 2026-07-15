@@ -563,6 +563,7 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	touchFile(t, executable)
 	staleUpdater := filepath.Join(root, "bin", ".llama-updater-run-12345.exe")
 	touchFile(t, staleUpdater)
+	ageForAutomaticCleanup(t, staleUpdater)
 	oldExecutablePath := executablePath
 	executablePath = func() (string, error) { return executable, nil }
 	t.Cleanup(func() { executablePath = oldExecutablePath })
@@ -963,6 +964,7 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 	markedDirectory := filepath.Join(bin, ".launcher-update-67890")
 	nonGeneratedName := filepath.Join(bin, ".llama-launcher-new-user-notes.exe")
 	touchFile(t, ephemeral)
+	ageForAutomaticCleanup(t, ephemeral)
 	touchFile(t, legacy)
 	touchFile(t, unrelated)
 	touchFile(t, nonGeneratedName)
@@ -973,6 +975,7 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 		t.Fatal(err)
 	}
 	touchFile(t, filepath.Join(unmarkedDirectory, "user-file"))
+	ageForAutomaticCleanup(t, unmarkedDirectory)
 	if err := os.Mkdir(markedDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -980,6 +983,7 @@ func TestCleanupLauncherTempsOnlyRemovesRegularEphemeralUpdater(t *testing.T) {
 		t.Fatal(err)
 	}
 	touchFile(t, filepath.Join(markedDirectory, "download.part"))
+	ageForAutomaticCleanup(t, markedDirectory)
 	stderr := &bytes.Buffer{}
 	cleanupLauncherTemps(root, stderr)
 	if _, err := os.Stat(ephemeral); !errors.Is(err, os.ErrNotExist) {
@@ -1015,7 +1019,9 @@ func TestCleanupRuntimeTempsRequiresOwnershipMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	touchFile(t, filepath.Join(marked, "partial-download"))
+	ageForAutomaticCleanup(t, marked)
 	touchFile(t, filepath.Join(unmarked, "user-file"))
+	ageForAutomaticCleanup(t, unmarked)
 	stderr := &bytes.Buffer{}
 	cleanupRuntimeTemps(root, stderr)
 	if _, err := os.Stat(marked); !errors.Is(err, os.ErrNotExist) {

@@ -232,9 +232,9 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		isExecutableTemp := numericTempSuffix(name, ".llama-updater-run-", "") ||
-			numericTempSuffix(name, ".llama-updater-run-", ".exe") ||
-			numericTempSuffix(name, ".llama-launcher-new-", "") ||
+		isRunningUpdater := numericTempSuffix(name, ".llama-updater-run-", "") ||
+			numericTempSuffix(name, ".llama-updater-run-", ".exe")
+		isExecutableTemp := isRunningUpdater || numericTempSuffix(name, ".llama-launcher-new-", "") ||
 			numericTempSuffix(name, ".llama-launcher-new-", ".exe") ||
 			numericTempSuffix(name, ".llama-updater-new-", "") ||
 			numericTempSuffix(name, ".llama-updater-new-", ".exe")
@@ -249,6 +249,9 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 				fmt.Fprintf(stderr, "警告: 拒绝清理不是普通文件的更新器残留: %s\n", path)
 				continue
 			}
+			if !isRunningUpdater && !oldEnoughForAutomaticCleanupPath(path, info) {
+				continue
+			}
 			if err := os.Remove(path); err != nil {
 				fmt.Fprintf(stderr, "警告: 无法清理更新器残留 %s: %v\n", path, err)
 			}
@@ -258,6 +261,10 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 			continue
 		}
 		path := filepath.Join(bin, name)
+		info, infoErr := entry.Info()
+		if infoErr != nil || !oldEnoughForAutomaticCleanupPath(path, info) {
+			continue
+		}
 		if err := removeMarkedTempDirectory(bin, path); err != nil {
 			fmt.Fprintf(stderr, "警告: 无法清理启动器更新残留 %s: %v\n", path, err)
 		}
@@ -283,6 +290,10 @@ func cleanupRuntimeTemps(root string, stderr io.Writer) {
 			continue
 		}
 		path := filepath.Join(base, entry.Name())
+		info, infoErr := entry.Info()
+		if infoErr != nil || !oldEnoughForAutomaticCleanupPath(path, info) {
+			continue
+		}
 		if err := removeMarkedTempDirectory(base, path); err != nil {
 			fmt.Fprintf(stderr, "警告: 无法清理运行时更新残留 %s: %v\n", path, err)
 		}
