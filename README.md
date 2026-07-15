@@ -67,7 +67,7 @@ Windows 下双击 `scripts/build-windows.cmd`，或在终端运行：
 .\scripts\build-windows.cmd v1.2.3 arm64
 ```
 
-`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe` 和 `llama-updater.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。项目不提交编译产物。
+`scripts/build-linux.sh` 与 `scripts/build-windows.cmd` 会生成可直接部署的 `dist/windows-<arch>/llama.cpp/bin/llama-launcher.exe` 和 `llama-updater.exe`。未提供位置参数时架构默认为 `amd64`；未提供版本时自动使用 Git 描述，Git 不可用时使用 `dev`。Linux 脚本会明确设置 `GOOS=windows`，避免生成无法在 Windows 运行的 ELF 文件。Windows 构建会使用固定版本的纯 Go 资源工具嵌入 `asInvoker` 应用清单，明确 launcher 和 updater 始终继承当前用户权限，避免 Windows 将 updater 误判为需要管理员权限的安装程序；该工具只参与构建，不会打入程序。项目不提交编译产物。
 
 `llama-launcher.exe` 固定放在 llama.cpp 根目录的 `bin/` 下；启动器会自动以上一级目录作为根目录。
 

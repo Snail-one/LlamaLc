@@ -52,6 +52,13 @@ if not defined MODULE_PATH (
 set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
 if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
 
+where go-winres >nul 2>nul
+if errorlevel 1 (
+    set "WINRES_COMMAND=go run github.com/tc-hib/go-winres@v0.3.3"
+) else (
+    set "WINRES_COMMAND=go-winres"
+)
+
 echo Building Windows !TARGET_ARCH! version !VERSION!...
 set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
@@ -61,6 +68,19 @@ for %%P in (llama-launcher llama-updater) do (
     go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\%%P.exe" ".\cmd\%%P"
     if errorlevel 1 (
         echo Build failed: %%P
+        exit /b 1
+    )
+)
+
+for %%P in (llama-launcher llama-updater) do (
+    !WINRES_COMMAND! patch --in windows-manifest.json --no-backup "!OUTPUT_DIR!\%%P.exe"
+    if errorlevel 1 (
+        echo Failed to embed the asInvoker manifest: %%P
+        exit /b 1
+    )
+    findstr /L /C:"asInvoker" "!OUTPUT_DIR!\%%P.exe" >nul
+    if errorlevel 1 (
+        echo Manifest verification failed: %%P
         exit /b 1
     )
 )

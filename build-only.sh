@@ -49,6 +49,28 @@ for program in llama-launcher llama-updater; do
     echo "输出文件: ${output_file}"
 done
 
+if [[ "${TARGET_OS}" == "windows" ]]; then
+    if command -v go-winres >/dev/null 2>&1; then
+        WINRES=(go-winres)
+    else
+        WINRES=(go run github.com/tc-hib/go-winres@v0.3.3)
+    fi
+    for program in llama-launcher llama-updater; do
+        output_file="${OUTPUT_ROOT}/bin/${program}.exe"
+        (
+            cd "${ROOT_DIR}"
+            "${WINRES[@]}" patch \
+                --in windows-manifest.json \
+                --no-backup \
+                "${output_file}"
+        )
+        if ! grep -aFq 'requestedExecutionLevel level="asInvoker" uiAccess="false"' "${output_file}"; then
+            echo "错误: ${output_file} 缺少 Windows asInvoker 清单。" >&2
+            exit 1
+        fi
+    done
+fi
+
 echo "构建完成"
 echo "版本: ${VERSION}"
 echo "提交: ${COMMIT}"

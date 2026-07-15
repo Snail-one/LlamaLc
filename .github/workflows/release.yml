@@ -37,6 +37,9 @@ jobs:
           set -euo pipefail
           module="$(go list -m)"
           build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          tools_dir="${RUNNER_TEMP}/llama-launcher-tools"
+          GOBIN="${tools_dir}" go install github.com/tc-hib/go-winres@v0.3.3
+          winres="${tools_dir}/go-winres"
           mkdir -p dist
           for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
             goos="${target%/*}"
@@ -61,6 +64,12 @@ jobs:
               -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
               -o "${updater}" ./cmd/llama-updater
             grep -aFq "${VERSION}" "${updater}"
+            if [ "${goos}" = windows ]; then
+              "${winres}" patch --in windows-manifest.json --no-backup "${binary}"
+              "${winres}" patch --in windows-manifest.json --no-backup "${updater}"
+              grep -aFq 'requestedExecutionLevel level="asInvoker" uiAccess="false"' "${binary}"
+              grep -aFq 'requestedExecutionLevel level="asInvoker" uiAccess="false"' "${updater}"
+            fi
             archive="dist/llama-launcher-${VERSION}-${goos}-${goarch}.${archive_ext}"
             if [ "${goos}" = windows ]; then
               (cd "${package}" && zip -q -r "${GITHUB_WORKSPACE}/${archive}" llama.cpp)
