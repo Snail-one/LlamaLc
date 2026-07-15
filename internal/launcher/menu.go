@@ -38,15 +38,21 @@ llama.cpp: %s
 根目录: %s
 提示: 操作中输入 q 返回主菜单（主菜单输入 q 退出）
 
-  1. 单模型 API 服务
-  2. Embedding API
-  3. Rerank API
-  4. 生成手动 Router 配置
-  5. 多模型 Router
-  6. CLI 命令行聊天
-  7. 检查并更新 llama.cpp
-  8. 检查并更新启动器
+API 服务
+  1. 启动单模型 API
+  2. 启动 Embedding API
+  3. 启动 Rerank API
+
+Router 与本地工具
+  4. 生成 Router 配置
+  5. 启动多模型 Router
+  6. 启动 CLI 聊天
+
+维护
+  7. 更新 llama.cpp
+  8. 更新启动器
   9. 重置 API key
+
   q. 退出
 `, buildversion.Version, app.llamaVersionDisplay(), app.Root)
 		choice, err := m.readChoice("请选择", 1, 1, 9)

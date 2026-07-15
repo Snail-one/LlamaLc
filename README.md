@@ -158,16 +158,22 @@ llama.cpp Go 启动器
 启动器版本: v1.0.0
 llama.cpp: b10015 / cuda-13.3 — version: 10015 (abc123)
 
-1. 单模型 API 服务
-2. Embedding API
-3. Rerank API
-4. 生成手动 Router 配置
-5. 多模型 Router
-6. CLI 命令行聊天
-7. 检查并更新 llama.cpp
-8. 检查并更新启动器
-9. 重置 API key
-q. 退出
+API 服务
+  1. 启动单模型 API
+  2. 启动 Embedding API
+  3. 启动 Rerank API
+
+Router 与本地工具
+  4. 生成 Router 配置
+  5. 启动多模型 Router
+  6. 启动 CLI 聊天
+
+维护
+  7. 更新 llama.cpp
+  8. 更新启动器
+  9. 重置 API key
+
+  q. 退出
 ```
 
 首次正常启动会自动生成 128 位 URL-safe API key 并写入私有的 `config/launcher.api-key`。后续启动直接使用该文件，不再询问是否重置。需要轮换密钥时选择主菜单的 `9. 重置 API key`，确认后会原子写入新的随机 key，旧 key 立即失效。版本和帮助命令不读取或修改 key。

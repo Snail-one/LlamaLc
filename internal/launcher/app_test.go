@@ -87,7 +87,11 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
-	for _, want := range []string{"7. 检查并更新 llama.cpp", "8. 检查并更新启动器", "9. 重置 API key", "将联网检查并更新启动器，是否继续"} {
+	for _, want := range []string{
+		"API 服务", "Router 与本地工具", "维护",
+		"7. 更新 llama.cpp", "8. 更新启动器", "9. 重置 API key",
+		"将联网检查并更新启动器，是否继续",
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
