@@ -148,7 +148,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	for _, directory := range createdDirectories {
 		fmt.Fprintf(stdout, "已创建目录: %s\n", directory)
 	}
-	startupInput, err := prepareAPIKey(&config, configPath, needsCreate, stdin, stdout)
+	_, startupInput, err := prepareAPIKey(root, paths.APIKeyFile, stdin, stdout)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
@@ -159,10 +159,6 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 			return 1
 		}
 		fmt.Fprintf(stdout, "已生成配置: %s\n", configPath)
-	}
-	if err := WriteAPIKeyFile(root, paths.APIKeyFile, config.Server.APIKey); err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
 	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,

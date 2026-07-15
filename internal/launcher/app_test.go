@@ -98,7 +98,6 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 }
 
 func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
-	t.Setenv("LLAMA_API_KEY", "test-only-key")
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
@@ -132,12 +131,16 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	if lastArgumentValue("", fake.commands[0].Args, "--api-key") != "" || strings.Contains(strings.Join(fake.commands[0].Args, "\x00"), generatedKey) {
 		t.Fatal("managed API key leaked into child process arguments")
 	}
-	savedConfig, _, _, err := LoadConfig(root)
+	_, configPath, _, err := LoadConfig(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if savedConfig.Server.APIKey != generatedKey {
-		t.Fatal("generated API key was not saved to config")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configData), "api_key") || strings.Contains(string(configData), generatedKey) {
+		t.Fatal("generated API key leaked into launcher.json")
 	}
 	wantTail := []string{"--host", "config-host", "--port", "30002", "--no-ui", "--threads", "8"}
 	args := withoutManagedAuthentication(fake.commands[0].Args)
@@ -309,8 +312,12 @@ func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := DefaultConfig()
-	config.Server.APIKey = strings.Repeat("k", MinAPIKeyLength)
 	if err := WriteDefaultConfig(DefaultConfigPath(root), config); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	oldKey := strings.Repeat("k", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, keyPath, oldKey); err != nil {
 		t.Fatal(err)
 	}
 
@@ -320,15 +327,12 @@ func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "是否重置 API key [y/N]") ||
-		!strings.Contains(out.String(), "继续使用配置文件中已生成的 API key") {
+		!strings.Contains(out.String(), "继续使用 API key 文件中的密钥") {
 		t.Fatalf("reset prompt/default result missing: %q", out.String())
 	}
-	saved, _, _, err := LoadConfig(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.Server.APIKey != strings.Repeat("k", MinAPIKeyLength) {
-		t.Fatalf("default reset answer changed key: %q", saved.Server.APIKey)
+	saved, exists, err := ReadAPIKeyFile(root, keyPath)
+	if err != nil || !exists || saved != oldKey {
+		t.Fatalf("default reset answer changed key: %q exists=%v err=%v", saved, exists, err)
 	}
 }
 

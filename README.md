@@ -102,7 +102,7 @@ llama.cpp/
 ├─ mmproj/                        # 自动创建；多模态投影文件：gguf
 ├─ config/                        # 验证安装位置后自动创建
 │  ├─ launcher.json              # 首次运行自动生成
-│  ├─ launcher.api-key           # 传给 llama-server 的私有 key 文件
+│  ├─ launcher.api-key           # API key 的唯一来源；传给 llama-server
 │  ├─ update-state.json          # 私有的活动版本、后端和摘要状态
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
@@ -169,7 +169,7 @@ llama.cpp: b10015 / cuda-13.3 — version: 10015 (abc123)
 q. 退出
 ```
 
-首次正常启动会自动生成 128 位 URL-safe API key 并写入 `config/launcher.json`。启动器会明确提示配置文件路径以及用于查看 key 的 `server.api_key` 字段。后续每次启动都会先询问 `是否重置 API key [y/N]`；直接回车或输入 `n` 会继续使用已保存的 key，输入 `y` 会用新的随机 key 原子更新配置。版本和帮助命令不读取或修改 key。
+首次正常启动会自动生成 128 位 URL-safe API key 并写入私有的 `config/launcher.api-key`。后续每次启动都会先询问 `是否重置 API key [y/N]`；直接回车或输入 `n` 会继续使用 key 文件，输入 `y` 会原子写入新的随机 key。版本和帮助命令不读取或修改 key。
 
 除 API key 的首次生成和主动重置外，菜单不会把其他交互选择写回配置。交互流程中任意询问输入 `q`（大小写均可）会立即返回主菜单，主菜单输入 `q` 退出程序；`0` 保留给参数和选项本身使用。交互终端在进入功能和返回主菜单时会自动清屏，重定向到文件或管道的输出不会包含清屏控制码。选择模型后会逐项询问上下文、GPU 层数、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。直接回车使用配置默认值，Web UI 默认不启用。
 
@@ -229,7 +229,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 
 通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size`、`--threads`、`--batch-size`、`--ubatch-size`、`--flash-attn`、`--parallel` 和 `--ui`。Embedding 还支持 `--pooling` 与 `--embd-normalize`；Router preset 使用 `--embedding-batch-size` 和 `--embedding-ubatch-size`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
 
-配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。启动器会把 `server.api_key` 原子同步到私有的 `config/launcher.api-key`，再通过 `--api-key-file` 注入单模型、Embedding、Rerank 和 Router 服务，避免密钥出现在进程命令行；监听地址不是 localhost、loopback IP 或 Unix socket 时仍会检查有效认证参数，否则拒绝启动。
+配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。`config/launcher.api-key` 是托管 API key 的唯一来源，并通过 `--api-key-file` 注入单模型、Embedding、Rerank 和 Router 服务，避免密钥出现在进程命令行；监听地址不是 localhost、loopback IP 或 Unix socket 时仍会检查有效认证参数，否则拒绝启动。
 
 ## config/launcher.json
 
@@ -240,7 +240,6 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
   "server": {
     "host": "127.0.0.1",
     "port": 29856,
-    "api_key": "",
     "n_gpu_layers": "auto",
     "ctx_size": 0,
     "threads": -1,
@@ -263,7 +262,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 }
 ```
 
-`server.api_key` 在示例配置中可留空；启动器会用密码学安全随机源生成并保存 128 位 key。手工配置必须至少 32 位、最长 8167 位，并且只能包含 ASCII 字母、数字、连字符和下划线。逗号和空白会被拒绝，避免上游将单个 key 重新解释为多个 key 或空 key 列表。长度上限依据[当前上游 HTTP 头限制](https://github.com/ggml-org/llama.cpp/blob/master/vendor/cpp-httplib/httplib.h)和[认证头处理实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-http.cpp)推导。
+`config/launcher.api-key` 不存在时，启动器会用密码学安全随机源生成并保存 128 位 key。手工填写时必须至少 32 位、最长 8167 位，并且只能包含 ASCII 字母、数字、连字符和下划线；文件末尾允许一个普通换行或 Windows CRLF。逗号、空白和多行内容会被拒绝。不兼容旧版 JSON 密钥字段；现有 `launcher.json` 若仍包含 `server.api_key`，启动器会按未知字段拒绝读取，必须手动删除。长度上限依据[当前上游 HTTP 头限制](https://github.com/ggml-org/llama.cpp/blob/master/vendor/cpp-httplib/httplib.h)和[认证头处理实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-http.cpp)推导。
 
 `embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.batch_size` 与 `embedding.ubatch_size` 默认为 `8192`，必须是正整数且逻辑 batch 不能小于物理 batch；`embedding.normalize` 使用 llama.cpp 官方默认值 `2`。配置文件最大为 1 MiB。配置不再包含 `paths`；若现有 `config/launcher.json` 仍有该字段，启动器会拒绝读取，请删除该字段或删除配置后让启动器重新生成。
 
@@ -274,7 +273,7 @@ Embedding 服务启动后使用 OpenAI 兼容接口：
 ```powershell
 curl.exe http://127.0.0.1:29856/v1/embeddings `
   -H "Content-Type: application/json" `
-  -H "Authorization: Bearer <config/launcher.json 中的 api_key>" `
+  -H "Authorization: Bearer <config/launcher.api-key 中的内容>" `
   -d '{"input":["你好","世界"],"model":"bge-m3.gguf","encoding_format":"float"}'
 ```
 
@@ -283,7 +282,7 @@ Rerank 服务：
 ```powershell
 curl.exe http://127.0.0.1:29856/v1/rerank `
   -H "Content-Type: application/json" `
-  -H "Authorization: Bearer <config/launcher.json 中的 api_key>" `
+  -H "Authorization: Bearer <config/launcher.api-key 中的内容>" `
   -d '{"model":"bge-reranker-v2-m3.gguf","query":"什么是熊猫？","top_n":2,"documents":["一种编程语言","熊猫是熊科动物","今天天气很好"]}'
 ```
 
@@ -305,7 +304,7 @@ GET http://127.0.0.1:29856/models
 ## 安全说明
 
 - `config/launcher.json`、`config/launcher.api-key`、手动 Router preset 和自动 Router preset 都固定在 `config/` 中；符号链接、junction 和重解析点会被拒绝，避免写入根目录外文件。
-- `config/launcher.json` 和派生的 `config/launcher.api-key` 都包含明文 API key。Unix 上会把 `config/` 强制修正为 `0700`、两个文件修正为 `0600`；Windows 上会设置受保护 DACL，仅授予当前用户和 LocalSystem 完全控制。请勿提交或共享这些文件。
+- 只有 `config/launcher.api-key` 包含明文 API key；`launcher.json` 不再保存密钥。Unix 上会把 `config/` 强制修正为 `0700`、配置与 key 文件修正为 `0600`；Windows 上会设置受保护 DACL，仅授予当前用户和 LocalSystem 完全控制。请勿提交或共享 key 文件。
 - 配置与 Router preset 先写入同目录临时文件并同步，再替换目标文件。覆盖失败不会先清空原文件；不带 `--force` 时仍拒绝覆盖手动配置。
 - Router 会拒绝包含控制字符、换行或非法 section 分隔符的模型文件名和路径，防止 preset 注入。
 - 启动器使用 `--api-key-file` 传递托管密钥，密钥不会出现在操作系统进程列表中；用户自行转发的 `--api-key` 仍会在命令预览中脱敏。

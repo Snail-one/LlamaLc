@@ -2,7 +2,6 @@
   "server": {
     "host": "127.0.0.1",
     "port": 29856,
-    "api_key": "",
     "n_gpu_layers": "auto",
     "ctx_size": 0,
     "threads": -1,

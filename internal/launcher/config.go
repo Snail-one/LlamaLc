@@ -34,7 +34,6 @@ type Config struct {
 type ServerConfig struct {
 	Host           string `json:"host"`
 	Port           int    `json:"port"`
-	APIKey         string `json:"api_key"`
 	GPULayers      string `json:"n_gpu_layers"`
 	ContextSize    int    `json:"ctx_size"`
 	Threads        int    `json:"threads"`
@@ -245,9 +244,6 @@ func ValidateConfig(config Config) error {
 		return errors.New("配置错误: server.host 不能为空")
 	}
 	if err := ValidatePort(config.Server.Port); err != nil {
-		return fmt.Errorf("配置错误: %w", err)
-	}
-	if err := ValidateAPIKey(config.Server.APIKey); err != nil {
 		return fmt.Errorf("配置错误: %w", err)
 	}
 	if err := ValidateGPULayers(config.Server.GPULayers); err != nil {

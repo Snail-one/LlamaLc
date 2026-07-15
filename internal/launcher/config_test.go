@@ -206,11 +206,11 @@ func TestInvalidConfig(t *testing.T) {
 	if _, _, _, err := LoadConfig(root); err == nil {
 		t.Fatal("embedding batch-size smaller than ubatch-size was accepted")
 	}
-	if err := os.WriteFile(path, []byte(`{"server":{"api_key":","}}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"server":{"api_key":"removed"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), "server.api_key") {
-		t.Fatalf("comma-only API key was accepted: %v", err)
+	if _, _, _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), `unknown field "api_key"`) {
+		t.Fatalf("removed server.api_key field was accepted: %v", err)
 	}
 }
 

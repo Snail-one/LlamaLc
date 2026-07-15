@@ -3,7 +3,6 @@ package launcher
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +28,7 @@ func TestGenerateAPIKeyUsesConfiguredLength(t *testing.T) {
 
 func TestValidateAPIKeyRejectsUnsupportedValues(t *testing.T) {
 	for _, value := range []string{
+		"",
 		strings.Repeat("a", MaxAPIKeyLength+1),
 		strings.Repeat("a", MinAPIKeyLength-1),
 		strings.Repeat("a", MinAPIKeyLength) + ",",
@@ -43,59 +43,68 @@ func TestValidateAPIKeyRejectsUnsupportedValues(t *testing.T) {
 	}
 }
 
-func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
+func TestPrepareAPIKeyKeepsOrResetsKeyFile(t *testing.T) {
 	root := t.TempDir()
-	path := DefaultConfigPath(root)
+	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	config := DefaultConfig()
-	config.Server.APIKey = strings.Repeat("e", MinAPIKeyLength)
-	if err := WriteDefaultConfig(path, config); err != nil {
+	oldKey := strings.Repeat("e", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, path, oldKey); err != nil {
 		t.Fatal(err)
 	}
 
 	out := &bytes.Buffer{}
-	reader, err := prepareAPIKey(&config, path, false, strings.NewReader("\nchild input\n"), out)
+	key, reader, err := prepareAPIKey(root, path, strings.NewReader("\nchild input\n"), out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Server.APIKey != strings.Repeat("e", MinAPIKeyLength) {
-		t.Fatalf("default answer unexpectedly reset key: %q", config.Server.APIKey)
+	if key != oldKey {
+		t.Fatalf("default answer unexpectedly reset key: %q", key)
 	}
-	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "server.api_key") {
-		t.Fatalf("API key location was not displayed: %q", out.String())
+	if !strings.Contains(out.String(), path) || strings.Contains(out.String(), "server.api_key") {
+		t.Fatalf("API key file location was not displayed correctly: %q", out.String())
 	}
 	remaining, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil || remaining != "child input\n" {
 		t.Fatalf("buffered child input was lost: %q, %v", remaining, err)
 	}
 
-	oldKey := config.Server.APIKey
 	resetOut := &bytes.Buffer{}
-	if _, err := prepareAPIKey(&config, path, false, strings.NewReader("y\n"), resetOut); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(resetOut.String(), path) || !strings.Contains(resetOut.String(), "server.api_key") {
-		t.Fatalf("reset API key location was not displayed: %q", resetOut.String())
-	}
-	if config.Server.APIKey == oldKey || len(config.Server.APIKey) != GeneratedAPIKeyLength {
-		t.Fatalf("key was not reset: length=%d", len(config.Server.APIKey))
-	}
-	data, err := os.ReadFile(path)
+	newKey, _, err := prepareAPIKey(root, path, strings.NewReader("y\n"), resetOut)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var saved Config
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatal(err)
+	if newKey == oldKey || len(newKey) != GeneratedAPIKeyLength {
+		t.Fatalf("key was not reset: length=%d", len(newKey))
 	}
-	if saved.Server.APIKey != config.Server.APIKey {
-		t.Fatal("reset API key was not persisted")
+	saved, exists, err := ReadAPIKeyFile(root, path)
+	if err != nil || !exists || saved != newKey {
+		t.Fatalf("reset key file=%q exists=%v err=%v", saved, exists, err)
 	}
 }
 
-func TestWriteAPIKeyFileUsesPrivatePermissions(t *testing.T) {
+func TestPrepareAPIKeyGeneratesMissingFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	key, _, err := prepareAPIKey(root, path, strings.NewReader(""), out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(key) != GeneratedAPIKeyLength || !strings.Contains(out.String(), path) {
+		t.Fatalf("generated key length=%d output=%q", len(key), out)
+	}
+	saved, exists, err := ReadAPIKeyFile(root, path)
+	if err != nil || !exists || saved != key {
+		t.Fatalf("generated key file=%q exists=%v err=%v", saved, exists, err)
+	}
+}
+
+func TestWriteAndReadAPIKeyFileUsesPrivatePermissions(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -105,12 +114,9 @@ func TestWriteAPIKeyFileUsesPrivatePermissions(t *testing.T) {
 	if err := WriteAPIKeyFile(root, path, key); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != key+"\n" {
-		t.Fatalf("API key file content = %q", data)
+	got, exists, err := ReadAPIKeyFile(root, path)
+	if err != nil || !exists || got != key {
+		t.Fatalf("read key=%q exists=%v err=%v", got, exists, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -121,7 +127,7 @@ func TestWriteAPIKeyFileUsesPrivatePermissions(t *testing.T) {
 	}
 }
 
-func TestWriteAPIKeyFileRejectsSymlink(t *testing.T) {
+func TestAPIKeyFileRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, ConfigDirectoryName)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -135,28 +141,15 @@ func TestWriteAPIKeyFileRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(external, path); err != nil {
 		t.Skipf("symlink is unavailable: %v", err)
 	}
+	if _, _, err := ReadAPIKeyFile(root, path); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("API key symlink was accepted for reading: %v", err)
+	}
 	if err := WriteAPIKeyFile(root, path, strings.Repeat("a", MinAPIKeyLength)); err == nil || !strings.Contains(err.Error(), "符号链接") {
-		t.Fatalf("API key symlink was accepted: %v", err)
+		t.Fatalf("API key symlink was accepted for writing: %v", err)
 	}
 	data, err := os.ReadFile(external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "unchanged\n" {
-		t.Fatalf("symlink target was modified: %q", data)
-	}
-}
-
-func TestPrepareAPIKeyDisplaysLocationAfterGeneration(t *testing.T) {
-	config := DefaultConfig()
-	path := filepath.Join(t.TempDir(), "config", "launcher.json")
-	out := &bytes.Buffer{}
-
-	if _, err := prepareAPIKey(&config, path, true, strings.NewReader(""), out); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "server.api_key") {
-		t.Fatalf("generated API key location was not displayed: %q", out.String())
+	if err != nil || string(data) != "unchanged\n" {
+		t.Fatalf("symlink target was modified: %q err=%v", data, err)
 	}
 }
 
