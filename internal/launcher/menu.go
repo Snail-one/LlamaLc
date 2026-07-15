@@ -32,7 +32,9 @@ func (app *Application) RunMenu() int {
 		}
 		clearBeforeMenu = false
 		fmt.Fprintf(app.Stdout, `
-llama.cpp Go 启动器 %s
+llama.cpp Go 启动器
+启动器版本: %s
+llama.cpp: %s
 根目录: %s
 提示: 操作中输入 q 返回主菜单（主菜单输入 q 退出）
 
@@ -44,7 +46,7 @@ llama.cpp Go 启动器 %s
   6. CLI 命令行聊天
   7. 检查并更新启动器与 llama.cpp
   q. 退出
-`, buildversion.Version, app.Root)
+`, buildversion.Version, app.llamaVersionDisplay(), app.Root)
 		choice, err := m.readChoice("请选择", 1, 1, 7)
 		if errors.Is(err, io.EOF) {
 			return 0
@@ -70,6 +72,28 @@ llama.cpp Go 启动器 %s
 		}
 		clearBeforeMenu = true
 	}
+}
+
+func (app *Application) llamaVersionDisplay() string {
+	parts := make([]string, 0, 3)
+	if strings.TrimSpace(app.LlamaTag) != "" {
+		parts = append(parts, app.LlamaTag)
+	}
+	if strings.TrimSpace(app.LlamaBackend) != "" {
+		parts = append(parts, app.LlamaBackend)
+	}
+	managed := strings.Join(parts, " / ")
+	detected := strings.TrimSpace(app.LlamaVersion)
+	if managed != "" && detected != "" {
+		return managed + " — " + detected
+	}
+	if managed != "" {
+		return managed
+	}
+	if detected != "" {
+		return detected
+	}
+	return "unknown"
 }
 
 func (m *menu) runChoice(choice int) error {

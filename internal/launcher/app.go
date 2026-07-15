@@ -15,14 +15,17 @@ import (
 )
 
 type Application struct {
-	Root     string
-	Config   Config
-	Paths    ResolvedPaths
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
-	Executor Executor
-	Updater  *UpdateManager
+	Root         string
+	Config       Config
+	Paths        ResolvedPaths
+	LlamaVersion string
+	LlamaTag     string
+	LlamaBackend string
+	Stdin        io.Reader
+	Stdout       io.Writer
+	Stderr       io.Writer
+	Executor     Executor
+	Updater      *UpdateManager
 }
 
 var updateManagerFactory = NewUpdateManager
@@ -124,6 +127,10 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	}
 	fmt.Fprintln(stdout, "实际探测文件:", paths.Server)
 	fmt.Fprintln(stdout, "已识别 llama.cpp:", detectedVersion)
+	llamaTag, llamaBackend := "", ""
+	if state, exists, stateLoadErr := LoadUpdateState(root); stateLoadErr == nil && exists {
+		llamaTag, llamaBackend = state.LlamaTag, state.Backend
+	}
 
 	config, configPath, needsCreate, err := LoadConfig(root)
 	if err != nil {
@@ -156,6 +163,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
+		LlamaVersion: detectedVersion, LlamaTag: llamaTag, LlamaBackend: llamaBackend,
 		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
 	}
 	if len(remaining) == 0 {

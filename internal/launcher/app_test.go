@@ -155,6 +155,9 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	if !strings.Contains(out.String(), buildversion.Version) {
 		t.Fatalf("menu header does not contain version %q: %s", buildversion.Version, out.String())
 	}
+	if !strings.Contains(out.String(), "llama.cpp: version: 9999 (test)") {
+		t.Fatalf("menu header does not contain detected llama.cpp version: %s", out.String())
+	}
 }
 
 func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {

@@ -152,12 +152,17 @@ CLI 写入默认要求终端确认；stdin 不是交互终端时必须提供 `--
 双击 `bin/llama-launcher.exe`，或不带参数运行，即可进入中文菜单：
 
 ```text
+llama.cpp Go 启动器
+启动器版本: v1.0.0
+llama.cpp: b10015 / cuda-13.3 — version: 10015 (abc123)
+
 1. 单模型 API 服务
 2. Embedding API
 3. Rerank API
 4. 生成手动 Router 配置
 5. 多模型 Router
 6. CLI 命令行聊天
+7. 检查并更新启动器与 llama.cpp
 q. 退出
 ```
 

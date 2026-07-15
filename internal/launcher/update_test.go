@@ -246,6 +246,14 @@ func TestRootMustBeLiterallyNamedLlamaCpp(t *testing.T) {
 	}
 }
 
+func TestManagedLlamaVersionDisplay(t *testing.T) {
+	app := &Application{LlamaTag: "b10015", LlamaBackend: "cuda-13.3", LlamaVersion: "version: 10015 (abc123)"}
+	want := "b10015 / cuda-13.3 — version: 10015 (abc123)"
+	if got := app.llamaVersionDisplay(); got != want {
+		t.Fatalf("llama version display = %q, want %q", got, want)
+	}
+}
+
 func TestGitHubReleaseLatestTagTokenAndRateLimit(t *testing.T) {
 	var paths []string
 	client := &GitHubClient{
