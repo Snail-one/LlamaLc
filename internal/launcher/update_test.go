@@ -292,6 +292,20 @@ func TestGitHubReleaseLatestTagTokenAndRateLimit(t *testing.T) {
 	}
 }
 
+func TestParseSHA256SUMSAcceptsCurrentDirectoryPrefix(t *testing.T) {
+	name := "llama-launcher-v0.0.2-windows-amd64.zip"
+	data := []byte(testDigest + "  ./" + name + "\n")
+	checksums, err := parseSHA256SUMS(data)
+	if err != nil || checksums[name] != testDigest {
+		t.Fatalf("current-directory checksum entry rejected: checksums=%#v err=%v", checksums, err)
+	}
+	for _, unsafeName := range []string{"../escape.zip", "subdir/file.zip", `/absolute.zip`, `dir\\file.zip`} {
+		if _, err := parseSHA256SUMS([]byte(testDigest + "  " + unsafeName + "\n")); err == nil {
+			t.Fatalf("unsafe checksum filename accepted: %q", unsafeName)
+		}
+	}
+}
+
 type failingReader struct{ sent bool }
 
 func (reader *failingReader) Read(data []byte) (int, error) {

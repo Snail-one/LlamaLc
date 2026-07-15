@@ -426,7 +426,8 @@ func parseSHA256SUMS(data []byte) (map[string]string, error) {
 			return nil, fmt.Errorf("SHA256SUMS.txt 格式无效")
 		}
 		name := strings.TrimPrefix(fields[1], "*")
-		if name == "" || strings.ContainsAny(name, "/\\") {
+		name = strings.TrimPrefix(name, "./")
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
 			return nil, fmt.Errorf("SHA256SUMS.txt 含无效文件名")
 		}
 		if _, exists := result[name]; exists {
