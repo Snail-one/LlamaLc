@@ -4,40 +4,42 @@ package launcher
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 )
 
-func (manager *UpdateManager) installLauncherBinary(ctx context.Context, source, target string, release GitHubRelease) error {
-	tool, err := ephemeralUpdaterPreparer(ctx, manager, release)
-	if err != nil {
-		return fmt.Errorf("无法准备独立更新器: %w", err)
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".llama-launcher-new-*.exe")
+func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, updaterTarget string, release GitHubRelease) error {
+	bin := filepath.Dir(launcherTarget)
+	runningUpdater, err := stageUpdateExecutable(updaterTarget, bin, ".llama-updater-run-*.exe")
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
+	newUpdater, err := stageUpdateExecutable(updaterSource, bin, ".llama-updater-new-*.exe")
+	if err != nil {
+		_ = os.Remove(runningUpdater)
 		return err
 	}
-	_ = os.Remove(temporaryPath)
-	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
+	newLauncher, err := stageUpdateExecutable(launcherSource, bin, ".llama-launcher-new-*.exe")
+	if err != nil {
+		_ = os.Remove(runningUpdater)
+		_ = os.Remove(newUpdater)
 		return err
 	}
+
 	handoffStarted := false
 	defer func() {
 		if !handoffStarted {
-			_ = os.Remove(temporaryPath)
-			_ = os.Remove(tool)
+			_ = os.Remove(runningUpdater)
+			_ = os.Remove(newUpdater)
+			_ = os.Remove(newLauncher)
 		}
 	}()
-	command := exec.Command(tool,
-		"apply-launcher",
-		"--source-name", filepath.Base(temporaryPath),
+	command := exec.Command(runningUpdater,
+		"apply-update",
+		"--launcher-source-name", filepath.Base(newLauncher),
+		"--updater-source-name", filepath.Base(newUpdater),
 		"--release-version", release.TagName,
 		"--wait-parent-pid", strconv.Itoa(os.Getpid()),
 	)
@@ -47,4 +49,22 @@ func (manager *UpdateManager) installLauncherBinary(ctx context.Context, source,
 	}
 	handoffStarted = true
 	return errUpdaterHandoff
+}
+
+func stageUpdateExecutable(source, directory, pattern string) (string, error) {
+	temporary, err := os.CreateTemp(directory, pattern)
+	if err != nil {
+		return "", err
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return "", err
+	}
+	_ = os.Remove(temporaryPath)
+	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
+		_ = os.Remove(temporaryPath)
+		return "", err
+	}
+	return temporaryPath, nil
 }

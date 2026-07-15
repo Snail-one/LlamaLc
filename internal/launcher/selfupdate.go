@@ -12,6 +12,8 @@ import (
 	buildversion "github.com/joker/llama-launcher/internal/version"
 )
 
+var errUpdaterHandoff = errors.New("已将操作交给独立更新器")
+
 func launcherAssetName(tag, goos, goarch string) string {
 	ext := ".tar.gz"
 	if goos == "windows" {
@@ -59,6 +61,20 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 	} else {
 		fmt.Fprintln(manager.Stderr, "警告: 当前启动器版本为 dev，无法可靠判断新旧，将更新到稳定 Release。")
 	}
+	launcherName := "llama-launcher"
+	updaterName := "llama-updater"
+	if manager.GOOS == "windows" {
+		launcherName += ".exe"
+		updaterName += ".exe"
+	}
+	currentLauncher := filepath.Join(manager.Root, "bin", launcherName)
+	currentUpdater := filepath.Join(manager.Root, "bin", updaterName)
+	if err := validateManagedPath(manager.Root, currentLauncher, "当前启动器", false, false); err != nil {
+		return err
+	}
+	if err := validateManagedPath(manager.Root, currentUpdater, "当前更新器", false, false); err != nil {
+		return fmt.Errorf("无法使用当前更新器执行自更新: %w", err)
+	}
 	archive, sums, err := launcherReleaseAssets(release, manager.GOOS, manager.GOARCH)
 	if err != nil {
 		return err
@@ -95,41 +111,42 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 	if err := ExtractArchive(archivePath, extracted, newExtractBudget(), manager.Stdout); err != nil {
 		return err
 	}
-	executableName := "llama-launcher"
-	if manager.GOOS == "windows" {
-		executableName += ".exe"
-	}
-	wantPath := filepath.Join(extracted, "llama.cpp", "bin", executableName)
-	if err := requireFile(wantPath, "新启动器"); err != nil {
+	wantLauncher := filepath.Join(extracted, "llama.cpp", "bin", launcherName)
+	wantUpdater := filepath.Join(extracted, "llama.cpp", "bin", updaterName)
+	if err := requireFile(wantLauncher, "新启动器"); err != nil {
 		return fmt.Errorf("Release archive 结构无效: %w", err)
 	}
-	if err := ensureOnlyLauncherFile(extracted, wantPath); err != nil {
+	if err := requireFile(wantUpdater, "新更新器"); err != nil {
+		return fmt.Errorf("Release archive 结构无效: %w", err)
+	}
+	if err := ensureOnlyLauncherFiles(extracted, wantLauncher, wantUpdater); err != nil {
 		return err
 	}
 	probe := manager.LauncherProbe
 	if probe == nil {
 		probe = OSInstallationProbe{}
 	}
-	probeOutput, err := probe.Probe(Command{Path: wantPath, Args: []string{"--version"}, Dir: manager.Root}, installationProbeTimeout)
-	if err != nil {
-		return fmt.Errorf("新启动器版本探测失败: %w%s", err, formatProbeOutput(probeOutput))
-	}
 	wantVersionLine := "version:   " + strings.ToLower(release.TagName)
-	if !strings.Contains(strings.ToLower(probeOutput), wantVersionLine) {
-		return fmt.Errorf("新启动器嵌入版本与 Release %s 不一致%s", release.TagName, formatProbeOutput(probeOutput))
+	for _, item := range []struct {
+		label string
+		path  string
+	}{{"新启动器", wantLauncher}, {"新更新器", wantUpdater}} {
+		probeOutput, probeErr := probe.Probe(Command{Path: item.path, Args: []string{"--version"}, Dir: manager.Root}, installationProbeTimeout)
+		if probeErr != nil {
+			return fmt.Errorf("%s版本探测失败: %w%s", item.label, probeErr, formatProbeOutput(probeOutput))
+		}
+		if !strings.Contains(strings.ToLower(probeOutput), wantVersionLine) {
+			return fmt.Errorf("%s嵌入版本与 Release %s 不一致%s", item.label, release.TagName, formatProbeOutput(probeOutput))
+		}
 	}
-	currentName := "llama-launcher"
-	if manager.GOOS == "windows" {
-		currentName += ".exe"
-	}
-	current := filepath.Join(manager.Root, "bin", currentName)
-	if err := validateManagedPath(manager.Root, current, "当前启动器", false, false); err != nil {
-		return err
-	}
-	return manager.installLauncherBinary(ctx, wantPath, current, release)
+	return manager.installLauncherBinaries(ctx, wantLauncher, wantUpdater, currentLauncher, currentUpdater, release)
 }
 
-func ensureOnlyLauncherFile(root, want string) error {
+func ensureOnlyLauncherFiles(root string, wants ...string) error {
+	wanted := make(map[string]bool, len(wants))
+	for _, path := range wants {
+		wanted[filepath.Clean(path)] = true
+	}
 	files := 0
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -137,7 +154,7 @@ func ensureOnlyLauncherFile(root, want string) error {
 		}
 		if !entry.IsDir() {
 			files++
-			if filepath.Clean(path) != filepath.Clean(want) {
+			if !wanted[filepath.Clean(path)] {
 				return fmt.Errorf("启动器 archive 含多余文件: %s", path)
 			}
 		}
@@ -146,8 +163,8 @@ func ensureOnlyLauncherFile(root, want string) error {
 	if err != nil {
 		return err
 	}
-	if files != 1 {
-		return errors.New("启动器 archive 必须只含一个可执行文件")
+	if files != len(wanted) {
+		return errors.New("启动器 archive 必须且只能包含 launcher 和 updater")
 	}
 	return nil
 }
@@ -203,9 +220,7 @@ func cleanupLauncherTemps(root string, stderr io.Writer) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		isEphemeralUpdater := strings.HasPrefix(name, ".llama-updater-run-")
-		isLegacyUpdater := name == "llama-updater.exe" || name == "llama-updater"
-		if isEphemeralUpdater || isLegacyUpdater {
+		if strings.HasPrefix(name, ".llama-updater-run-") {
 			path := filepath.Join(bin, name)
 			info, infoErr := entry.Info()
 			if infoErr != nil {

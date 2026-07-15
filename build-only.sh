@@ -30,7 +30,6 @@ if [[ "${TARGET_OS}" == "windows" ]]; then
 fi
 OUTPUT_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}/llama.cpp"
 mkdir -p "${OUTPUT_ROOT}/bin"
-ASSET_ROOT="${ROOT_DIR}/dist/${TARGET_OS}-${TARGET_ARCH}"
 
 LDFLAGS="-s -w"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Version=${VERSION}"
@@ -38,11 +37,7 @@ LDFLAGS+=" -X ${MODULE_PATH}/internal/version.Commit=${COMMIT}"
 LDFLAGS+=" -X ${MODULE_PATH}/internal/version.BuildDate=${BUILD_DATE}"
 
 for program in llama-launcher llama-updater; do
-    if [[ "${program}" == "llama-launcher" ]]; then
-        output_file="${OUTPUT_ROOT}/bin/${program}${OUTPUT_SUFFIX}"
-    else
-        output_file="${ASSET_ROOT}/llama-updater-${VERSION}-${TARGET_OS}-${TARGET_ARCH}${OUTPUT_SUFFIX}"
-    fi
+    output_file="${OUTPUT_ROOT}/bin/${program}${OUTPUT_SUFFIX}"
     (
         cd "${ROOT_DIR}"
         GOOS="${TARGET_OS}" GOARCH="${TARGET_ARCH}" CGO_ENABLED=0 go build \

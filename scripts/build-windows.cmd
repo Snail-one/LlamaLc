@@ -49,8 +49,7 @@ if not defined MODULE_PATH (
     exit /b 1
 )
 
-set "OUTPUT_ROOT=dist\windows-!TARGET_ARCH!"
-set "OUTPUT_DIR=!OUTPUT_ROOT!\llama.cpp\bin"
+set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
 if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
 
 echo Building Windows !TARGET_ARCH! version !VERSION!...
@@ -58,21 +57,17 @@ set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
 set "CGO_ENABLED=0"
 
-go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\llama-launcher.exe" ".\cmd\llama-launcher"
-if errorlevel 1 (
-    echo Build failed: llama-launcher
-    exit /b 1
-)
-set "UPDATER=!OUTPUT_ROOT!\llama-updater-!VERSION!-windows-!TARGET_ARCH!.exe"
-go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!UPDATER!" ".\cmd\llama-updater"
-if errorlevel 1 (
-    echo Build failed: llama-updater
-    exit /b 1
+for %%P in (llama-launcher llama-updater) do (
+    go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\%%P.exe" ".\cmd\%%P"
+    if errorlevel 1 (
+        echo Build failed: %%P
+        exit /b 1
+    )
 )
 
 echo Build complete: %CD%\!OUTPUT_DIR!
 echo   llama-launcher.exe
-echo Updater asset: %CD%\!UPDATER!
+echo   llama-updater.exe
 echo Version: !VERSION!
 echo Commit: !COMMIT!
 echo Build date: !BUILD_DATE!

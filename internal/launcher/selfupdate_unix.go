@@ -9,29 +9,48 @@ import (
 	"path/filepath"
 )
 
-func (manager *UpdateManager) installLauncherBinary(_ context.Context, source, target string, release GitHubRelease) error {
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".llama-launcher-new-")
+func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, updaterTarget string, release GitHubRelease) error {
+	bin := filepath.Dir(launcherTarget)
+	newUpdater, err := stageUnixExecutable(updaterSource, bin, ".llama-updater-new-")
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
+	defer os.Remove(newUpdater)
+	newLauncher, err := stageUnixExecutable(launcherSource, bin, ".llama-launcher-new-")
+	if err != nil {
 		return err
 	}
-	_ = os.Remove(temporaryPath)
-	defer os.Remove(temporaryPath)
-	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
-		return err
+	defer os.Remove(newLauncher)
+	if err := replaceFile(newUpdater, updaterTarget); err != nil {
+		return fmt.Errorf("无法原子替换更新器: %w", err)
 	}
-	if err := os.Chmod(temporaryPath, 0o755); err != nil {
-		return err
-	}
-	if err := replaceFile(temporaryPath, target); err != nil {
+	if err := replaceFile(newLauncher, launcherTarget); err != nil {
 		return fmt.Errorf("无法原子替换启动器: %w", err)
 	}
-	if err := syncDirectory(filepath.Dir(target)); err != nil {
+	if err := syncDirectory(bin); err != nil {
 		return err
 	}
-	fmt.Fprintf(manager.Stdout, "启动器已更新到 %s；请重新运行命令。\n", release.TagName)
+	fmt.Fprintf(manager.Stdout, "启动器与更新器已更新到 %s；请重新运行命令。\n", release.TagName)
 	return nil
+}
+
+func stageUnixExecutable(source, directory, pattern string) (string, error) {
+	temporary, err := os.CreateTemp(directory, pattern)
+	if err != nil {
+		return "", err
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return "", err
+	}
+	_ = os.Remove(temporaryPath)
+	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(temporaryPath, 0o755); err != nil {
+		_ = os.Remove(temporaryPath)
+		return "", err
+	}
+	return temporaryPath, nil
 }

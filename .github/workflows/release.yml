@@ -29,7 +29,7 @@ jobs:
           go test ./...
           go vet ./...
 
-      - name: Build launcher archives and standalone updater tools
+      - name: Build paired launcher and updater archives
         env:
           VERSION: ${{ github.ref_name }}
           COMMIT: ${{ github.sha }}
@@ -55,7 +55,7 @@ jobs:
               -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
               -o "${binary}" ./cmd/llama-launcher
             grep -aFq "${VERSION}" "${binary}"
-            updater="dist/llama-updater-${VERSION}-${goos}-${goarch}${suffix}"
+            updater="${package}/llama.cpp/bin/llama-updater${suffix}"
             GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 go build \
               -trimpath \
               -ldflags "-s -w -X ${module}/internal/version.Version=${VERSION} -X ${module}/internal/version.Commit=${COMMIT} -X ${module}/internal/version.BuildDate=${build_date}" \
@@ -64,15 +64,15 @@ jobs:
             archive="dist/llama-launcher-${VERSION}-${goos}-${goarch}.${archive_ext}"
             if [ "${goos}" = windows ]; then
               (cd "${package}" && zip -q -r "${GITHUB_WORKSPACE}/${archive}" llama.cpp)
-              test "$(unzip -Z1 "${archive}" | grep -v '/$')" = "llama.cpp/bin/llama-launcher.exe"
+              test "$(unzip -Z1 "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher.exe' 'llama.cpp/bin/llama-updater.exe' | sort)"
             else
               tar -C "${package}" -czf "${archive}" llama.cpp
-              test "$(tar -tzf "${archive}" | grep -v '/$')" = "llama.cpp/bin/llama-launcher"
+              test "$(tar -tzf "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher' 'llama.cpp/bin/llama-updater' | sort)"
             fi
             rm -rf "${package}"
           done
-          (cd dist && sha256sum llama-launcher-* llama-updater-* > SHA256SUMS.txt)
-          test "$(wc -l < dist/SHA256SUMS.txt)" -eq 8
+          (cd dist && sha256sum llama-launcher-* > SHA256SUMS.txt)
+          test "$(wc -l < dist/SHA256SUMS.txt)" -eq 4
 
       - name: Publish GitHub Release
         env:
@@ -80,7 +80,6 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             dist/llama-launcher-* \
-            dist/llama-updater-* \
             dist/SHA256SUMS.txt \
             --generate-notes \
             --verify-tag

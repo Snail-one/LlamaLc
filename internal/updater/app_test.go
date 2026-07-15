@@ -17,33 +17,44 @@ func TestVersionDoesNotRequireDeploymentLayout(t *testing.T) {
 	}
 }
 
-func TestApplyLauncherUsesFixedTarget(t *testing.T) {
+func TestApplyUpdateUsesFixedTargets(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(bin, "llama-launcher")
-	sourceName := ".llama-launcher-new-test"
-	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+	launcherTarget := filepath.Join(bin, "llama-launcher")
+	updaterTarget := filepath.Join(bin, "llama-updater")
+	launcherSourceName := ".llama-launcher-new-test"
+	updaterSourceName := ".llama-updater-new-test"
+	for path, content := range map[string]string{
+		launcherTarget:                         "old launcher",
+		updaterTarget:                          "old updater",
+		filepath.Join(bin, launcherSourceName): "new launcher",
+		filepath.Join(bin, updaterSourceName):  "new updater",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := applyUpdate(root, "linux", launcherSourceName, updaterSourceName); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, sourceName), []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := applyLauncher(root, "linux", sourceName); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(target)
-	if err != nil || string(content) != "new" {
-		t.Fatalf("target=%q err=%v", content, err)
+	for path, want := range map[string]string{launcherTarget: "new launcher", updaterTarget: "new updater"} {
+		content, err := os.ReadFile(path)
+		if err != nil || string(content) != want {
+			t.Fatalf("target %s=%q err=%v", path, content, err)
+		}
 	}
 }
 
 func TestRejectsArbitrarySourceName(t *testing.T) {
 	for _, name := range []string{"launcher.exe", "../.llama-launcher-new-x.exe", ".llama-launcher-new-x"} {
-		if err := validateStagedName(name, "windows"); err == nil {
+		if err := validateStagedName(name, stagedLauncherPrefix, "启动器", "windows"); err == nil {
 			t.Fatalf("accepted unsafe source name %q", name)
 		}
+	}
+	if err := validateStagedName(".llama-launcher-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
+		t.Fatal("accepted launcher staging name as updater staging name")
 	}
 }
