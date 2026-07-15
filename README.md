@@ -164,7 +164,8 @@ llama.cpp: b10015 / cuda-13.3 — version: 10015 (abc123)
 4. 生成手动 Router 配置
 5. 多模型 Router
 6. CLI 命令行聊天
-7. 检查并更新启动器与 llama.cpp
+7. 检查并更新 llama.cpp
+8. 检查并更新启动器
 q. 退出
 ```
 

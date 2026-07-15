@@ -73,6 +73,30 @@ func (f *fakeExecutor) Execute(command Command, stdin io.Reader, stdout, stderr 
 	return f.code, f.err
 }
 
+func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root:     filepath.Join(t.TempDir(), "llama.cpp"),
+		Config:   DefaultConfig(),
+		Stdin:    menuInput("8", "n", "", "q"),
+		Stdout:   stdout,
+		Stderr:   stderr,
+		Executor: &fakeExecutor{},
+		Updater:  &UpdateManager{},
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, stderr)
+	}
+	for _, want := range []string{"7. 检查并更新 llama.cpp", "8. 检查并更新启动器", "将联网检查并更新启动器，是否继续"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("menu output missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout.String(), "检查并更新启动器与 llama.cpp") {
+		t.Fatalf("combined update option still present:\n%s", stdout)
+	}
+}
+
 func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	t.Setenv("LLAMA_API_KEY", "test-only-key")
 	root := t.TempDir()
