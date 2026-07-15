@@ -40,12 +40,11 @@ type GitHubRelease struct {
 }
 
 type GitHubClient struct {
-	HTTP            *http.Client
-	DirectHTTP      *http.Client
-	ProxyResolver   func(*http.Request) (*url.URL, error)
-	APIBase         string
-	Token           string
-	DownloadLogRoot string
+	HTTP          *http.Client
+	DirectHTTP    *http.Client
+	ProxyResolver func(*http.Request) (*url.URL, error)
+	APIBase       string
+	Token         string
 }
 
 func NewGitHubClient() *GitHubClient {
@@ -298,43 +297,30 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 		}
 		fmt.Fprintf(out, "下载开始: %s（%s，%s）\n", asset.Name, humanBytes(float64(asset.Size)), displayRoute)
 	}
-	client.logDownload(out, fmt.Sprintf("START asset=%q size=%d route=%s proxy=%q host=%q destination=%q", asset.Name, asset.Size, route, proxyHost, parsed.Hostname(), destination))
 	digest, requestErr, retryable := client.downloadAttempt(req, asset, destination, expected, out, client.httpClient())
 	if requestErr == nil || !retryable || ctx.Err() != nil || !usesProxy || client.directHTTPClient() == nil {
 		if requestErr == nil {
-			client.logDownload(out, fmt.Sprintf("COMPLETE asset=%q size=%d route=%s sha256=%s", asset.Name, asset.Size, route, digest))
 			if out != nil {
 				fmt.Fprintf(out, "下载完成: %s（SHA-256: %s）\n", asset.Name, digest[:12]+"…")
 			}
-		} else {
-			client.logDownload(out, fmt.Sprintf("FAILED asset=%q route=%s error=%q", asset.Name, route, requestErr))
 		}
 		return digest, requestErr
 	}
 	if out != nil {
 		fmt.Fprintf(out, "系统代理下载失败，正在直连重试 %s……\n", asset.Name)
 	}
-	client.logDownload(out, fmt.Sprintf("RETRY_DIRECT asset=%q proxy_error=%q", asset.Name, requestErr))
 	directRequest, err := newDownloadRequest(ctx, parsed.String())
 	if err != nil {
 		return "", err
 	}
 	digest, directErr, _ := client.downloadAttempt(directRequest, asset, destination, expected, out, client.directHTTPClient())
 	if directErr != nil {
-		client.logDownload(out, fmt.Sprintf("FAILED asset=%q route=直连 proxy_error=%q direct_error=%q", asset.Name, requestErr, directErr))
 		return "", fmt.Errorf("下载 %s 经系统代理失败（%v），直连重试也失败: %w", asset.Name, requestErr, directErr)
 	}
-	client.logDownload(out, fmt.Sprintf("COMPLETE asset=%q size=%d route=直连 sha256=%s", asset.Name, asset.Size, digest))
 	if out != nil {
 		fmt.Fprintf(out, "下载完成: %s（SHA-256: %s）\n", asset.Name, digest[:12]+"…")
 	}
 	return digest, nil
-}
-
-func (client *GitHubClient) logDownload(out io.Writer, event string) {
-	if err := appendDownloadLog(client.DownloadLogRoot, event); err != nil && out != nil {
-		fmt.Fprintf(out, "警告: %v\n", err)
-	}
 }
 
 func newDownloadRequest(ctx context.Context, endpoint string) (*http.Request, error) {
