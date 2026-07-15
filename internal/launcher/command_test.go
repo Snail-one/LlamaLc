@@ -28,9 +28,9 @@ func TestBuildCommands(t *testing.T) {
 		{
 			name: "serve with managed API key",
 			build: func() (Command, error) {
-				return BuildServerCommand(ModeServe, "server.exe", ".", ServerOptions{Model: "m.gguf", Host: "127.0.0.1", Port: 29856, APIKey: "managed-key"})
+				return BuildServerCommand(ModeServe, "server.exe", ".", ServerOptions{Model: "m.gguf", Host: "127.0.0.1", Port: 29856, GPULayers: "auto", APIKey: "managed-key"})
 			},
-			want: []string{"--model", "m.gguf", "--host", "127.0.0.1", "--port", "29856", "--no-ui", "--api-key", "managed-key"},
+			want: []string{"--model", "m.gguf", "--n-gpu-layers", "auto", "--host", "127.0.0.1", "--port", "29856", "--no-ui", "--api-key", "managed-key"},
 		},
 		{
 			name: "serve official runtime defaults and multimodal limits",

@@ -58,14 +58,21 @@ func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
 	if config.Server.APIKey != "existing-key" {
 		t.Fatalf("default answer unexpectedly reset key: %q", config.Server.APIKey)
 	}
+	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "server.api_key") {
+		t.Fatalf("API key location was not displayed: %q", out.String())
+	}
 	remaining, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil || remaining != "child input\n" {
 		t.Fatalf("buffered child input was lost: %q, %v", remaining, err)
 	}
 
 	oldKey := config.Server.APIKey
-	if _, err := prepareAPIKey(&config, path, false, strings.NewReader("y\n"), &bytes.Buffer{}); err != nil {
+	resetOut := &bytes.Buffer{}
+	if _, err := prepareAPIKey(&config, path, false, strings.NewReader("y\n"), resetOut); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(resetOut.String(), path) || !strings.Contains(resetOut.String(), "server.api_key") {
+		t.Fatalf("reset API key location was not displayed: %q", resetOut.String())
 	}
 	if config.Server.APIKey == oldKey || len(config.Server.APIKey) != GeneratedAPIKeyLength {
 		t.Fatalf("key was not reset: length=%d", len(config.Server.APIKey))
@@ -80,6 +87,19 @@ func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
 	}
 	if saved.Server.APIKey != config.Server.APIKey {
 		t.Fatal("reset API key was not persisted")
+	}
+}
+
+func TestPrepareAPIKeyDisplaysLocationAfterGeneration(t *testing.T) {
+	config := DefaultConfig()
+	path := filepath.Join(t.TempDir(), "config", "launcher.json")
+	out := &bytes.Buffer{}
+
+	if _, err := prepareAPIKey(&config, path, true, strings.NewReader(""), out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "server.api_key") {
+		t.Fatalf("generated API key location was not displayed: %q", out.String())
 	}
 }
 

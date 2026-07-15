@@ -67,6 +67,7 @@ func prepareAPIKey(config *Config, configPath string, needsCreate bool, stdin io
 		} else {
 			fmt.Fprintf(stdout, "已自动生成 %d 位 API key，将保存到: %s\n", len(key), configPath)
 		}
+		printAPIKeyLocation(stdout, configPath)
 		return stdin, nil
 	}
 
@@ -77,6 +78,7 @@ func prepareAPIKey(config *Config, configPath string, needsCreate bool, stdin io
 	}
 	if !reset {
 		fmt.Fprintln(stdout, "继续使用配置文件中已生成的 API key。")
+		printAPIKeyLocation(stdout, configPath)
 		return reader, nil
 	}
 
@@ -89,7 +91,12 @@ func prepareAPIKey(config *Config, configPath string, needsCreate bool, stdin io
 		return reader, err
 	}
 	fmt.Fprintf(stdout, "已重置 %d 位 API key 并保存到: %s\n", len(key), configPath)
+	printAPIKeyLocation(stdout, configPath)
 	return reader, nil
+}
+
+func printAPIKeyLocation(writer io.Writer, configPath string) {
+	fmt.Fprintf(writer, "请在配置文件中查看 API key: %s（字段 server.api_key）\n", configPath)
 }
 
 func readStartupYesNo(reader *bufio.Reader, writer io.Writer, prompt string, defaultValue bool) (bool, error) {
