@@ -87,7 +87,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
-	for _, want := range []string{"7. 检查并更新 llama.cpp", "8. 检查并更新启动器", "将联网检查并更新启动器，是否继续"} {
+	for _, want := range []string{"7. 检查并更新 llama.cpp", "8. 检查并更新启动器", "9. 重置 API key", "将联网检查并更新启动器，是否继续"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
@@ -304,7 +304,7 @@ func TestMainCreatesRuntimeLayoutAfterLocationValidation(t *testing.T) {
 	}
 }
 
-func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
+func TestMainUsesExistingAPIKeyWithoutStartupPrompt(t *testing.T) {
 	root := t.TempDir()
 	mockExecutableInBin(t, root)
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
@@ -322,17 +322,43 @@ func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
 	}
 
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	code := runTestMain(nil, menuInput("", "q"), out, errOut, &fakeExecutor{}, &fakeInstallationProbe{})
+	code := runTestMain(nil, menuInput("q"), out, errOut, &fakeExecutor{}, &fakeInstallationProbe{})
 	if code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "是否重置 API key [y/N]") ||
-		!strings.Contains(out.String(), "继续使用 API key 文件中的密钥") {
-		t.Fatalf("reset prompt/default result missing: %q", out.String())
+	if strings.Contains(out.String(), "是否重置 API key") {
+		t.Fatalf("startup still asks to reset API key: %q", out.String())
 	}
 	saved, exists, err := ReadAPIKeyFile(root, keyPath)
 	if err != nil || !exists || saved != oldKey {
 		t.Fatalf("default reset answer changed key: %q exists=%v err=%v", saved, exists, err)
+	}
+}
+
+func TestMenuResetsAPIKeyOnlyAfterConfirmation(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldKey := strings.Repeat("k", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, keyPath, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root: root, Config: DefaultConfig(), Paths: ResolvedPaths{APIKeyFile: keyPath},
+		Stdin: menuInput("9", "y", "", "q"), Stdout: out, Stderr: errOut,
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, errOut.String())
+	}
+	newKey, exists, err := ReadAPIKeyFile(root, keyPath)
+	if err != nil || !exists || newKey == oldKey || len(newKey) != GeneratedAPIKeyLength {
+		t.Fatalf("menu reset key=%q exists=%v err=%v", newKey, exists, err)
+	}
+	if !strings.Contains(out.String(), "旧 key 将立即失效") || !strings.Contains(out.String(), "已重置") {
+		t.Fatalf("menu reset output missing confirmation/result: %q", out.String())
 	}
 }
 

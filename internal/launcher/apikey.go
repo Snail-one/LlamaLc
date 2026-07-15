@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -118,78 +117,40 @@ func GenerateAPIKey() (string, error) {
 	return encoded[:GeneratedAPIKeyLength], nil
 }
 
-// prepareAPIKey creates or rotates the private API key file. The returned
-// reader must be passed to the child/menu so bytes buffered while reading the
-// answer are not lost.
-func prepareAPIKey(root, keyPath string, stdin io.Reader, stdout io.Writer) (string, io.Reader, error) {
-	key, exists, err := ReadAPIKeyFile(root, keyPath)
+// ensureAPIKey validates the private API key file and creates it on first use.
+func ensureAPIKey(root, keyPath string, stdout io.Writer) error {
+	_, exists, err := ReadAPIKeyFile(root, keyPath)
 	if err != nil {
-		return "", stdin, err
+		return err
 	}
-	if !exists {
-		key, err := GenerateAPIKey()
-		if err != nil {
-			return "", stdin, err
-		}
-		if err := WriteAPIKeyFile(root, keyPath, key); err != nil {
-			return "", stdin, err
-		}
-		fmt.Fprintf(stdout, "已自动生成 %d 位 API key 并保存到: %s\n", len(key), keyPath)
-		printAPIKeyLocation(stdout, keyPath)
-		return key, stdin, nil
+	if exists {
+		return nil
 	}
-
-	reader := bufio.NewReader(stdin)
-	reset, err := readStartupYesNo(reader, stdout, "是否重置 API key", false)
+	key, err := GenerateAPIKey()
 	if err != nil {
-		return "", reader, err
-	}
-	if !reset {
-		fmt.Fprintln(stdout, "继续使用 API key 文件中的密钥。")
-		printAPIKeyLocation(stdout, keyPath)
-		return key, reader, nil
-	}
-
-	key, err = GenerateAPIKey()
-	if err != nil {
-		return "", reader, err
+		return err
 	}
 	if err := WriteAPIKeyFile(root, keyPath, key); err != nil {
-		return "", reader, err
+		return err
+	}
+	fmt.Fprintf(stdout, "已自动生成 %d 位 API key 并保存到: %s\n", len(key), keyPath)
+	printAPIKeyLocation(stdout, keyPath)
+	return nil
+}
+
+func resetAPIKey(root, keyPath string, stdout io.Writer) error {
+	key, err := GenerateAPIKey()
+	if err != nil {
+		return err
+	}
+	if err := WriteAPIKeyFile(root, keyPath, key); err != nil {
+		return err
 	}
 	fmt.Fprintf(stdout, "已重置 %d 位 API key 并保存到: %s\n", len(key), keyPath)
 	printAPIKeyLocation(stdout, keyPath)
-	return key, reader, nil
+	return nil
 }
 
 func printAPIKeyLocation(writer io.Writer, keyPath string) {
 	fmt.Fprintf(writer, "API key 文件: %s\n", keyPath)
-}
-
-func readStartupYesNo(reader *bufio.Reader, writer io.Writer, prompt string, defaultValue bool) (bool, error) {
-	label := "Y/n"
-	if !defaultValue {
-		label = "y/N"
-	}
-	for {
-		fmt.Fprintf(writer, "%s [%s]: ", prompt, label)
-		line, err := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return false, err
-		}
-		switch strings.ToLower(line) {
-		case "":
-			return defaultValue, nil
-		case "y", "yes":
-			return true, nil
-		case "n", "no":
-			return false, nil
-		default:
-			if errors.Is(err, io.EOF) {
-				return false, errors.New("重置 API key 请输入 Y 或 N")
-			}
-			fmt.Fprintln(writer, "请输入 Y 或 N。")
-		}
-	}
 }

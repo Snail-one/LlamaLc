@@ -46,9 +46,10 @@ llama.cpp: %s
   6. CLI 命令行聊天
   7. 检查并更新 llama.cpp
   8. 检查并更新启动器
+  9. 重置 API key
   q. 退出
 `, buildversion.Version, app.llamaVersionDisplay(), app.Root)
-		choice, err := m.readChoice("请选择", 1, 1, 8)
+		choice, err := m.readChoice("请选择", 1, 1, 9)
 		if errors.Is(err, io.EOF) {
 			return 0
 		}
@@ -310,8 +311,25 @@ func (m *menu) runChoice(choice int) error {
 		return m.updateComponent(componentLlama, "llama.cpp")
 	case 8:
 		return m.updateComponent(componentLauncher, "启动器")
+	case 9:
+		return m.resetAPIKey()
 	}
 	return nil
+}
+
+func (m *menu) resetAPIKey() error {
+	confirmed, err := m.readYesNo("将生成新的 API key，旧 key 将立即失效，是否继续", false)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		fmt.Fprintln(m.app.Stdout, "已取消，API key 未修改。")
+		return m.pause()
+	}
+	if err := resetAPIKey(m.app.Root, m.app.Paths.APIKeyFile, m.app.Stdout); err != nil {
+		return err
+	}
+	return m.pause()
 }
 
 func (m *menu) updateComponent(component componentSelection, label string) error {

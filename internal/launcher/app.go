@@ -148,8 +148,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	for _, directory := range createdDirectories {
 		fmt.Fprintf(stdout, "已创建目录: %s\n", directory)
 	}
-	_, startupInput, err := prepareAPIKey(root, paths.APIKeyFile, stdin, stdout)
-	if err != nil {
+	if err := ensureAPIKey(root, paths.APIKeyFile, stdout); err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
@@ -163,7 +162,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
 		LlamaVersion: detectedVersion, LlamaTag: llamaTag, LlamaBackend: llamaBackend,
-		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
+		Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
 	}
 	if len(remaining) == 0 {
 		return app.RunMenu()

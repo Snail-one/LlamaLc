@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -43,7 +42,7 @@ func TestValidateAPIKeyRejectsUnsupportedValues(t *testing.T) {
 	}
 }
 
-func TestPrepareAPIKeyKeepsOrResetsKeyFile(t *testing.T) {
+func TestEnsureAPIKeyKeepsExistingFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -55,52 +54,57 @@ func TestPrepareAPIKeyKeepsOrResetsKeyFile(t *testing.T) {
 	}
 
 	out := &bytes.Buffer{}
-	key, reader, err := prepareAPIKey(root, path, strings.NewReader("\nchild input\n"), out)
-	if err != nil {
+	if err := ensureAPIKey(root, path, out); err != nil {
 		t.Fatal(err)
 	}
-	if key != oldKey {
-		t.Fatalf("default answer unexpectedly reset key: %q", key)
-	}
-	if !strings.Contains(out.String(), path) || strings.Contains(out.String(), "server.api_key") {
-		t.Fatalf("API key file location was not displayed correctly: %q", out.String())
-	}
-	remaining, err := bufio.NewReader(reader).ReadString('\n')
-	if err != nil || remaining != "child input\n" {
-		t.Fatalf("buffered child input was lost: %q, %v", remaining, err)
-	}
-
-	resetOut := &bytes.Buffer{}
-	newKey, _, err := prepareAPIKey(root, path, strings.NewReader("y\n"), resetOut)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if newKey == oldKey || len(newKey) != GeneratedAPIKeyLength {
-		t.Fatalf("key was not reset: length=%d", len(newKey))
+	if out.Len() != 0 {
+		t.Fatalf("existing key caused startup output: %q", out.String())
 	}
 	saved, exists, err := ReadAPIKeyFile(root, path)
-	if err != nil || !exists || saved != newKey {
-		t.Fatalf("reset key file=%q exists=%v err=%v", saved, exists, err)
+	if err != nil || !exists || saved != oldKey {
+		t.Fatalf("existing key file=%q exists=%v err=%v", saved, exists, err)
 	}
 }
 
-func TestPrepareAPIKeyGeneratesMissingFile(t *testing.T) {
+func TestEnsureAPIKeyGeneratesMissingFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out := &bytes.Buffer{}
-	key, _, err := prepareAPIKey(root, path, strings.NewReader(""), out)
-	if err != nil {
+	if err := ensureAPIKey(root, path, out); err != nil {
 		t.Fatal(err)
 	}
-	if len(key) != GeneratedAPIKeyLength || !strings.Contains(out.String(), path) {
-		t.Fatalf("generated key length=%d output=%q", len(key), out)
+	if !strings.Contains(out.String(), path) {
+		t.Fatalf("generated key location missing from output=%q", out)
 	}
 	saved, exists, err := ReadAPIKeyFile(root, path)
-	if err != nil || !exists || saved != key {
+	if err != nil || !exists || len(saved) != GeneratedAPIKeyLength {
 		t.Fatalf("generated key file=%q exists=%v err=%v", saved, exists, err)
+	}
+}
+
+func TestResetAPIKeyReplacesExistingFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldKey := strings.Repeat("e", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, path, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	if err := resetAPIKey(root, path, out); err != nil {
+		t.Fatal(err)
+	}
+	newKey, exists, err := ReadAPIKeyFile(root, path)
+	if err != nil || !exists || newKey == oldKey || len(newKey) != GeneratedAPIKeyLength {
+		t.Fatalf("reset key file=%q exists=%v err=%v", newKey, exists, err)
+	}
+	if !strings.Contains(out.String(), "已重置") || !strings.Contains(out.String(), path) {
+		t.Fatalf("reset output missing result: %q", out.String())
 	}
 }
 
@@ -150,16 +154,5 @@ func TestAPIKeyFileRejectsSymlink(t *testing.T) {
 	data, err := os.ReadFile(external)
 	if err != nil || string(data) != "unchanged\n" {
 		t.Fatalf("symlink target was modified: %q err=%v", data, err)
-	}
-}
-
-func TestReadStartupYesNoDefaultsToNo(t *testing.T) {
-	out := &bytes.Buffer{}
-	answer, err := readStartupYesNo(bufio.NewReader(strings.NewReader("\n")), out, "reset", false)
-	if err != nil || answer {
-		t.Fatalf("default answer = %v, err=%v", answer, err)
-	}
-	if !strings.Contains(out.String(), "[y/N]") {
-		t.Fatalf("default was not displayed: %q", out.String())
 	}
 }
