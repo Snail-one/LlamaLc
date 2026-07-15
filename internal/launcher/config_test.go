@@ -3,6 +3,7 @@ package launcher
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,20 @@ func TestLoadConfigMergesWithDefaults(t *testing.T) {
 	}
 	if config.Server.Port != 31000 || config.Server.Host != "127.0.0.1" || config.Embedding.Pooling != "mean" || config.Embedding.BatchSize != 8192 || config.Embedding.UBatchSize != 8192 {
 		t.Fatalf("config precedence/merge failed: %#v", config)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("loaded config permissions = %04o, want 0600", info.Mode().Perm())
+	}
+	directoryInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && directoryInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("config directory permissions = %04o, want 0700", directoryInfo.Mode().Perm())
 	}
 }
 
@@ -122,7 +137,7 @@ func TestResolveFixedPathsByPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if windows.Server != filepath.Join(root, "llama-server.exe") || windows.CLI != filepath.Join(root, "llama-cli.exe") || windows.CLIFallback != filepath.Join(root, "llama.exe") {
+	if windows.Server != filepath.Join(root, "llama-server.exe") || windows.CLI != filepath.Join(root, "llama-cli.exe") || windows.CLIFallback != filepath.Join(root, "llama.exe") || windows.APIKeyFile != filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName) {
 		t.Fatalf("unexpected Windows paths: %#v", windows)
 	}
 	linux, err := ResolveFixedPaths(root, "linux")
@@ -190,6 +205,12 @@ func TestInvalidConfig(t *testing.T) {
 	}
 	if _, _, _, err := LoadConfig(root); err == nil {
 		t.Fatal("embedding batch-size smaller than ubatch-size was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"server":{"api_key":","}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), "server.api_key") {
+		t.Fatalf("comma-only API key was accepted: %v", err)
 	}
 }
 

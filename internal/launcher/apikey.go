@@ -16,6 +16,10 @@ import (
 // including the terminating NUL byte used by its line reader.
 const MaxAPIKeyLength = 8167
 
+// MinAPIKeyLength rejects accidentally short manually configured credentials.
+// Generated keys are substantially longer than this minimum.
+const MinAPIKeyLength = 32
+
 // GeneratedAPIKeyLength keeps generated credentials practical for clients and
 // configuration while still providing far more entropy than normally needed.
 const GeneratedAPIKeyLength = 128
@@ -29,10 +33,33 @@ func ValidateAPIKey(value string) error {
 	if len(value) > MaxAPIKeyLength {
 		return fmt.Errorf("server.api_key 不能超过 %d 个 ASCII 字符，当前为 %d", MaxAPIKeyLength, len(value))
 	}
+	if len(value) < MinAPIKeyLength {
+		return fmt.Errorf("server.api_key 不能少于 %d 个字符，当前为 %d", MinAPIKeyLength, len(value))
+	}
 	for _, character := range value {
-		if character > unicode.MaxASCII || unicode.IsControl(character) {
-			return errors.New("server.api_key 只能包含可打印 ASCII 字符")
+		if character > unicode.MaxASCII || unicode.IsControl(character) ||
+			!(character >= 'a' && character <= 'z') &&
+				!(character >= 'A' && character <= 'Z') &&
+				!(character >= '0' && character <= '9') &&
+				character != '-' && character != '_' {
+			return errors.New("server.api_key 只能包含 ASCII 字母、数字、连字符和下划线")
 		}
+	}
+	return nil
+}
+
+func WriteAPIKeyFile(root, path, key string) error {
+	if key == "" {
+		return errors.New("拒绝写入空 API key")
+	}
+	if err := ValidateAPIKey(key); err != nil {
+		return err
+	}
+	if err := validateManagedPath(root, path, "API key 文件", true, false); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path, []byte(key+"\n"), 0o600); err != nil {
+		return fmt.Errorf("无法原子更新 API key 文件 %s: %w", path, err)
 	}
 	return nil
 }

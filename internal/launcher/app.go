@@ -101,6 +101,10 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		}
 		fmt.Fprintf(stdout, "已生成配置: %s\n", configPath)
 	}
+	if err := WriteAPIKeyFile(root, paths.APIKeyFile, config.Server.APIKey); err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
+	}
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
 		Stdin: startupInput, Stdout: stdout, Stderr: stderr, Executor: executor,
@@ -275,19 +279,19 @@ func (app *Application) runServerSubcommand(mode Mode, args []string) (int, erro
 		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
 		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
 		Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Normalize: *normalize, NormalizeSet: mode == ModeEmbedding,
-		APIKey: app.Config.Server.APIKey,
-		Extra: forwarded,
+		APIKeyFile: app.Paths.APIKeyFile,
+		Extra:      forwarded,
 	})
 	if err != nil {
 		return 1, err
 	}
-	authenticatedArgs := append([]string{"--api-key", app.Config.Server.APIKey}, forwarded...)
-	effectiveHost, remote, err := validateNetworkExposure(*host, authenticatedArgs)
+	effectiveHost, remote, err := validateNetworkExposure(*host, command.Args, app.Paths.APIKeyFile)
 	if err != nil {
 		return 1, err
 	}
 	if remote {
 		fmt.Fprintf(app.Stderr, "安全警告: 服务将监听非本机地址 %s，请确认防火墙和 API key 配置。\n", effectiveHost)
+		fmt.Fprintln(app.Stderr, "安全提示: llama-server 的 /models、/v1/models、健康检查和 UI 静态资源不受 API key 保护。")
 	}
 	endpoint := ""
 	switch mode {
@@ -426,18 +430,18 @@ func (app *Application) runRouterSubcommand(args []string) (int, error) {
 		Threads: *threads, BatchSize: *batchSize, UBatchSize: *ubatchSize,
 		FlashAttention: strings.ToLower(strings.TrimSpace(*flashAttention)), Parallel: *parallel,
 		UI: *ui, ModelsMax: *modelsMax, Autoload: *autoload, Extra: forwarded,
-		APIKey: app.Config.Server.APIKey,
+		APIKeyFile: app.Paths.APIKeyFile,
 	})
 	if err != nil {
 		return 1, err
 	}
-	authenticatedArgs := append([]string{"--api-key", app.Config.Server.APIKey}, forwarded...)
-	effectiveHost, remote, err := validateNetworkExposure(*host, authenticatedArgs)
+	effectiveHost, remote, err := validateNetworkExposure(*host, command.Args, app.Paths.APIKeyFile)
 	if err != nil {
 		return 1, err
 	}
 	if remote {
 		fmt.Fprintf(app.Stderr, "安全警告: Router 将监听非本机地址 %s，请确认防火墙和 API key 配置。\n", effectiveHost)
+		fmt.Fprintln(app.Stderr, "安全提示: llama-server 的 /models、/v1/models、健康检查和 UI 静态资源不受 API key 保护。")
 	}
 	if manual {
 		fmt.Fprintf(app.Stdout, "检测到手动配置，运行时优先使用且不会覆盖: %s\n", preset)

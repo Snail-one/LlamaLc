@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,10 @@ func TestGenerateAPIKeyUsesConfiguredLength(t *testing.T) {
 func TestValidateAPIKeyRejectsUnsupportedValues(t *testing.T) {
 	for _, value := range []string{
 		strings.Repeat("a", MaxAPIKeyLength+1),
+		strings.Repeat("a", MinAPIKeyLength-1),
+		strings.Repeat("a", MinAPIKeyLength) + ",",
+		strings.Repeat("a", MinAPIKeyLength) + " ",
+		",",
 		"contains\nnewline",
 		"包含非 ASCII",
 	} {
@@ -45,7 +50,7 @@ func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := DefaultConfig()
-	config.Server.APIKey = "existing-key"
+	config.Server.APIKey = strings.Repeat("e", MinAPIKeyLength)
 	if err := WriteDefaultConfig(path, config); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +60,7 @@ func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Server.APIKey != "existing-key" {
+	if config.Server.APIKey != strings.Repeat("e", MinAPIKeyLength) {
 		t.Fatalf("default answer unexpectedly reset key: %q", config.Server.APIKey)
 	}
 	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "server.api_key") {
@@ -87,6 +92,58 @@ func TestPrepareAPIKeyKeepsOrResetsPersistedKey(t *testing.T) {
 	}
 	if saved.Server.APIKey != config.Server.APIKey {
 		t.Fatal("reset API key was not persisted")
+	}
+}
+
+func TestWriteAPIKeyFileUsesPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, path, key); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != key+"\n" {
+		t.Fatalf("API key file content = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("API key file permissions = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteAPIKeyFileRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ConfigDirectoryName)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "external-key")
+	if err := os.WriteFile(external, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, DefaultAPIKeyName)
+	if err := os.Symlink(external, path); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	if err := WriteAPIKeyFile(root, path, strings.Repeat("a", MinAPIKeyLength)); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("API key symlink was accepted: %v", err)
+	}
+	data, err := os.ReadFile(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "unchanged\n" {
+		t.Fatalf("symlink target was modified: %q", data)
 	}
 }
 

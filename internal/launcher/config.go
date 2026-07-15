@@ -15,6 +15,7 @@ import (
 const (
 	ConfigDirectoryName = "config"
 	DefaultConfigName   = "launcher.json"
+	DefaultAPIKeyName   = "launcher.api-key"
 	maxConfigSize       = 1 << 20
 )
 
@@ -113,8 +114,16 @@ func isWindowsAbs(value string) bool {
 
 func LoadConfig(root string) (Config, string, bool, error) {
 	configPath := DefaultConfigPath(root)
-	if err := validateManagedPath(root, filepath.Join(root, ConfigDirectoryName), "配置目录", true, true); err != nil {
+	configDirectory := filepath.Join(root, ConfigDirectoryName)
+	if err := validateManagedPath(root, configDirectory, "配置目录", true, true); err != nil {
 		return Config{}, configPath, false, err
+	}
+	if _, err := os.Lstat(configDirectory); err == nil {
+		if err := applyFilePermissions(configDirectory, 0o700); err != nil {
+			return Config{}, configPath, false, fmt.Errorf("无法保护配置目录权限 %s: %w", configDirectory, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Config{}, configPath, false, fmt.Errorf("无法访问配置目录 %s: %w", configDirectory, err)
 	}
 	if err := validateManagedPath(root, configPath, "配置文件", true, false); err != nil {
 		return Config{}, configPath, false, err
@@ -126,6 +135,9 @@ func LoadConfig(root string) (Config, string, bool, error) {
 	}
 	if err != nil {
 		return Config{}, configPath, false, fmt.Errorf("无法访问配置文件 %s: %w", configPath, err)
+	}
+	if err := applyFilePermissions(configPath, 0o600); err != nil {
+		return Config{}, configPath, false, fmt.Errorf("无法保护配置文件权限 %s: %w", configPath, err)
 	}
 	if info.Size() > maxConfigSize {
 		return Config{}, configPath, false, fmt.Errorf("配置文件过大（最大 %d 字节）: %s", maxConfigSize, configPath)
@@ -335,22 +347,25 @@ type ResolvedPaths struct {
 	Mmproj       string
 	RouterManual string
 	RouterAuto   string
+	APIKeyFile   string
 }
 
 func EnsureRuntimeDirectories(root string) ([]string, error) {
-	directories := []struct {
+	type runtimeDirectory struct {
 		label string
 		path  string
-	}{
-		{label: "config", path: filepath.Join(root, ConfigDirectoryName)},
-		{label: "models", path: filepath.Join(root, "models")},
-		{label: "embeddings", path: filepath.Join(root, "embeddings")},
-		{label: "rerank", path: filepath.Join(root, "rerank")},
-		{label: "mmproj", path: filepath.Join(root, "mmproj")},
+		perm  os.FileMode
+	}
+	directories := []runtimeDirectory{
+		{label: "config", path: filepath.Join(root, ConfigDirectoryName), perm: 0o700},
+		{label: "models", path: filepath.Join(root, "models"), perm: 0o755},
+		{label: "embeddings", path: filepath.Join(root, "embeddings"), perm: 0o755},
+		{label: "rerank", path: filepath.Join(root, "rerank"), perm: 0o755},
+		{label: "mmproj", path: filepath.Join(root, "mmproj"), perm: 0o755},
 	}
 
 	seen := make(map[string]bool)
-	var missing []string
+	var missing []runtimeDirectory
 	for _, directory := range directories {
 		path := filepath.Clean(strings.TrimSpace(directory.path))
 		if path == "." || path == "" {
@@ -366,23 +381,31 @@ func EnsureRuntimeDirectories(root string) ([]string, error) {
 		}
 		_, err := os.Lstat(path)
 		if err == nil {
+			if directory.perm == 0o700 {
+				if err := applyFilePermissions(path, directory.perm); err != nil {
+					return nil, fmt.Errorf("无法保护 %s 目录 %s: %w", directory.label, path, err)
+				}
+			}
 			continue
 		}
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("无法检查 %s 目录 %s: %w", directory.label, path, err)
 		}
-		missing = append(missing, path)
+		missing = append(missing, directory)
 	}
 
 	var created []string
-	for _, path := range missing {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return created, fmt.Errorf("无法创建运行目录 %s: %w", path, err)
+	for _, directory := range missing {
+		if err := os.MkdirAll(directory.path, directory.perm); err != nil {
+			return created, fmt.Errorf("无法创建运行目录 %s: %w", directory.path, err)
 		}
-		if err := validateManagedPath(root, path, "新建运行目录", false, true); err != nil {
+		if err := validateManagedPath(root, directory.path, "新建运行目录", false, true); err != nil {
 			return created, err
 		}
-		created = append(created, path)
+		if err := applyFilePermissions(directory.path, directory.perm); err != nil {
+			return created, fmt.Errorf("无法设置运行目录权限 %s: %w", directory.path, err)
+		}
+		created = append(created, directory.path)
 	}
 	return created, nil
 }
@@ -407,5 +430,6 @@ func ResolveFixedPaths(root, goos string) (ResolvedPaths, error) {
 		Mmproj:       filepath.Join(root, "mmproj"),
 		RouterManual: filepath.Join(root, ConfigDirectoryName, "router-models.ini"),
 		RouterAuto:   filepath.Join(root, ConfigDirectoryName, "router-models.auto.ini"),
+		APIKeyFile:   filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName),
 	}, nil
 }

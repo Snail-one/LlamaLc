@@ -3,18 +3,17 @@ package launcher
 import (
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 )
 
-func validateNetworkExposure(host string, extra []string) (string, bool, error) {
-	effectiveHost := lastArgumentValue(host, extra, "--host")
+func validateNetworkExposure(host string, args []string, managedAPIKeyFile string) (string, bool, error) {
+	effectiveHost := lastArgumentValue(host, args, "--host")
 	if isLocalOnlyHost(effectiveHost) {
 		return effectiveHost, false, nil
 	}
-	if !hasServerAuthentication(extra) {
-		return effectiveHost, true, fmt.Errorf("拒绝在非本机地址 %q 上无认证启动；请使用 -- 后的 --api-key-file FILE，或设置 LLAMA_API_KEY", effectiveHost)
+	if !hasArgumentValue(args, "--api-key-file", managedAPIKeyFile) {
+		return effectiveHost, true, fmt.Errorf("拒绝在非本机地址 %q 上无托管认证启动", effectiveHost)
 	}
 	return effectiveHost, true, nil
 }
@@ -36,11 +35,20 @@ func isLocalOnlyHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func hasServerAuthentication(args []string) bool {
-	if strings.TrimSpace(os.Getenv("LLAMA_API_KEY")) != "" || strings.TrimSpace(os.Getenv("LLAMA_ARG_API_KEY_FILE")) != "" {
-		return true
+func hasArgumentValue(args []string, name, expected string) bool {
+	for index := 0; index < len(args); index++ {
+		if args[index] == name && index+1 < len(args) {
+			if args[index+1] == expected {
+				return true
+			}
+			index++
+			continue
+		}
+		if strings.HasPrefix(args[index], name+"=") && strings.TrimPrefix(args[index], name+"=") == expected {
+			return true
+		}
 	}
-	return lastArgumentValue("", args, "--api-key") != "" || lastArgumentValue("", args, "--api-key-file") != ""
+	return false
 }
 
 func lastArgumentValue(initial string, args []string, name string) string {

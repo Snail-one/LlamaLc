@@ -58,7 +58,7 @@ func writeFileExclusive(path string, data []byte, perm os.FileMode) error {
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
 
-	if err := temporary.Chmod(perm); err != nil {
+	if err := applyFilePermissions(temporaryPath, perm); err != nil {
 		temporary.Close()
 		return err
 	}
@@ -80,7 +80,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
 
-	if err := temporary.Chmod(perm); err != nil {
+	if err := applyFilePermissions(temporaryPath, perm); err != nil {
 		temporary.Close()
 		return err
 	}

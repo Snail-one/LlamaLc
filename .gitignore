@@ -1,5 +1,6 @@
 # Local launcher state
 /config/launcher.json
+/config/launcher.api-key
 /Server_README.md
 /config/router-models.ini
 /config/router-models.auto.ini

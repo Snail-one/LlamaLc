@@ -46,10 +46,10 @@ func menuInput(lines ...string) *bytes.Buffer {
 	return bytes.NewBufferString(strings.Join(lines, "\n") + "\n")
 }
 
-func withoutAPIKey(args []string) []string {
+func withoutManagedAuthentication(args []string) []string {
 	filtered := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
-		if args[index] == "--api-key" && index+1 < len(args) {
+		if args[index] == "--api-key-file" && index+1 < len(args) {
 			index++
 			continue
 		}
@@ -93,9 +93,20 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 	if code != 23 || len(fake.commands) != 1 {
 		t.Fatalf("unexpected result: code=%d calls=%d stderr=%s", code, len(fake.commands), errOut.String())
 	}
-	generatedKey := lastArgumentValue("", fake.commands[0].Args, "--api-key")
+	keyFile := lastArgumentValue("", fake.commands[0].Args, "--api-key-file")
+	if keyFile != filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName) {
+		t.Fatalf("managed API key file = %q", keyFile)
+	}
+	keyData, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedKey := strings.TrimSpace(string(keyData))
 	if len(generatedKey) != GeneratedAPIKeyLength {
 		t.Fatalf("generated API key length = %d, want %d", len(generatedKey), GeneratedAPIKeyLength)
+	}
+	if lastArgumentValue("", fake.commands[0].Args, "--api-key") != "" || strings.Contains(strings.Join(fake.commands[0].Args, "\x00"), generatedKey) {
+		t.Fatal("managed API key leaked into child process arguments")
 	}
 	savedConfig, _, _, err := LoadConfig(root)
 	if err != nil {
@@ -105,12 +116,15 @@ func TestMainFlagOverridesConfigAndForwardsStreams(t *testing.T) {
 		t.Fatal("generated API key was not saved to config")
 	}
 	wantTail := []string{"--host", "config-host", "--port", "30002", "--no-ui", "--threads", "8"}
-	args := withoutAPIKey(fake.commands[0].Args)
+	args := withoutManagedAuthentication(fake.commands[0].Args)
 	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
 		t.Fatalf("flags/config/extra precedence failed: %#v", args)
 	}
 	if fake.stdin != in || fake.stdout != out || fake.stderr != errOut {
 		t.Fatal("standard streams were not connected to executor")
+	}
+	if !strings.Contains(errOut.String(), "/models、/v1/models") || !strings.Contains(errOut.String(), "不受 API key 保护") {
+		t.Fatalf("remote public endpoint warning was not displayed: %q", errOut.String())
 	}
 }
 
@@ -168,7 +182,7 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 		"--host", "127.0.0.1", "--port", "29856", "--no-ui",
 		"--threads", "8", "--log-prefix", "hello world",
 	}
-	args := withoutAPIKey(fake.commands[0].Args)
+	args := withoutManagedAuthentication(fake.commands[0].Args)
 	if !reflect.DeepEqual(args[len(args)-len(wantTail):], wantTail) {
 		t.Fatalf("embedding defaults/custom arguments mismatch:\n got: %#v\nwant tail: %#v", args, wantTail)
 	}
@@ -268,7 +282,7 @@ func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := DefaultConfig()
-	config.Server.APIKey = "keep-this-key"
+	config.Server.APIKey = strings.Repeat("k", MinAPIKeyLength)
 	if err := WriteDefaultConfig(DefaultConfigPath(root), config); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +300,7 @@ func TestMainAsksWhetherToResetExistingAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Server.APIKey != "keep-this-key" {
+	if saved.Server.APIKey != strings.Repeat("k", MinAPIKeyLength) {
 		t.Fatalf("default reset answer changed key: %q", saved.Server.APIKey)
 	}
 }

@@ -99,6 +99,7 @@ llama.cpp/
 ├─ mmproj/                        # 自动创建；多模态投影文件：gguf
 ├─ config/                        # 验证安装位置后自动创建
 │  ├─ launcher.json              # 首次运行自动生成
+│  ├─ launcher.api-key           # 传给 llama-server 的私有 key 文件
 │  ├─ router-models.ini           # 手动 Router 配置
 │  └─ router-models.auto.ini      # 自动 Router 配置
 └─ bin/
@@ -192,7 +193,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 
 通用服务选项包括 `--model`、`--host`、`--port`、`--gpu-layers`（也接受 `--n-gpu-layers`）、`--ctx-size`、`--threads`、`--batch-size`、`--ubatch-size`、`--flash-attn`、`--parallel` 和 `--ui`。Embedding 还支持 `--pooling` 与 `--embd-normalize`；Router preset 使用 `--embedding-batch-size` 和 `--embedding-ubatch-size`。布尔选项可写成 `--ui=false`、`--autoload=false`。运行 `<子命令> --help` 可查看该模式的完整选项。
 
-配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。启动器会把 `server.api_key` 作为 `--api-key` 自动注入单模型、Embedding、Rerank 和 Router 服务；监听地址不是 localhost、loopback IP 或 Unix socket 时仍会检查有效认证参数，否则拒绝启动。
+配置优先级固定为：命令行 flags > `config/launcher.json` > 内置默认值。模型或可执行文件不存在、端口越界、GPU 层数或 pooling 非法时，启动器会在创建子进程前用中文报错。启动器会把 `server.api_key` 原子同步到私有的 `config/launcher.api-key`，再通过 `--api-key-file` 注入单模型、Embedding、Rerank 和 Router 服务，避免密钥出现在进程命令行；监听地址不是 localhost、loopback IP 或 Unix socket 时仍会检查有效认证参数，否则拒绝启动。
 
 ## config/launcher.json
 
@@ -226,7 +227,7 @@ Embedding 按前述专用设置使用 `--pooling last --batch-size 8192 --ubatch
 }
 ```
 
-`server.api_key` 在示例配置中可留空；启动器会用密码学安全随机源生成并保存 128 位 key。手工配置仍允许最长 8167 位；该上限依据[当前上游 HTTP 头限制](https://github.com/ggml-org/llama.cpp/blob/master/vendor/cpp-httplib/httplib.h)和[认证头处理实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-http.cpp)推导。
+`server.api_key` 在示例配置中可留空；启动器会用密码学安全随机源生成并保存 128 位 key。手工配置必须至少 32 位、最长 8167 位，并且只能包含 ASCII 字母、数字、连字符和下划线。逗号和空白会被拒绝，避免上游将单个 key 重新解释为多个 key 或空 key 列表。长度上限依据[当前上游 HTTP 头限制](https://github.com/ggml-org/llama.cpp/blob/master/vendor/cpp-httplib/httplib.h)和[认证头处理实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-http.cpp)推导。
 
 `embedding.pooling` 默认为 `last`，也可设为 `none`、`mean`、`cls` 或 `rank`；`embedding.batch_size` 与 `embedding.ubatch_size` 默认为 `8192`，必须是正整数且逻辑 batch 不能小于物理 batch；`embedding.normalize` 使用 llama.cpp 官方默认值 `2`。配置文件最大为 1 MiB。配置不再包含 `paths`；若现有 `config/launcher.json` 仍有该字段，启动器会拒绝读取，请删除该字段或删除配置后让启动器重新生成。
 
@@ -267,12 +268,12 @@ GET http://127.0.0.1:29856/models
 
 ## 安全说明
 
-- `config/launcher.json`、手动 Router preset 和自动 Router preset 都固定在 `config/` 中；符号链接、junction 和重解析点会被拒绝，避免写入根目录外文件。
-- `config/launcher.json` 包含明文 API key；启动器在支持权限位的平台上以仅当前用户可读写的 `0600` 模式创建或更新它。请勿提交或共享真实配置。
+- `config/launcher.json`、`config/launcher.api-key`、手动 Router preset 和自动 Router preset 都固定在 `config/` 中；符号链接、junction 和重解析点会被拒绝，避免写入根目录外文件。
+- `config/launcher.json` 和派生的 `config/launcher.api-key` 都包含明文 API key。Unix 上会把 `config/` 强制修正为 `0700`、两个文件修正为 `0600`；Windows 上会设置受保护 DACL，仅授予当前用户和 LocalSystem 完全控制。请勿提交或共享这些文件。
 - 配置与 Router preset 先写入同目录临时文件并同步，再替换目标文件。覆盖失败不会先清空原文件；不带 `--force` 时仍拒绝覆盖手动配置。
 - Router 会拒绝包含控制字符、换行或非法 section 分隔符的模型文件名和路径，防止 preset 注入。
-- 完整命令预览会把自动注入的 `--api-key VALUE` 以及用户提供的 `--api-key=VALUE` 脱敏为 `******`。密钥仍可能出现在操作系统进程列表中。
-- 非本机监听必须配置认证，并会额外显示安全警告。默认仍为 `127.0.0.1` 且关闭 Web UI。
+- 启动器使用 `--api-key-file` 传递托管密钥，密钥不会出现在操作系统进程列表中；用户自行转发的 `--api-key` 仍会在命令预览中脱敏。
+- 非本机监听必须配置认证，并会额外显示安全警告。上游的 `/models`、`/v1/models`、健康检查和 UI 静态资源不受 API key 保护；需要隐藏时请使用反向代理拦截。默认仍为 `127.0.0.1` 且关闭 Web UI。
 - 自定义参数拥有 llama.cpp 的完整能力。不要在不可信环境中启用 `--tools`、MCP proxy 等高权限功能。
 - 不要直接加载来源不明的模型。llama.cpp 官方建议在容器、虚拟机等隔离环境中处理不可信模型，参见 [llama.cpp Security](https://github.com/ggml-org/llama.cpp/security)。
 

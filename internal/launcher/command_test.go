@@ -26,11 +26,11 @@ func TestBuildCommands(t *testing.T) {
 			want: []string{"--model", "m.gguf", "--ctx-size", "8192", "--n-gpu-layers", "all", "--mmproj", "p.gguf", "--image-min-tokens", "1024", "--host", "0.0.0.0", "--port", "9000", "--ui", "--threads", "8"},
 		},
 		{
-			name: "serve with managed API key",
+			name: "serve with managed API key file",
 			build: func() (Command, error) {
-				return BuildServerCommand(ModeServe, "server.exe", ".", ServerOptions{Model: "m.gguf", Host: "127.0.0.1", Port: 29856, GPULayers: "auto", APIKey: "managed-key"})
+				return BuildServerCommand(ModeServe, "server.exe", ".", ServerOptions{Model: "m.gguf", Host: "127.0.0.1", Port: 29856, GPULayers: "auto", APIKeyFile: "managed-key.txt"})
 			},
-			want: []string{"--model", "m.gguf", "--n-gpu-layers", "auto", "--host", "127.0.0.1", "--port", "29856", "--no-ui", "--api-key", "managed-key"},
+			want: []string{"--model", "m.gguf", "--n-gpu-layers", "auto", "--host", "127.0.0.1", "--port", "29856", "--no-ui", "--api-key-file", "managed-key.txt"},
 		},
 		{
 			name: "serve official runtime defaults and multimodal limits",
@@ -65,9 +65,9 @@ func TestBuildCommands(t *testing.T) {
 		{
 			name: "router",
 			build: func() (Command, error) {
-				return BuildRouterCommand("server.exe", ".", RouterOptions{Preset: "router.ini", Host: "127.0.0.1", Port: 3, GPULayers: "auto", ModelsMax: 1, Autoload: true})
+				return BuildRouterCommand("server.exe", ".", RouterOptions{Preset: "router.ini", Host: "127.0.0.1", Port: 3, GPULayers: "auto", ModelsMax: 1, Autoload: true, APIKeyFile: "managed-key.txt"})
 			},
-			want: []string{"--models-preset", "router.ini", "--models-max", "1", "--models-autoload", "--n-gpu-layers", "auto", "--host", "127.0.0.1", "--port", "3", "--no-ui"},
+			want: []string{"--models-preset", "router.ini", "--models-max", "1", "--models-autoload", "--n-gpu-layers", "auto", "--host", "127.0.0.1", "--port", "3", "--no-ui", "--api-key-file", "managed-key.txt"},
 		},
 		{
 			name: "chat",
