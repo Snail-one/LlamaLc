@@ -487,6 +487,15 @@ func releaseWithRuntime(t *testing.T, tag string, payload []byte) GitHubRelease 
 	}}}
 }
 
+func runtimeDownloadClient(payload []byte) *GitHubClient {
+	return &GitHubClient{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200, Status: "200 OK", Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: int64(len(payload)), Request: request,
+		}, nil
+	})}}
+}
+
 func TestManagedRuntimeInstallAndAtomicVersionSwitch(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
@@ -525,5 +534,214 @@ func TestManagedRuntimeInstallAndAtomicVersionSwitch(t *testing.T) {
 	}
 	if len(probe.commands) != 2 {
 		t.Fatalf("runtime probe count=%d", len(probe.commands))
+	}
+}
+
+func TestRecoveryInstallReplacesOrphanedSameVersionRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := makeRuntimeTar(t, "b1")
+	probe := &fakeInstallationProbe{}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payload),
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+	release := releaseWithRuntime(t, "b1", payload)
+	if err := manager.InstallLlama(context.Background(), release, "cpu", false, false, false); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := LoadUpdateState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRuntime := filepath.Join(root, filepath.FromSlash(state.ActiveRuntime))
+	marker := filepath.Join(oldRuntime, "old-runtime-marker")
+	if err := os.WriteFile(marker, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(UpdateStatePath(root)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installWithQuarantinedRuntime(context.Background(), manager, release, "cpu"); err != nil {
+		t.Fatal(err)
+	}
+	state, exists, err := LoadUpdateState(root)
+	if err != nil || !exists || state.LlamaTag != "b1" || state.Backend != "cpu" {
+		t.Fatalf("bad recovered state: %#v exists=%v err=%v", state, exists, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphaned same-version runtime was retained: %v", err)
+	}
+	entries, err := os.ReadDir(managedRuntimeRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".orphan-") {
+			t.Fatalf("successful recovery retained quarantine %s", entry.Name())
+		}
+	}
+}
+
+func TestInstallCommandDetectsOrphanAndConfirmsBeforeChangingIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	marker := filepath.Join(managedRuntimeRoot(root), "legacy", "marker")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := makeRuntimeTar(t, "b1")
+	release := releaseWithRuntime(t, "b1", payload)
+	releaseData, err := json.Marshal(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloadStarted := false
+	client := &GitHubClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body := releaseData
+			if request.URL.Hostname() != "api.github.com" {
+				downloadStarted = true
+				body = payload
+			}
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK", Header: make(http.Header),
+				Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+			}, nil
+		})},
+		APIBase: githubAPIBase, ProxyResolver: func(*http.Request) (*url.URL, error) { return nil, nil },
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	probe := &fakeInstallationProbe{}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: client,
+		Probe: probe, LauncherProbe: probe, Stdout: stdout, Stderr: stderr,
+	}
+
+	code, commandErr := runManagementCommand(
+		context.Background(), manager, "install", []string{"--backend", "cpu"}, bytes.NewBufferString("n\n"), true,
+	)
+	if code != 1 || commandErr == nil || !strings.Contains(commandErr.Error(), "已取消") {
+		t.Fatalf("code=%d err=%v", code, commandErr)
+	}
+	if !strings.Contains(stderr.String(), "未找到 config/update-state.json") || !strings.Contains(stdout.String(), "隔离现有 data/llama.cpp") {
+		t.Fatalf("missing recovery warning or confirmation: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if downloadStarted {
+		t.Fatal("runtime download started before confirmation")
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "keep" {
+		t.Fatalf("declined recovery changed runtime: content=%q err=%v", content, err)
+	}
+}
+
+func TestRecoveryInstallFailureRestoresRuntimeAndState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	legacy := filepath.Join(managedRuntimeRoot(root), "b1-cpu")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(legacy, "marker")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalState := []byte("{broken-json")
+	if err := os.MkdirAll(filepath.Dir(UpdateStatePath(root)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(UpdateStatePath(root), originalState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := makeRuntimeTar(t, "b2")
+	probe := &fakeInstallationProbe{err: errors.New("probe failed")}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payload),
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+	}
+
+	err := installWithQuarantinedRuntime(context.Background(), manager, releaseWithRuntime(t, "b2", payload), "cpu")
+	if err == nil || !strings.Contains(err.Error(), "probe failed") {
+		t.Fatalf("recovery install error=%v", err)
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "keep" {
+		t.Fatalf("original runtime was not restored: content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(UpdateStatePath(root)); err != nil || !bytes.Equal(content, originalState) {
+		t.Fatalf("original state was not restored: content=%q err=%v", content, err)
+	}
+}
+
+func TestRecoveryCleanupFailureIsRecordedAndRetried(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	legacy := filepath.Join(managedRuntimeRoot(root), "legacy")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := makeRuntimeTar(t, "b2")
+	stderr := &bytes.Buffer{}
+	probe := &fakeInstallationProbe{}
+	manager := &UpdateManager{
+		Root: root, GOOS: "linux", GOARCH: "amd64", Client: runtimeDownloadClient(payload),
+		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: stderr,
+	}
+	originalRemove := removeRecoveryTree
+	removeRecoveryTree = func(path string) error {
+		if strings.HasPrefix(filepath.Base(path), ".orphan-recovery") {
+			return errors.New("file is in use")
+		}
+		return os.RemoveAll(path)
+	}
+	t.Cleanup(func() { removeRecoveryTree = originalRemove })
+
+	if err := installWithQuarantinedRuntime(context.Background(), manager, releaseWithRuntime(t, "b2", payload), "cpu"); err != nil {
+		t.Fatal(err)
+	}
+	state, exists, err := LoadUpdateState(root)
+	if err != nil || !exists || len(state.PendingCleanup) != 1 {
+		t.Fatalf("pending cleanup state=%#v exists=%v err=%v", state, exists, err)
+	}
+	pendingPath := filepath.Join(root, filepath.FromSlash(state.PendingCleanup[0]))
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("pending cleanup directory missing: %v", err)
+	}
+	removeRecoveryTree = originalRemove
+	if err := manager.RetryPendingCleanup(); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = LoadUpdateState(root)
+	if err != nil || len(state.PendingCleanup) != 0 {
+		t.Fatalf("pending cleanup was not cleared: %#v err=%v", state, err)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending cleanup directory still exists: %v", err)
+	}
+}
+
+func TestRecoveryRefusesSymlinkWithoutChangingRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	runtimeRoot := managedRuntimeRoot(root)
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(runtimeRoot, "unsafe-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := createInstallRecoveryQuarantine(root)
+	if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("unsafe runtime accepted: %v", err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != outside {
+		t.Fatalf("unsafe runtime was changed: target=%q err=%v", target, err)
 	}
 }

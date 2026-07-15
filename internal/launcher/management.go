@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	buildversion "github.com/joker/llama-launcher/internal/version"
@@ -66,12 +67,16 @@ func runManagementCommand(ctx context.Context, manager *UpdateManager, name stri
 				stateErr = fmt.Errorf("活动运行时损坏: %w", err)
 			}
 		}
-		if repairState {
-			statePath := UpdateStatePath(manager.Root)
-			if fileErr := validateManagedPath(manager.Root, statePath, "损坏的更新状态", false, false); fileErr != nil {
-				return 1, stateErr
+		if !exists && stateErr == nil {
+			if _, err := os.Lstat(managedRuntimeRoot(manager.Root)); err == nil {
+				repairState = true
+				stateErr = errors.New("未找到 config/update-state.json，但受管运行时目录仍存在")
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return 1, fmt.Errorf("无法检查受管运行时目录: %w", err)
 			}
-			fmt.Fprintf(manager.Stderr, "警告: 更新状态损坏，将在确认后隔离并重新安装: %v\n", stateErr)
+		}
+		if repairState {
+			fmt.Fprintf(manager.Stderr, "警告: 未找到有效的受管运行时，将在确认后隔离 data/llama.cpp 并重新安装: %v\n", stateErr)
 		}
 		release, err := manager.Client.Release(ctx, llamaRepository, *version)
 		if err != nil {
@@ -84,12 +89,16 @@ func runManagementCommand(ctx context.Context, manager *UpdateManager, name stri
 		if err := preflightLlamaAssets(manager, release, selected); err != nil {
 			return 1, err
 		}
-		if err := requireConfirmation(stdin, manager.Stdout, *yes, interactiveOverride, fmt.Sprintf("安装 llama.cpp %s (%s)", release.TagName, selected)); err != nil {
+		description := fmt.Sprintf("安装 llama.cpp %s (%s)", release.TagName, selected)
+		if repairState {
+			description += "，并隔离现有 data/llama.cpp（安装成功后清理）"
+		}
+		if err := requireConfirmation(stdin, manager.Stdout, *yes, interactiveOverride, description); err != nil {
 			return 1, err
 		}
 		cleanupLauncherTemps(manager.Root, manager.Stderr)
 		if repairState {
-			return 0, installWithQuarantinedState(ctx, manager, release, selected)
+			return 0, installWithQuarantinedRuntime(ctx, manager, release, selected)
 		}
 		return 0, manager.InstallLlama(ctx, release, selected, false, false, false)
 	case "check-update":
@@ -234,23 +243,194 @@ func preflightDownloadSizes(path string, assets []GitHubAsset) error {
 	return ensureFreeSpace(path, total*3)
 }
 
-func installWithQuarantinedState(ctx context.Context, manager *UpdateManager, release GitHubRelease, backend string) error {
-	statePath := UpdateStatePath(manager.Root)
-	backup, err := uniqueMissingPath(statePath + ".corrupt")
+var removeRecoveryTree = os.RemoveAll
+
+type installRecoveryQuarantine struct {
+	stateBackup   string
+	runtimeRoot   string
+	runtimeOrphan string
+}
+
+func installWithQuarantinedRuntime(ctx context.Context, manager *UpdateManager, release GitHubRelease, backend string) error {
+	quarantine, err := createInstallRecoveryQuarantine(manager.Root)
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(statePath, backup); err != nil {
-		return fmt.Errorf("无法隔离损坏的更新状态: %w", err)
-	}
 	if err := manager.InstallLlama(ctx, release, backend, false, false, false); err != nil {
-		_ = os.Rename(backup, statePath)
+		if rollbackErr := rollbackInstallRecovery(manager.Root, quarantine); rollbackErr != nil {
+			return fmt.Errorf("重新安装失败: %w；同时无法完整恢复已隔离的运行时: %v", err, rollbackErr)
+		}
 		return err
 	}
-	if err := os.Remove(backup); err != nil {
-		fmt.Fprintf(manager.Stderr, "警告: 无法删除已隔离的旧状态 %s: %v\n", backup, err)
+	if quarantine.runtimeOrphan != "" {
+		if err := removeRecoveryTree(quarantine.runtimeOrphan); err != nil {
+			state, exists, stateErr := LoadUpdateState(manager.Root)
+			if stateErr != nil || !exists {
+				return fmt.Errorf("新运行时已启用，但无法记录待清理目录 %s: %w", quarantine.runtimeOrphan, err)
+			}
+			relative, relativeErr := filepath.Rel(manager.Root, quarantine.runtimeOrphan)
+			if relativeErr != nil {
+				return fmt.Errorf("新运行时已启用，但无法记录待清理目录: %w", relativeErr)
+			}
+			state.PendingCleanup = appendUniqueString(state.PendingCleanup, filepath.ToSlash(relative))
+			if stateErr := WriteUpdateState(manager.Root, state); stateErr != nil {
+				return fmt.Errorf("新运行时已启用，但无法记录待清理目录 %s: %w", quarantine.runtimeOrphan, stateErr)
+			}
+			fmt.Fprintf(manager.Stderr, "警告: 已隔离的旧运行时暂时无法删除，已记录待清理: %s\n", quarantine.runtimeOrphan)
+		}
+	}
+	if quarantine.stateBackup != "" {
+		if err := os.Remove(quarantine.stateBackup); err != nil {
+			fmt.Fprintf(manager.Stderr, "警告: 无法删除已隔离的旧状态 %s: %v\n", quarantine.stateBackup, err)
+		}
 	}
 	return nil
+}
+
+func createInstallRecoveryQuarantine(root string) (installRecoveryQuarantine, error) {
+	quarantine := installRecoveryQuarantine{runtimeRoot: managedRuntimeRoot(root)}
+	statePath := UpdateStatePath(root)
+	if _, err := os.Lstat(statePath); err == nil {
+		if err := validateManagedPath(root, statePath, "待隔离的更新状态", false, false); err != nil {
+			return quarantine, err
+		}
+		quarantine.stateBackup, err = uniqueMissingPath(statePath + ".corrupt")
+		if err != nil {
+			return quarantine, err
+		}
+		if err := os.Rename(statePath, quarantine.stateBackup); err != nil {
+			return quarantine, fmt.Errorf("无法隔离损坏的更新状态: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return quarantine, fmt.Errorf("无法检查更新状态: %w", err)
+	}
+
+	if _, err := os.Lstat(quarantine.runtimeRoot); errors.Is(err, os.ErrNotExist) {
+		return quarantine, nil
+	} else if err != nil {
+		primary := fmt.Errorf("无法检查受管运行时目录: %w", err)
+		return quarantine, recoverySetupError(primary, restoreQuarantinedState(statePath, quarantine.stateBackup))
+	}
+	if err := validateRecoveryRuntimeTree(root, quarantine.runtimeRoot); err != nil {
+		return quarantine, recoverySetupError(err, restoreQuarantinedState(statePath, quarantine.stateBackup))
+	}
+
+	dataDirectory := filepath.Dir(quarantine.runtimeRoot)
+	external, err := uniqueMissingPath(filepath.Join(dataDirectory, ".llama.cpp.recovery"))
+	if err != nil {
+		return quarantine, recoverySetupError(err, restoreQuarantinedState(statePath, quarantine.stateBackup))
+	}
+	if err := os.Rename(quarantine.runtimeRoot, external); err != nil {
+		primary := fmt.Errorf("无法隔离受管运行时: %w", err)
+		return quarantine, recoverySetupError(primary, restoreQuarantinedState(statePath, quarantine.stateBackup))
+	}
+	if err := os.Mkdir(quarantine.runtimeRoot, 0o755); err != nil {
+		primary := fmt.Errorf("无法重建受管运行时目录: %w", err)
+		return quarantine, recoverySetupError(primary,
+			os.Rename(external, quarantine.runtimeRoot),
+			restoreQuarantinedState(statePath, quarantine.stateBackup),
+		)
+	}
+	quarantine.runtimeOrphan, err = uniqueMissingPath(filepath.Join(quarantine.runtimeRoot, ".orphan-recovery"))
+	if err == nil {
+		err = os.Rename(external, quarantine.runtimeOrphan)
+	}
+	if err != nil {
+		primary := fmt.Errorf("无法完成受管运行时隔离: %w", err)
+		return quarantine, recoverySetupError(primary,
+			os.Remove(quarantine.runtimeRoot),
+			os.Rename(external, quarantine.runtimeRoot),
+			restoreQuarantinedState(statePath, quarantine.stateBackup),
+		)
+	}
+	return quarantine, nil
+}
+
+func rollbackInstallRecovery(root string, quarantine installRecoveryQuarantine) error {
+	var rollbackErrors []error
+	if quarantine.runtimeOrphan != "" {
+		dataDirectory := filepath.Dir(quarantine.runtimeRoot)
+		external, err := uniqueMissingPath(filepath.Join(dataDirectory, ".llama.cpp.rollback"))
+		preservedAt := quarantine.runtimeOrphan
+		if err == nil {
+			err = os.Rename(quarantine.runtimeOrphan, external)
+			if err == nil {
+				preservedAt = external
+			}
+		}
+		if err == nil {
+			err = removeRecoveryTree(quarantine.runtimeRoot)
+		}
+		if err == nil {
+			err = os.Rename(external, quarantine.runtimeRoot)
+		}
+		if err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("恢复受管运行时失败，原运行时保留在 %s: %w", preservedAt, err))
+		}
+	} else if err := removeRecoveryTree(quarantine.runtimeRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("清理失败的新运行时失败: %w", err))
+	}
+
+	statePath := UpdateStatePath(root)
+	if err := os.Remove(statePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("清理新更新状态失败: %w", err))
+	} else if quarantine.stateBackup != "" {
+		if err := os.Rename(quarantine.stateBackup, statePath); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("恢复原更新状态失败: %w", err))
+		}
+	}
+	return errors.Join(rollbackErrors...)
+}
+
+func restoreQuarantinedState(statePath, backup string) error {
+	if backup == "" {
+		return nil
+	}
+	return os.Rename(backup, statePath)
+}
+
+func recoverySetupError(primary error, rollbackErrors ...error) error {
+	filtered := rollbackErrors[:0]
+	for _, err := range rollbackErrors {
+		if err != nil {
+			filtered = append(filtered, err)
+		}
+	}
+	if len(filtered) == 0 {
+		return primary
+	}
+	return fmt.Errorf("%w；同时无法完整回滚隔离操作: %v", primary, errors.Join(filtered...))
+}
+
+func validateRecoveryRuntimeTree(root, runtimeRoot string) error {
+	if err := validateManagedPath(root, runtimeRoot, "待隔离的受管运行时", false, true); err != nil {
+		return err
+	}
+	return filepath.WalkDir(runtimeRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("待隔离的受管运行时不允许符号链接或重解析点: %s", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("待隔离的受管运行时包含非普通文件: %s", path)
+		}
+		return nil
+	})
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func resolveBackendInput(release GitHubRelease, manager *UpdateManager, requested string, stdin io.Reader, interactive, reselectMissing bool) (string, error) {
