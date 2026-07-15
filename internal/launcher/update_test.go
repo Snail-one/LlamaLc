@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -426,6 +427,82 @@ func makeRuntimeTar(t *testing.T, tag string) []byte {
 		t.Fatal(err)
 	}
 	return output.Bytes()
+}
+
+func makeWindowsRuntimeZIP(t *testing.T, tag string) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	writer := zip.NewWriter(&output)
+	for _, name := range []string{"llama-" + tag + "/llama-server.exe", "llama-" + tag + "/llama-cli.exe"} {
+		header := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		header.SetMode(0o755)
+		entry, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte("fake executable")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	executable := filepath.Join(root, "bin", "llama-launcher.exe")
+	touchFile(t, executable)
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) { return executable, nil }
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+
+	payload := makeWindowsRuntimeZIP(t, "b1")
+	payloadHash := sha256.Sum256(payload)
+	asset := GitHubAsset{
+		Name: "llama-b1-bin-win-cpu-x64.zip", Size: int64(len(payload)),
+		Digest: "sha256:" + hex.EncodeToString(payloadHash[:]), BrowserDownloadURL: "https://downloads.example/runtime.zip",
+	}
+	releaseData, err := json.Marshal(GitHubRelease{TagName: "b1", Assets: []GitHubAsset{asset}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &GitHubClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body := payload
+			if request.URL.Hostname() == "api.github.com" {
+				body = releaseData
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
+		})},
+		APIBase:         githubAPIBase,
+		ProxyResolver:   func(*http.Request) (*url.URL, error) { return nil, nil },
+		DownloadLogRoot: root,
+	}
+	probe := &fakeInstallationProbe{}
+	oldFactory := updateManagerFactory
+	updateManagerFactory = func(factoryRoot string, factoryProbe InstallationProbe, stdout, stderr io.Writer) *UpdateManager {
+		return &UpdateManager{
+			Root: factoryRoot, GOOS: "windows", GOARCH: "amd64", Client: client,
+			Probe: factoryProbe, LauncherProbe: factoryProbe, Stdout: stdout, Stderr: stderr,
+		}
+	}
+	t.Cleanup(func() { updateManagerFactory = oldFactory })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := mainWithProbe(nil, bytes.NewBufferString("1\n1\ny\nq\n"), stdout, stderr, &fakeExecutor{}, probe, "windows")
+	if code != 0 {
+		t.Fatalf("main returned %d: %s", code, stderr)
+	}
+	for _, want := range []string{"llama.cpp 安装完成，正在进入主菜单", "实际探测文件:", "llama.cpp Go 启动器"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("post-install output missing %q: %s", want, stdout)
+		}
+	}
+	if len(probe.commands) != 2 {
+		t.Fatalf("probe count=%d, want install probe plus startup probe", len(probe.commands))
+	}
 }
 
 func releaseWithRuntime(t *testing.T, tag string, payload []byte) GitHubRelease {

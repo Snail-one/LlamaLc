@@ -25,6 +25,8 @@ type Application struct {
 	Updater  *UpdateManager
 }
 
+var updateManagerFactory = NewUpdateManager
+
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor Executor) int {
 	return mainWithProbe(args, stdin, stdout, stderr, executor, OSInstallationProbe{}, runtime.GOOS)
 }
@@ -63,7 +65,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		fmt.Fprintf(stderr, "错误: 未知子命令 %q\n", remaining[0])
 		return 1
 	}
-	manager := NewUpdateManager(root, probe, stdout, stderr)
+	manager := updateManagerFactory(root, probe, stdout, stderr)
 	manager.GOOS = goos
 	if len(remaining) > 0 && isManagementCommand(remaining[0]) {
 		code, commandErr := runManagementCommand(context.Background(), manager, remaining[0], remaining[1:], stdin, false)
@@ -94,7 +96,16 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 			fmt.Fprintf(stderr, "错误: llama.cpp 运行时缺失或损坏（%v）；请运行 bin/llama-launcher install --backend <ID>\n", stateErr)
 			return 1
 		}
-		return RunMaintenanceMenu(manager, stdin)
+		maintenance := runMaintenanceMenu(manager, stdin)
+		if !maintenance.installed {
+			return maintenance.code
+		}
+		stdin = maintenance.input
+		paths, stateErr = resolveStartupPaths(root, goos)
+		if stateErr != nil {
+			fmt.Fprintln(stderr, "错误: 安装完成后无法加载 llama.cpp 运行时:", stateErr)
+			return 1
+		}
 	}
 	if stateErr != nil {
 		// Compatibility for historical unit fixtures whose temporary root is not
