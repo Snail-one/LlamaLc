@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ type cleanupCandidate struct {
 	Automatic bool
 	Recent    bool
 	Identity  os.FileInfo
+	Snapshot  string
 }
 
 func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
@@ -35,7 +37,7 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 			warnings = append(warnings, fmt.Sprintf("无法检查 %s: %v", path, identityErr))
 			return
 		}
-		size, err := cleanupPathSize(path)
+		size, snapshot, err := inspectCleanupPath(path)
 		candidate := cleanupCandidate{Path: filepath.Clean(path), Kind: kind, Reason: reason, Automatic: automatic, Identity: identity}
 		if automatic && kind != "临时 updater 副本" && !oldEnoughForAutomaticCleanupPath(path, identity) {
 			candidate.Kind = "近期" + kind
@@ -44,7 +46,7 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 			candidate.Recent = true
 		}
 		if err == nil {
-			candidate.Size, candidate.SizeKnown = size, true
+			candidate.Size, candidate.SizeKnown, candidate.Snapshot = size, true, snapshot
 		} else {
 			warnings = append(warnings, fmt.Sprintf("无法完整统计 %s: %v", path, err))
 		}
@@ -266,8 +268,15 @@ func recoveryReason(path string) string {
 }
 
 func cleanupPathSize(path string) (int64, error) {
+	size, _, err := inspectCleanupPath(path)
+	return size, err
+}
+
+func inspectCleanupPath(path string) (int64, string, error) {
 	var total int64
-	err := filepath.WalkDir(path, func(_ string, entry fs.DirEntry, err error) error {
+	hash := sha256.New()
+	root := filepath.Clean(path)
+	err := filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -287,9 +296,18 @@ func cleanupPathSize(path string) (int64, error) {
 			}
 			total += info.Size()
 		}
+		relative, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%d\n",
+			filepath.ToSlash(relative), info.Mode().String(), info.Size(), info.ModTime().UnixNano())
 		return nil
 	})
-	return total, err
+	if err != nil {
+		return total, "", err
+	}
+	return total, fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func deleteCleanupCandidate(root string, selected cleanupCandidate, automatic bool) error {
@@ -307,14 +325,21 @@ func deleteCleanupCandidate(root string, selected cleanupCandidate, automatic bo
 	if selected.Identity == nil || current.Identity == nil || !os.SameFile(selected.Identity, current.Identity) {
 		return errors.New("目标已被替换，请刷新并重新检查后再操作")
 	}
+	if selected.Snapshot != current.Snapshot {
+		return errors.New("目标目录结构或内容已经变化，请刷新并重新检查后再操作")
+	}
 	if automatic && !current.Automatic {
 		return errors.New("目标不再满足自动清理条件")
 	}
 	if current.Recent {
 		return fmt.Errorf("目标创建或修改不足 %s，可能仍在使用，拒绝删除", automaticCleanupMinAge)
 	}
-	if _, err := cleanupPathSize(current.Path); err != nil {
+	_, finalSnapshot, err := inspectCleanupPath(current.Path)
+	if err != nil {
 		return fmt.Errorf("拒绝删除无法安全遍历的目标: %w", err)
+	}
+	if finalSnapshot != current.Snapshot {
+		return errors.New("目标在最终检查时发生变化，拒绝删除")
 	}
 	info, err := os.Lstat(current.Path)
 	if err != nil {
