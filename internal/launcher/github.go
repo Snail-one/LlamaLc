@@ -295,6 +295,7 @@ func (client *GitHubClient) Download(ctx context.Context, asset GitHubAsset, des
 		if proxyHost != "" {
 			displayRoute += " " + proxyHost
 		}
+		fmt.Fprintf(out, "下载链接: %s\n", safeTerminalText(parsed.String()))
 		fmt.Fprintf(out, "下载开始: %s（%s，%s）\n", asset.Name, humanBytes(float64(asset.Size)), displayRoute)
 	}
 	digest, requestErr, retryable := client.downloadAttempt(req, asset, destination, expected, out, client.httpClient())

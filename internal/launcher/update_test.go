@@ -184,7 +184,7 @@ func TestDownloadProgressBar(t *testing.T) {
 	if _, err := client.Download(context.Background(), asset, filepath.Join(t.TempDir(), "runtime.tar.gz"), output); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"下载开始", "[==============================]", "100%", "2.0 KiB/2.0 KiB", "/s", "下载完成"} {
+	for _, want := range []string{"下载链接: https://downloads.example/runtime.tar.gz", "下载开始", "[==============================]", "100%", "2.0 KiB/2.0 KiB", "/s", "下载完成"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("progress output missing %q: %q", want, output.String())
 		}
