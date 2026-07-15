@@ -126,7 +126,7 @@ func (manager *UpdateManager) UpdateLauncher(ctx context.Context, release GitHub
 	if err := validateManagedPath(manager.Root, current, "当前启动器", false, false); err != nil {
 		return err
 	}
-	return installLauncherBinary(wantPath, current, release.TagName, manager.Stdout)
+	return manager.installLauncherBinary(ctx, wantPath, current, release)
 }
 
 func ensureOnlyLauncherFile(root, want string) error {

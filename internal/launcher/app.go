@@ -68,8 +68,7 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	manager := updateManagerFactory(root, probe, stdout, stderr)
 	manager.GOOS = goos
 	if len(remaining) > 0 && isManagementCommand(remaining[0]) {
-		handoff := remaining[0] == "update"
-		code, commandErr := delegateManagement(context.Background(), manager, remaining, stdin, false, handoff)
+		code, commandErr := runManagementCommand(context.Background(), manager, remaining[0], remaining[1:], stdin, false)
 		if errors.Is(commandErr, errUpdaterHandoff) {
 			return code
 		}

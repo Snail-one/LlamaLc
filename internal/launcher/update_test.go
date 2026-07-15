@@ -475,28 +475,30 @@ func TestMaintenanceInstallContinuesIntoMainMenu(t *testing.T) {
 	}
 	probe := &fakeInstallationProbe{}
 	oldFactory := updateManagerFactory
-	oldEnsurer, oldRunner := updaterToolEnsurer, updaterManagementRunner
-	var delegatedManager *UpdateManager
+	updaterRequested := false
+	oldEnsurer := updaterToolEnsurer
 	updateManagerFactory = func(factoryRoot string, factoryProbe InstallationProbe, stdout, stderr io.Writer) *UpdateManager {
-		delegatedManager = &UpdateManager{
+		return &UpdateManager{
 			Root: factoryRoot, GOOS: "windows", GOARCH: "amd64", Client: client,
 			Probe: factoryProbe, LauncherProbe: factoryProbe, Stdout: stdout, Stderr: stderr,
 		}
-		return delegatedManager
 	}
-	updaterToolEnsurer = func(context.Context, *UpdateManager) (string, error) { return executable, nil }
-	updaterManagementRunner = func(_ string, _ string, _ string, args []string, stdin io.Reader, _ io.Writer, _ io.Writer, interactive, _ bool) (int, error) {
-		return runManagementCommand(context.Background(), delegatedManager, args[0], args[1:], stdin, interactive)
+	updaterToolEnsurer = func(context.Context, *UpdateManager, GitHubRelease) (string, error) {
+		updaterRequested = true
+		return "", errors.New("install must not request the standalone updater")
 	}
 	t.Cleanup(func() {
 		updateManagerFactory = oldFactory
-		updaterToolEnsurer, updaterManagementRunner = oldEnsurer, oldRunner
+		updaterToolEnsurer = oldEnsurer
 	})
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	code := mainWithProbe(nil, bytes.NewBufferString("1\n1\ny\nq\n"), stdout, stderr, &fakeExecutor{}, probe, "windows")
 	if code != 0 {
 		t.Fatalf("main returned %d: %s", code, stderr)
+	}
+	if updaterRequested {
+		t.Fatal("maintenance install requested the standalone updater")
 	}
 	for _, want := range []string{"llama.cpp 安装完成，正在进入主菜单", "实际探测文件:", "llama.cpp Go 启动器"} {
 		if !strings.Contains(stdout.String(), want) {
@@ -793,7 +795,7 @@ func TestUpdaterAssetNamingAndReleaseSelection(t *testing.T) {
 	}
 }
 
-func TestEnsureUpdaterToolDownloadsAndVerifiesSeparateAsset(t *testing.T) {
+func TestEnsureUpdaterToolDownloadsAndVerifiesProvidedRelease(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -808,16 +810,13 @@ func TestEnsureUpdaterToolDownloadsAndVerifiesSeparateAsset(t *testing.T) {
 		{Name: updaterName, Size: int64(len(updaterData)), Digest: "sha256:" + hex.EncodeToString(updaterHash[:]), BrowserDownloadURL: "https://downloads.example/updater"},
 		{Name: "SHA256SUMS.txt", Size: int64(len(sumsData)), Digest: "sha256:" + hex.EncodeToString(sumsHash[:]), BrowserDownloadURL: "https://downloads.example/sums"},
 	}}
-	releaseData, err := json.Marshal(release)
-	if err != nil {
-		t.Fatal(err)
-	}
+	apiRequested := false
 	client := &GitHubClient{
 		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			body := updaterData
 			switch {
 			case request.URL.Hostname() == "api.github.com":
-				body = releaseData
+				apiRequested = true
 			case strings.Contains(request.URL.Path, "sums"):
 				body = sumsData
 			}
@@ -834,40 +833,18 @@ func TestEnsureUpdaterToolDownloadsAndVerifiesSeparateAsset(t *testing.T) {
 		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
 	}
 
-	path, err := ensureUpdaterTool(context.Background(), manager)
+	path, err := ensureUpdaterTool(context.Background(), manager, release)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if apiRequested {
+		t.Fatal("ensureUpdaterTool unexpectedly queried the GitHub release API")
 	}
 	if path != filepath.Join(root, "bin", "llama-updater.exe") {
 		t.Fatalf("updater path=%s", path)
 	}
 	if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, updaterData) {
 		t.Fatalf("installed updater content=%q err=%v", content, err)
-	}
-}
-
-func TestDelegateManagementUsesStandaloneRunner(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "llama.cpp")
-	manager := &UpdateManager{Root: root, GOOS: "windows", GOARCH: "amd64", Stdout: io.Discard, Stderr: io.Discard}
-	oldEnsurer, oldRunner := updaterToolEnsurer, updaterManagementRunner
-	t.Cleanup(func() { updaterToolEnsurer, updaterManagementRunner = oldEnsurer, oldRunner })
-	updaterToolEnsurer = func(context.Context, *UpdateManager) (string, error) {
-		return `C:\llama.cpp\bin\llama-updater.exe`, nil
-	}
-	var gotArgs []string
-	var gotInteractive, gotHandoff bool
-	updaterManagementRunner = func(_ string, _ string, _ string, args []string, _ io.Reader, _ io.Writer, _ io.Writer, interactive, handoff bool) (int, error) {
-		gotArgs = append([]string(nil), args...)
-		gotInteractive, gotHandoff = interactive, handoff
-		return 0, errUpdaterHandoff
-	}
-
-	code, err := delegateManagement(context.Background(), manager, []string{"update", "--component", "all"}, bytes.NewBuffer(nil), true, true)
-	if code != 0 || !errors.Is(err, errUpdaterHandoff) {
-		t.Fatalf("code=%d err=%v", code, err)
-	}
-	if strings.Join(gotArgs, " ") != "update --component all" || !gotInteractive || !gotHandoff {
-		t.Fatalf("args=%v interactive=%v handoff=%v", gotArgs, gotInteractive, gotHandoff)
 	}
 }
 

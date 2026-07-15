@@ -3,9 +3,9 @@ package main
 import (
 	"os"
 
-	"github.com/joker/llama-launcher/internal/launcher"
+	"github.com/joker/llama-launcher/internal/updater"
 )
 
 func main() {
-	os.Exit(launcher.UpdaterMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, launcher.OSInstallationProbe{}))
+	os.Exit(updater.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

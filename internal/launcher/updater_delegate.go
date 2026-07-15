@@ -4,14 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-
-	buildversion "github.com/joker/llama-launcher/internal/version"
 )
 
 var errUpdaterHandoff = errors.New("已将操作交给独立更新器")
@@ -54,19 +49,10 @@ func updaterReleaseAssets(release GitHubRelease, goos, goarch string) (GitHubAss
 	return updater, sums, nil
 }
 
-func ensureUpdaterTool(ctx context.Context, manager *UpdateManager) (string, error) {
+func ensureUpdaterTool(ctx context.Context, manager *UpdateManager, release GitHubRelease) (string, error) {
 	target := filepath.Join(manager.Root, "bin", updaterExecutableName(manager.GOOS))
-	if updaterToolMatches(target, buildversion.Version, manager) {
+	if updaterToolMatches(target, release.TagName, manager) {
 		return target, nil
-	}
-	tag := buildversion.Version
-	if tag == "dev" {
-		tag = ""
-		fmt.Fprintln(manager.Stderr, "警告: 当前为 dev 版本，将获取最新稳定版独立更新器。")
-	}
-	release, err := manager.Client.Release(ctx, launcherRepository, tag)
-	if err != nil {
-		return "", fmt.Errorf("无法获取独立更新器: %w", err)
 	}
 	asset, sums, err := updaterReleaseAssets(release, manager.GOOS, manager.GOARCH)
 	if err != nil {
@@ -151,40 +137,4 @@ func updaterToolMatches(path, version string, manager *UpdateManager) bool {
 	return strings.Contains(strings.ToLower(output), "version:   "+strings.ToLower(version))
 }
 
-var updaterManagementRunner = runUpdaterManagementProcess
 var updaterToolEnsurer = ensureUpdaterTool
-
-func delegateManagement(ctx context.Context, manager *UpdateManager, args []string, stdin io.Reader, interactive, handoff bool) (int, error) {
-	tool, err := updaterToolEnsurer(ctx, manager)
-	if err != nil {
-		return 1, err
-	}
-	return updaterManagementRunner(tool, manager.Root, manager.GOOS, args, stdin, manager.Stdout, manager.Stderr, interactive, handoff)
-}
-
-func runUpdaterManagementProcess(tool, root, goos string, args []string, stdin io.Reader, stdout, stderr io.Writer, interactive, handoff bool) (int, error) {
-	commandArgs := append([]string(nil), args...)
-	if goos == "windows" && handoff {
-		commandArgs = append([]string{"--wait-parent-pid", strconv.Itoa(os.Getpid())}, commandArgs...)
-	}
-	if interactive {
-		commandArgs = append([]string{"--internal-interactive"}, commandArgs...)
-	}
-	command := exec.Command(tool, commandArgs...)
-	command.Dir, command.Stdin, command.Stdout, command.Stderr = root, stdin, stdout, stderr
-	if goos == "windows" && handoff {
-		if err := startUpdaterHidden(command); err != nil {
-			return 1, err
-		}
-		return 0, errUpdaterHandoff
-	}
-	err := command.Run()
-	if err == nil {
-		return 0, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), fmt.Errorf("独立更新器退出，状态码 %d", exitErr.ExitCode())
-	}
-	return 1, err
-}

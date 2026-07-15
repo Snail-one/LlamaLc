@@ -167,7 +167,15 @@ func runManagementCommand(ctx context.Context, manager *UpdateManager, name stri
 			if assetErr != nil {
 				return 1, assetErr
 			}
-			if err := preflightDownloadSizes(manager.Root, []GitHubAsset{archive, sums}); err != nil {
+			assets := []GitHubAsset{archive, sums}
+			if manager.GOOS == "windows" {
+				updater, _, updaterErr := updaterReleaseAssets(launcherRelease, manager.GOOS, manager.GOARCH)
+				if updaterErr != nil {
+					return 1, updaterErr
+				}
+				assets = append(assets, updater)
+			}
+			if err := preflightDownloadSizes(manager.Root, assets); err != nil {
 				return 1, err
 			}
 		}

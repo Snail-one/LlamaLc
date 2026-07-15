@@ -117,7 +117,7 @@ llama.cpp/
 
 除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。普通启动不会联网，也不会自动检查更新。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。安装、检查和下载更新均由当前启动器直接完成，不会先启动或更新独立 updater。Windows 仅在新 launcher 已下载、完成双重 SHA-256 校验并通过版本探测后，才获取同一 Release 的最小 updater；它只等待当前进程退出，并把固定暂存文件原子替换到 `bin/llama-launcher.exe`，不包含联网、解压或 llama.cpp 管理功能。普通启动不会联网，也不会自动检查更新。
 
 ## 安装与手动更新
 
@@ -314,7 +314,7 @@ GET http://127.0.0.1:29856/models
 
 ## 进程与退出码
 
-启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。
+启动器通过参数数组直接创建进程，不经过 shell。子进程连接当前终端的 stdin/stdout/stderr，因此 CLI 交互、日志和 Ctrl+C 保持原生行为。以子命令方式运行时，`llama-server` 或 `llama-cli` 的退出码会由启动器原样返回。Windows 自更新时，最小 updater 只接受 `bin` 下由 launcher 创建的 `.llama-launcher-new-*.exe` 文件名，替换目标固定为同目录的 `llama-launcher.exe`，不能通过参数指定任意目标路径。
 
 ## 旧布局说明
 

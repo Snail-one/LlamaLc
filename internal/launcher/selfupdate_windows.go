@@ -3,13 +3,19 @@
 package launcher
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 )
 
-func installLauncherBinary(source, target, version string, out io.Writer) error {
+func (manager *UpdateManager) installLauncherBinary(ctx context.Context, source, target string, release GitHubRelease) error {
+	tool, err := updaterToolEnsurer(ctx, manager, release)
+	if err != nil {
+		return fmt.Errorf("无法准备独立更新器: %w", err)
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".llama-launcher-new-*.exe")
 	if err != nil {
 		return err
@@ -22,13 +28,22 @@ func installLauncherBinary(source, target, version string, out io.Writer) error 
 	if err := copyAndSyncExecutable(source, temporaryPath); err != nil {
 		return err
 	}
-	defer os.Remove(temporaryPath)
-	if err := replaceFile(temporaryPath, target); err != nil {
-		return fmt.Errorf("无法替换启动器；请确认 llama-launcher 已退出: %w", err)
-	}
-	if err := syncDirectory(filepath.Dir(target)); err != nil {
+	handoffStarted := false
+	defer func() {
+		if !handoffStarted {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	command := exec.Command(tool,
+		"apply-launcher",
+		"--source-name", filepath.Base(temporaryPath),
+		"--release-version", release.TagName,
+		"--wait-parent-pid", strconv.Itoa(os.Getpid()),
+	)
+	command.Dir, command.Stdout, command.Stderr = manager.Root, manager.Stdout, manager.Stderr
+	if err := startUpdaterHidden(command); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "启动器已更新到 %s；请重新运行命令。\n", version)
-	return nil
+	handoffStarted = true
+	return errUpdaterHandoff
 }

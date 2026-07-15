@@ -3,13 +3,13 @@
 package launcher
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 )
 
-func installLauncherBinary(source, target, version string, out io.Writer) error {
+func (manager *UpdateManager) installLauncherBinary(_ context.Context, source, target string, release GitHubRelease) error {
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".llama-launcher-new-")
 	if err != nil {
 		return err
@@ -32,6 +32,6 @@ func installLauncherBinary(source, target, version string, out io.Writer) error 
 	if err := syncDirectory(filepath.Dir(target)); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "启动器已更新到 %s；请重新运行命令。\n", version)
+	fmt.Fprintf(manager.Stdout, "启动器已更新到 %s；请重新运行命令。\n", release.TagName)
 	return nil
 }
