@@ -2,6 +2,14 @@ package release
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +30,112 @@ func TestLauncherAssetNamingAndCUDACompanion(t *testing.T) {
 	if len(backends) != 1 || len(backends[0].Assets) != 2 {
 		t.Fatalf("backends=%+v", backends)
 	}
+}
+
+func TestDownloadReportsProgressAndProtectsDisplayedURL(t *testing.T) {
+	payload := bytes.Repeat([]byte("runtime"), 1024)
+	hash := sha256.Sum256(payload)
+
+	var events []DownloadEvent
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return downloadResponse(request, payload), nil
+	})}, Progress: func(event DownloadEvent) { events = append(events, event) }}
+	destination := filepath.Join(t.TempDir(), "runtime.zip")
+	asset := Asset{Name: "runtime.zip", URL: "https://downloads.example/runtime.zip?token=secret", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	if err := client.Download(context.Background(), asset, destination); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded=%d err=%v", len(got), err)
+	}
+	if len(events) < 3 || events[0].Phase != DownloadStart || events[len(events)-1].Phase != DownloadComplete {
+		t.Fatalf("events=%+v", events)
+	}
+	if strings.Contains(events[0].URL, "secret") || events[len(events)-1].Downloaded != int64(len(payload)) || events[len(events)-1].SHA256 != hex.EncodeToString(hash[:]) {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestDownloadReportsSystemProxyFallbackToDirect(t *testing.T) {
+	payload := []byte("runtime archive")
+	hash := sha256.Sum256(payload)
+	proxyURL, _ := url.Parse("http://127.0.0.1:7890")
+	proxyCalls := 0
+	var phases []DownloadPhase
+	client := &Client{
+		HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			proxyCalls++
+			return nil, errors.New("proxy unavailable")
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return downloadResponse(request, payload), nil
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		Progress:      func(event DownloadEvent) { phases = append(phases, event.Phase) },
+	}
+	asset := Asset{Name: "runtime.zip", URL: "https://downloads.example/runtime.zip", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	if err := client.Download(context.Background(), asset, filepath.Join(t.TempDir(), "runtime.zip")); err != nil {
+		t.Fatal(err)
+	}
+	if proxyCalls != 1 || !containsPhase(phases, DownloadFallback) || phases[len(phases)-1] != DownloadComplete {
+		t.Fatalf("proxyCalls=%d phases=%v", proxyCalls, phases)
+	}
+}
+
+func TestDownloadPrefixProxyFallsBackToOriginalURL(t *testing.T) {
+	payload := []byte("launcher archive")
+	hash := sha256.Sum256(payload)
+	var requested []string
+	var phases []DownloadPhase
+	client := &Client{
+		Proxy: "https://proxy.example",
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requested = append(requested, request.URL.String())
+			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("bad gateway")), Request: request}, nil
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requested = append(requested, request.URL.String())
+			return downloadResponse(request, payload), nil
+		})},
+		Progress: func(event DownloadEvent) { phases = append(phases, event.Phase) },
+	}
+	asset := Asset{Name: "launcher.zip", URL: "https://downloads.example/launcher.zip", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	if err := client.Download(context.Background(), asset, filepath.Join(t.TempDir(), "launcher.zip")); err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != 2 || requested[0] != "https://proxy.example/https://downloads.example/launcher.zip" || requested[1] != asset.URL {
+		t.Fatalf("requested=%v", requested)
+	}
+	if !containsPhase(phases, DownloadFallback) || phases[len(phases)-1] != DownloadComplete {
+		t.Fatalf("phases=%v", phases)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func downloadResponse(request *http.Request, payload []byte) *http.Response {
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Header:        make(http.Header),
+		Body:          io.NopCloser(bytes.NewReader(payload)),
+		ContentLength: int64(len(payload)),
+		Request:       request,
+	}
+}
+
+func containsPhase(phases []DownloadPhase, wanted DownloadPhase) bool {
+	for _, phase := range phases {
+		if phase == wanted {
+			return true
+		}
+	}
+	return false
 }
 func TestExtractRejectsTraversal(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "bad.zip")

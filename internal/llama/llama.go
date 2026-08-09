@@ -30,6 +30,7 @@ type Runtime struct{ Directory, Server, CLI, Version string }
 type Options struct {
 	Model, MMProj, Preset, Host, GPULayers, FlashAttention, Pooling, APIKeyFile       string
 	Port, ContextSize, Threads, BatchSize, UBatchSize, Parallel, Normalize, ModelsMax int
+	ImageMinTokens, ImageMaxTokens                                                    int
 	NormalizeSet, UI, Autoload                                                        bool
 	Extra                                                                             []string
 }
@@ -112,6 +113,9 @@ func ProbeVersion(ctx context.Context, executable string) (string, error) {
 }
 
 func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) {
+	o.GPULayers = strings.ToLower(strings.TrimSpace(o.GPULayers))
+	o.FlashAttention = strings.ToLower(strings.TrimSpace(o.FlashAttention))
+	o.Pooling = strings.ToLower(strings.TrimSpace(o.Pooling))
 	if mode == Chat && runtime.CLI == "" {
 		return Command{}, errors.New("当前运行时没有 llama-cli")
 	}
@@ -133,10 +137,10 @@ func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) 
 	if strings.TrimSpace(o.GPULayers) == "" {
 		return Command{}, errors.New("gpu-layers 不能为空")
 	}
-	if o.GPULayers != "auto" {
+	if o.GPULayers != "auto" && o.GPULayers != "all" {
 		value, err := strconv.Atoi(o.GPULayers)
 		if err != nil || value < -1 {
-			return Command{}, errors.New("gpu-layers 必须为 auto 或不小于 -1 的整数")
+			return Command{}, errors.New("gpu-layers 必须为 auto、all 或不小于 -1 的整数")
 		}
 	}
 	if o.FlashAttention != "auto" && o.FlashAttention != "on" && o.FlashAttention != "off" {
@@ -144,6 +148,9 @@ func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) 
 	}
 	if o.ContextSize < 0 || o.BatchSize <= 0 || o.UBatchSize <= 0 || o.UBatchSize > o.BatchSize {
 		return Command{}, errors.New("运行参数 batch/context 无效")
+	}
+	if o.ImageMinTokens < 0 || o.ImageMaxTokens < 0 {
+		return Command{}, errors.New("image token 参数不能小于 0")
 	}
 	if o.Threads < -1 || o.Threads == 0 {
 		return Command{}, errors.New("threads 必须为 -1 或正整数")
@@ -156,7 +163,7 @@ func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) 
 	}
 	if mode == Embedding {
 		switch o.Pooling {
-		case "none", "mean", "cls", "last", "rank":
+		case "", "none", "mean", "cls", "last", "rank":
 		default:
 			return Command{}, errors.New("pooling 无效")
 		}
@@ -189,9 +196,18 @@ func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) 
 	}
 	if o.MMProj != "" {
 		args = append(args, "--mmproj", o.MMProj)
+		if o.ImageMinTokens > 0 {
+			args = append(args, "--image-min-tokens", strconv.Itoa(o.ImageMinTokens))
+		}
+		if o.ImageMaxTokens > 0 {
+			args = append(args, "--image-max-tokens", strconv.Itoa(o.ImageMaxTokens))
+		}
 	}
 	if mode == Embedding {
-		args = append(args, "--embedding", "--pooling", o.Pooling)
+		args = append(args, "--embedding")
+		if o.Pooling != "" {
+			args = append(args, "--pooling", o.Pooling)
+		}
 		if o.NormalizeSet {
 			args = append(args, "--embd-normalize", strconv.Itoa(o.Normalize))
 		}
@@ -213,29 +229,41 @@ func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) 
 }
 
 func ValidateExposure(host, keyFile string, extra []string) error {
-	effective := host
+	effective := EffectiveHost(host, extra)
 	effectiveKey := keyFile
 	for i := 0; i < len(extra); i++ {
-		if extra[i] == "--host" && i+1 < len(extra) {
-			effective = extra[i+1]
-			i++
-		} else if strings.HasPrefix(extra[i], "--host=") {
-			effective = strings.TrimPrefix(extra[i], "--host=")
-		} else if extra[i] == "--api-key-file" && i+1 < len(extra) {
+		if extra[i] == "--api-key-file" && i+1 < len(extra) {
 			effectiveKey = extra[i+1]
 			i++
 		} else if strings.HasPrefix(extra[i], "--api-key-file=") {
 			effectiveKey = strings.TrimPrefix(extra[i], "--api-key-file=")
 		}
 	}
-	h := strings.Trim(strings.TrimSpace(effective), "[]")
-	if strings.EqualFold(h, "localhost") || strings.HasSuffix(strings.ToLower(h), ".sock") || (net.ParseIP(h) != nil && net.ParseIP(h).IsLoopback()) {
+	if IsLocalHost(effective) {
 		return nil
 	}
 	if effectiveKey != keyFile {
 		return fmt.Errorf("拒绝在非本机地址 %q 上无托管认证启动", effective)
 	}
 	return nil
+}
+
+func EffectiveHost(initial string, extra []string) string {
+	effective := initial
+	for i := 0; i < len(extra); i++ {
+		if extra[i] == "--host" && i+1 < len(extra) {
+			effective = extra[i+1]
+			i++
+		} else if strings.HasPrefix(extra[i], "--host=") {
+			effective = strings.TrimPrefix(extra[i], "--host=")
+		}
+	}
+	return strings.TrimSpace(effective)
+}
+
+func IsLocalHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".sock") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
 
 type Executor interface {
@@ -264,11 +292,26 @@ func Format(c Command) string {
 	for i, v := range items {
 		if i > 0 && items[i-1] == "--api-key" {
 			v = "******"
+		} else if strings.HasPrefix(v, "--api-key=") {
+			v = "--api-key=******"
 		}
+		v = safeTerminalArgument(v)
 		if strings.ContainsAny(v, " \t\"") {
 			v = `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
 		}
 		items[i] = v
 	}
 	return strings.Join(items, " ")
+}
+
+func safeTerminalArgument(value string) string {
+	var output strings.Builder
+	for _, character := range value {
+		if character < ' ' || character == 0x7f {
+			fmt.Fprintf(&output, "\\u%04X", character)
+		} else {
+			output.WriteRune(character)
+		}
+	}
+	return output.String()
 }

@@ -24,8 +24,8 @@ import (
 	"github.com/Snail-one/LlamaLc/internal/managedfs"
 )
 
-const DefaultProxy = "https://ghfast.top/"
 const maxExtractedSize int64 = 32 << 30
+const maxAssetDownload int64 = 2 << 30
 
 type Asset struct {
 	Name   string `json:"name"`
@@ -37,12 +37,44 @@ type GitHubRelease struct {
 	Tag    string  `json:"tag_name"`
 	Assets []Asset `json:"assets"`
 }
+
+type DownloadPhase string
+type DownloadRoute string
+
+const (
+	DownloadStart    DownloadPhase = "start"
+	DownloadProgress DownloadPhase = "progress"
+	DownloadFallback DownloadPhase = "fallback"
+	DownloadComplete DownloadPhase = "complete"
+	RouteDirect      DownloadRoute = "direct"
+	RouteProxy       DownloadRoute = "proxy"
+	RouteURLPrefix   DownloadRoute = "url-prefix"
+)
+
+// DownloadEvent is transport-neutral progress information. Presentation is
+// deliberately owned by CLI/TUI instead of this package.
+type DownloadEvent struct {
+	Phase               DownloadPhase
+	Asset               string
+	URL                 string
+	EffectiveURL        string
+	Route               DownloadRoute
+	Proxy               string
+	Detail              string
+	SHA256              string
+	Downloaded          int64
+	Total               int64
+	SpeedBytesPerSecond float64
+	Elapsed             time.Duration
+}
+
 type Client struct {
 	HTTP          *http.Client
 	DirectHTTP    *http.Client
 	ProxyResolver func(*http.Request) (*url.URL, error)
 	Proxy         string
 	Token         string
+	Progress      func(DownloadEvent)
 }
 
 func NewClient(proxy string) *Client {
@@ -58,25 +90,45 @@ func NewClient(proxy string) *Client {
 		}
 		return nil
 	}
-	client := &http.Client{Transport: transport, Timeout: 2 * time.Minute, CheckRedirect: redirect}
+	client := &http.Client{Transport: transport, CheckRedirect: redirect}
 	directTransport := http.DefaultTransport.(*http.Transport).Clone()
 	directTransport.Proxy = nil
-	return &Client{HTTP: client, DirectHTTP: &http.Client{Transport: directTransport, Timeout: 2 * time.Minute, CheckRedirect: redirect}, ProxyResolver: resolver, Proxy: strings.TrimSpace(proxy), Token: strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN"))}
+	return &Client{HTTP: client, DirectHTTP: &http.Client{Transport: directTransport, CheckRedirect: redirect}, ProxyResolver: resolver, Proxy: strings.TrimSpace(proxy), Token: strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN"))}
 }
 func (c *Client) do(req *http.Request) (*http.Response, error) {
+	return c.doWithFallback(req, nil, nil)
+}
+
+func (c *Client) doWithFallback(req, fallbackReq *http.Request, reportFallback func(string)) (*http.Response, error) {
 	resp, err := c.HTTP.Do(req)
 	retryable := err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout))
-	if !retryable || c.DirectHTTP == nil || c.ProxyResolver == nil {
+	if !retryable || c.DirectHTTP == nil {
 		return resp, err
 	}
-	proxy, proxyErr := c.ProxyResolver(req)
-	if proxyErr == nil && proxy == nil {
+	usesProxy := fallbackReq != nil
+	if !usesProxy && c.ProxyResolver != nil {
+		proxy, proxyErr := c.ProxyResolver(req)
+		usesProxy = proxyErr != nil || proxy != nil
+	}
+	if !usesProxy {
 		return resp, err
+	}
+	reason := "代理请求失败"
+	if err != nil {
+		reason = err.Error()
+	} else if resp != nil {
+		reason = resp.Status
 	}
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
-	return c.DirectHTTP.Do(req.Clone(req.Context()))
+	if reportFallback != nil {
+		reportFallback(reason)
+	}
+	if fallbackReq == nil {
+		fallbackReq = req
+	}
+	return c.DirectHTTP.Do(fallbackReq.Clone(req.Context()))
 }
 func (c *Client) Latest(ctx context.Context, repo string) (GitHubRelease, error) {
 	endpoint := "https://api.github.com/repos/" + repo + "/releases/latest"
@@ -107,11 +159,15 @@ func (c *Client) Latest(ctx context.Context, repo string) (GitHubRelease, error)
 	return r, nil
 }
 func (c *Client) Download(ctx context.Context, a Asset, destination string) error {
+	if a.Size <= 0 || a.Size > maxAssetDownload {
+		return fmt.Errorf("资产 %s 大小无效或超过 2 GiB: %d", a.Name, a.Size)
+	}
 	expected, err := Digest(a.Digest)
 	if err != nil {
 		return err
 	}
 	downloadURL := a.URL
+	route, proxyAddress := RouteDirect, ""
 	parsedAsset, err := url.Parse(a.URL)
 	if err != nil || parsedAsset.Scheme != "https" || parsedAsset.Host == "" {
 		return errors.New("资产下载地址必须是完整 HTTPS URL")
@@ -122,12 +178,34 @@ func (c *Client) Download(ctx context.Context, a Asset, destination string) erro
 			return fmt.Errorf("代理 URL 无效: %q", c.Proxy)
 		}
 		downloadURL = strings.TrimRight(c.Proxy, "/") + "/" + a.URL
+		route, proxyAddress = RouteURLPrefix, safeDisplayURL(c.Proxy)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(req)
+	req.Header.Set("User-Agent", "LlamaLc-update-client")
+	var fallbackReq *http.Request
+	if c.Proxy != "" {
+		fallbackReq, err = http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
+		if err != nil {
+			return err
+		}
+		fallbackReq.Header.Set("User-Agent", "LlamaLc-update-client")
+	} else if c.ProxyResolver != nil {
+		proxyURL, proxyErr := c.ProxyResolver(req)
+		if proxyErr != nil {
+			route, proxyAddress = RouteProxy, proxyErr.Error()
+		} else if proxyURL != nil {
+			route, proxyAddress = RouteProxy, safeDisplayURL(proxyURL.String())
+		}
+	}
+	displayURL := safeDisplayURL(a.URL)
+	displayEffectiveURL := safeDisplayURL(downloadURL)
+	c.emit(DownloadEvent{Phase: DownloadStart, Asset: a.Name, URL: displayURL, EffectiveURL: displayEffectiveURL, Route: route, Proxy: proxyAddress, Total: a.Size})
+	resp, err := c.doWithFallback(req, fallbackReq, func(reason string) {
+		c.emit(DownloadEvent{Phase: DownloadFallback, Asset: a.Name, URL: displayURL, EffectiveURL: displayEffectiveURL, Route: route, Proxy: proxyAddress, Detail: reason, Total: a.Size})
+	})
 	if err != nil {
 		return err
 	}
@@ -135,8 +213,12 @@ func (c *Client) Download(ctx context.Context, a Asset, destination string) erro
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("下载 %s: %s", a.Name, resp.Status)
 	}
-	if resp.Request.URL.Scheme != "https" {
+	if resp.Request == nil || resp.Request.URL == nil || resp.Request.URL.Scheme != "https" {
 		return errors.New("资产响应来自非 HTTPS 地址")
+	}
+	total := a.Size
+	if total <= 0 && resp.ContentLength > 0 {
+		total = resp.ContentLength
 	}
 	if err = os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
@@ -145,8 +227,18 @@ func (c *Client) Download(ctx context.Context, a Asset, destination string) erro
 	if err != nil {
 		return err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = os.Remove(destination)
+		}
+	}()
 	h := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxDownload(a.Size)))
+	started := time.Now()
+	reader := &downloadProgressReader{reader: io.LimitReader(resp.Body, maxDownload(a.Size)), started: started, last: started, report: func(downloaded int64, speed float64) {
+		c.emit(DownloadEvent{Phase: DownloadProgress, Asset: a.Name, URL: displayURL, EffectiveURL: displayEffectiveURL, Route: route, Proxy: proxyAddress, Downloaded: downloaded, Total: total, SpeedBytesPerSecond: speed, Elapsed: time.Since(started)})
+	}}
+	n, copyErr := io.Copy(io.MultiWriter(f, h), reader)
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if copyErr != nil {
@@ -165,7 +257,55 @@ func (c *Client) Download(ctx context.Context, a Asset, destination string) erro
 	if actual != expected {
 		return fmt.Errorf("SHA-256 不匹配: 预期 %s，实际 %s", expected, actual)
 	}
+	elapsed := time.Since(started)
+	speed := float64(n)
+	if elapsed > 0 {
+		speed /= elapsed.Seconds()
+	}
+	c.emit(DownloadEvent{Phase: DownloadProgress, Asset: a.Name, URL: displayURL, EffectiveURL: displayEffectiveURL, Route: route, Proxy: proxyAddress, Downloaded: n, Total: total, SpeedBytesPerSecond: speed, Elapsed: elapsed})
+	c.emit(DownloadEvent{Phase: DownloadComplete, Asset: a.Name, URL: displayURL, EffectiveURL: displayEffectiveURL, Route: route, Proxy: proxyAddress, Downloaded: n, Total: total, SpeedBytesPerSecond: speed, Elapsed: elapsed, SHA256: actual})
+	completed = true
 	return nil
+}
+
+func (c *Client) emit(event DownloadEvent) {
+	if c.Progress != nil {
+		c.Progress(event)
+	}
+}
+
+type downloadProgressReader struct {
+	reader                io.Reader
+	started, last         time.Time
+	downloaded, lastBytes int64
+	report                func(int64, float64)
+}
+
+func (r *downloadProgressReader) Read(buffer []byte) (int, error) {
+	n, err := r.reader.Read(buffer)
+	if n > 0 {
+		r.downloaded += int64(n)
+	}
+	now := time.Now()
+	if r.report != nil && now.Sub(r.last) >= 200*time.Millisecond {
+		delta := now.Sub(r.last).Seconds()
+		speed := float64(r.downloaded-r.lastBytes) / delta
+		r.report(r.downloaded, speed)
+		r.last = now
+		r.lastBytes = r.downloaded
+	}
+	return n, err
+}
+
+func safeDisplayURL(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return value
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
 func SHA256SumsAsset(r GitHubRelease) (Asset, error) {
@@ -205,10 +345,7 @@ func ParseSHA256Sums(data []byte) (map[string]string, error) {
 	return result, nil
 }
 func maxDownload(size int64) int64 {
-	if size > 0 {
-		return size + 1
-	}
-	return 8 << 30
+	return size + 1
 }
 func Digest(value string) (string, error) {
 	value = strings.TrimSpace(strings.ToLower(value))

@@ -14,11 +14,11 @@ func TestEnsureResetAndRejectWhitespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, created, err := Ensure(l)
-	if err != nil || !created || len(key) < 32 {
+	if err != nil || !created || len(key) != 128 {
 		t.Fatalf("key=%q created=%v err=%v", key, created, err)
 	}
 	next, err := Reset(l)
-	if err != nil || next == key {
+	if err != nil || next == key || len(next) != 128 {
 		t.Fatalf("next=%q err=%v", next, err)
 	}
 	if err = os.WriteFile(l.APIKeyFile, []byte("abcdefghijklmnopqrstuvwxyzABCDEF bad\n"), 0o600); err != nil {

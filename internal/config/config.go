@@ -117,12 +117,13 @@ func Validate(c Config) error {
 	if c.Schema != Schema {
 		return fmt.Errorf("配置 schema 必须为 %d", Schema)
 	}
-	if strings.TrimSpace(c.Runtime.GPULayers) == "" {
+	gpuLayers := strings.ToLower(strings.TrimSpace(c.Runtime.GPULayers))
+	if gpuLayers == "" {
 		return errors.New("runtime.gpu_layers 不能为空")
 	}
-	if c.Runtime.GPULayers != "auto" {
-		if _, err := parseInteger(c.Runtime.GPULayers, -1); err != nil {
-			return errors.New("runtime.gpu_layers 必须为 auto 或不小于 -1 的整数")
+	if gpuLayers != "auto" && gpuLayers != "all" {
+		if _, err := parseInteger(gpuLayers, -1); err != nil {
+			return errors.New("runtime.gpu_layers 必须为 auto、all 或不小于 -1 的整数")
 		}
 	}
 	if c.Runtime.ContextSize < 0 {
@@ -148,8 +149,8 @@ func Validate(c Config) error {
 	if c.API.Parallel < -1 || c.API.Parallel == 0 {
 		return errors.New("api.parallel 必须为 -1 或正整数")
 	}
-	switch c.Embedding.Pooling {
-	case "none", "mean", "cls", "last", "rank":
+	switch strings.ToLower(strings.TrimSpace(c.Embedding.Pooling)) {
+	case "", "none", "mean", "cls", "last", "rank":
 	default:
 		return errors.New("embedding.pooling 无效")
 	}

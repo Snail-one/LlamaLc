@@ -14,7 +14,8 @@ import (
 )
 
 func Generate() (string, error) {
-	b := make([]byte, 32)
+	// 96 random bytes encode to the 128 URL-safe characters used by v0.1.5.
+	b := make([]byte, 96)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}

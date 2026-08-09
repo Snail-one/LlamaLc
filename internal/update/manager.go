@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"github.com/Snail-one/LlamaLc/internal/llama"
@@ -35,6 +38,7 @@ type Manager struct {
 	Layout       layout.Layout
 	Source       Source
 	GOOS, GOARCH string
+	Out, Err     io.Writer
 }
 type CheckResult struct {
 	Component, Installed, Latest string
@@ -50,7 +54,9 @@ func NewManager(l layout.Layout, source Source) *Manager {
 func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids []string, current string, err error) {
 	state, exists, err := LoadState(m.Layout)
 	if err != nil {
-		return "", nil, "", err
+		// A damaged state must not prevent the maintenance menu from offering a
+		// repair installation. UpdateLlama will quarantine it transactionally.
+		state, exists = State{}, false
 	}
 	rel, err := m.Source.Latest(ctx, LlamaRepository)
 	if err != nil {
@@ -110,7 +116,16 @@ func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, erro
 func (m *Manager) UpdateLlama(ctx context.Context, backend string, reinstall bool) (State, error) {
 	current, exists, err := LoadState(m.Layout)
 	if err != nil {
-		return State{}, err
+		return m.updateLlamaWithRecovery(ctx, backend, reinstall, err)
+	}
+	if !exists {
+		entries, readErr := os.ReadDir(m.Layout.LlamaRuntimeDir)
+		if readErr == nil && len(entries) > 0 {
+			return m.updateLlamaWithRecovery(ctx, backend, reinstall, errors.New("更新状态不存在，但运行时目录中仍有内容"))
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return State{}, readErr
+		}
 	}
 	r, err := m.Source.Latest(ctx, LlamaRepository)
 	if err != nil {
@@ -155,6 +170,16 @@ func (m *Manager) UpdateLlama(ctx context.Context, backend string, reinstall boo
 		}
 		return State{}, fmt.Errorf("后端 %q 不可用；可用值: %s", backend, strings.Join(available, ", "))
 	}
+	var totalDownload int64
+	for _, asset := range selected.Assets {
+		if asset.Size <= 0 || asset.Size > 2<<30 || asset.Size > (4<<30)-totalDownload {
+			return State{}, errors.New("资产组合下载量超过 4 GiB 或大小无效")
+		}
+		totalDownload += asset.Size
+	}
+	if err := ensureFreeSpace(m.Layout.RuntimeDir, totalDownload*3); err != nil {
+		return State{}, err
+	}
 	if !safeComponent.MatchString(r.Tag) || !safeComponent.MatchString(selected.ID) {
 		return State{}, errors.New("Release tag 或后端 ID 不能安全用作目录名")
 	}
@@ -176,8 +201,14 @@ func (m *Manager) UpdateLlama(ctx context.Context, backend string, reinstall boo
 		digest, _ := release.Digest(a.Digest)
 		installed = append(installed, InstalledAsset{Name: a.Name, SHA256: digest})
 		extract := filepath.Join(staging, "payload")
+		if m.Out != nil {
+			fmt.Fprintln(m.Out, "正在安全解压:", a.Name)
+		}
 		if err = release.Extract(archive, extract); err != nil {
 			return State{}, fmt.Errorf("解压 %s: %w", a.Name, err)
+		}
+		if m.Out != nil {
+			fmt.Fprintln(m.Out, "解压完成:", a.Name)
 		}
 		_ = os.Remove(archive)
 	}
@@ -236,6 +267,109 @@ func (m *Manager) UpdateLlama(ctx context.Context, backend string, reinstall boo
 	}
 	return current, nil
 }
+
+type recoveryTransaction struct {
+	directory, runtimeBackup, stateBackup string
+}
+
+type recoveryMetadata struct {
+	Schema       int    `json:"schema"`
+	CreatedAt    string `json:"created_at"`
+	OriginalPath string `json:"original_path"`
+	Reason       string `json:"reason"`
+}
+
+func (m *Manager) updateLlamaWithRecovery(ctx context.Context, backend string, reinstall bool, cause error) (State, error) {
+	if m.Err != nil {
+		fmt.Fprintln(m.Err, "警告: 未找到有效的受管运行时，将隔离当前状态后重新安装:", cause)
+	}
+	transaction, err := quarantineInvalidRuntime(m.Layout, cause)
+	if err != nil {
+		return State{}, err
+	}
+	result, updateErr := m.UpdateLlama(ctx, backend, reinstall)
+	if updateErr == nil {
+		if m.Out != nil {
+			fmt.Fprintln(m.Out, "旧状态/运行时未自动删除，已保留为恢复备份:", transaction.directory)
+		}
+		return result, nil
+	}
+	if rollbackErr := rollbackRecovery(m.Layout, transaction); rollbackErr != nil {
+		return State{}, fmt.Errorf("重新安装失败: %w；同时无法完整恢复已隔离的运行时: %v", updateErr, rollbackErr)
+	}
+	return State{}, updateErr
+}
+
+func quarantineInvalidRuntime(l layout.Layout, cause error) (recoveryTransaction, error) {
+	if err := managedfs.EnsureDir(l.Root, l.RecoveryDir, 0o700); err != nil {
+		return recoveryTransaction{}, err
+	}
+	name := "repair-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomToken()
+	directory := filepath.Join(l.RecoveryDir, name)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		return recoveryTransaction{}, err
+	}
+	transaction := recoveryTransaction{directory: directory}
+	failed := true
+	defer func() {
+		if failed {
+			_ = rollbackRecovery(l, transaction)
+		}
+	}()
+	if _, err := os.Lstat(l.UpdateStateFile); err == nil {
+		transaction.stateBackup = filepath.Join(directory, "update.json.corrupt")
+		if err := os.Rename(l.UpdateStateFile, transaction.stateBackup); err != nil {
+			return recoveryTransaction{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return recoveryTransaction{}, err
+	}
+	if entries, err := os.ReadDir(l.LlamaRuntimeDir); err == nil && len(entries) > 0 {
+		transaction.runtimeBackup = filepath.Join(directory, "llama.cpp")
+		if err := os.Rename(l.LlamaRuntimeDir, transaction.runtimeBackup); err != nil {
+			return recoveryTransaction{}, err
+		}
+		if err := managedfs.EnsureDir(l.Root, l.LlamaRuntimeDir, 0o700); err != nil {
+			return recoveryTransaction{}, err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return recoveryTransaction{}, err
+	}
+	metadata := recoveryMetadata{Schema: 1, CreatedAt: time.Now().UTC().Format(time.RFC3339), OriginalPath: l.LlamaRuntimeDir, Reason: cause.Error()}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return recoveryTransaction{}, err
+	}
+	if err := managedfs.AtomicWrite(l.Root, filepath.Join(directory, ".llamalc-recovery.json"), append(data, '\n'), 0o600); err != nil {
+		return recoveryTransaction{}, err
+	}
+	failed = false
+	return transaction, nil
+}
+
+func rollbackRecovery(l layout.Layout, transaction recoveryTransaction) error {
+	var failures []string
+	if transaction.runtimeBackup != "" {
+		if err := os.RemoveAll(l.LlamaRuntimeDir); err != nil {
+			failures = append(failures, "移除新运行时: "+err.Error())
+		} else if err := os.Rename(transaction.runtimeBackup, l.LlamaRuntimeDir); err != nil {
+			failures = append(failures, "恢复旧运行时: "+err.Error())
+		}
+	}
+	if transaction.stateBackup != "" {
+		_ = os.Remove(l.UpdateStateFile)
+		if err := os.Rename(transaction.stateBackup, l.UpdateStateFile); err != nil {
+			failures = append(failures, "恢复旧状态: "+err.Error())
+		}
+	}
+	if len(failures) == 0 && transaction.directory != "" {
+		_ = os.RemoveAll(transaction.directory)
+	}
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "；"))
+	}
+	return nil
+}
 func randomToken() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -286,6 +420,14 @@ func (m *Manager) PrepareLauncher(ctx context.Context) (tag, launcherPath, updat
 		err = e
 		return
 	}
+	if asset.Size <= 0 || sumsAsset.Size <= 0 || asset.Size > 2<<30 || sumsAsset.Size > 2<<30 {
+		err = errors.New("启动器资产大小无效或超过 2 GiB")
+		return
+	}
+	if e = ensureFreeSpace(m.Layout.RuntimeDir, (asset.Size+sumsAsset.Size)*3); e != nil {
+		err = e
+		return
+	}
 	sumsPath := filepath.Join(staging, sumsAsset.Name)
 	if e = m.Source.Download(ctx, sumsAsset, sumsPath); e != nil {
 		err = e
@@ -310,9 +452,15 @@ func (m *Manager) PrepareLauncher(ctx context.Context) (tag, launcherPath, updat
 		err = e
 		return
 	}
+	if m.Out != nil {
+		fmt.Fprintln(m.Out, "正在安全解压:", asset.Name)
+	}
 	if e = release.Extract(archive, filepath.Join(staging, "extract")); e != nil {
 		err = e
 		return
+	}
+	if m.Out != nil {
+		fmt.Fprintln(m.Out, "解压完成:", asset.Name)
 	}
 	ext := ""
 	if m.GOOS == "windows" {
@@ -420,5 +568,6 @@ func (m *Manager) StartLauncherUpdate(ctx context.Context) (string, error) {
 		_ = os.Remove(runner)
 		return "", err
 	}
+	_ = cmd.Process.Release()
 	return tag, nil
 }

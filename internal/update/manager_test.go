@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
@@ -17,6 +18,67 @@ import (
 type fakeSource struct {
 	release release.GitHubRelease
 	files   map[string][]byte
+}
+
+func TestDamagedStateIsQuarantinedAndRepairCanRollback(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "rollback"}[fail], func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "LlamaLc")
+			l, _ := layout.New(root, "linux")
+			if err := os.MkdirAll(l.LlamaRuntimeDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(l.UpdateStateFile), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(l.LlamaRuntimeDir, "old-runtime.txt")
+			if err := os.WriteFile(marker, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(l.UpdateStateFile, []byte("{damaged"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			archive := runtimeArchive(t, "b123")
+			asset := release.Asset{Name: "llama-b123-bin-ubuntu-x64.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64), Size: int64(len(archive))}
+			rel := release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}
+			files := map[string][]byte{asset.Name: archive}
+			if fail {
+				rel.Assets = nil
+			}
+			var output, errorOutput bytes.Buffer
+			manager := NewManager(l, &fakeSource{release: rel, files: files})
+			manager.GOOS, manager.GOARCH, manager.Out, manager.Err = "linux", "amd64", &output, &errorOutput
+			_, err := manager.UpdateLlama(context.Background(), "cpu", true)
+			if fail {
+				if err == nil {
+					t.Fatal("repair unexpectedly succeeded")
+				}
+				if data, readErr := os.ReadFile(l.UpdateStateFile); readErr != nil || string(data) != "{damaged" {
+					t.Fatalf("state=%q err=%v", data, readErr)
+				}
+				if data, readErr := os.ReadFile(marker); readErr != nil || string(data) != "old" {
+					t.Fatalf("marker=%q err=%v", data, readErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, readErr := os.ReadDir(l.RecoveryDir)
+			if readErr != nil || len(entries) != 1 {
+				t.Fatalf("recovery entries=%v err=%v", entries, readErr)
+			}
+			recovery := filepath.Join(l.RecoveryDir, entries[0].Name())
+			for _, path := range []string{filepath.Join(recovery, "update.json.corrupt"), filepath.Join(recovery, "llama.cpp", "old-runtime.txt"), filepath.Join(recovery, ".llamalc-recovery.json")} {
+				if _, statErr := os.Stat(path); statErr != nil {
+					t.Errorf("missing recovery file %s: %v", path, statErr)
+				}
+			}
+			if !strings.Contains(output.String(), "恢复备份") || !strings.Contains(errorOutput.String(), "隔离") {
+				t.Fatalf("out=%s err=%s", output.String(), errorOutput.String())
+			}
+		})
+	}
 }
 
 func (f *fakeSource) Latest(context.Context, string) (release.GitHubRelease, error) {
@@ -75,8 +137,9 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	asset := release.Asset{Name: "llama-b123-bin-ubuntu-x64.tar.gz", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-	source := &fakeSource{release: release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}, files: map[string][]byte{asset.Name: runtimeArchive(t, "b123")}}
+	archive := runtimeArchive(t, "b123")
+	asset := release.Asset{Name: "llama-b123-bin-ubuntu-x64.tar.gz", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Size: int64(len(archive))}
+	source := &fakeSource{release: release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}, files: map[string][]byte{asset.Name: archive}}
 	m := NewManager(l, source)
 	m.GOOS = "linux"
 	m.GOARCH = "amd64"
@@ -104,6 +167,7 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	source.release.Tag = "b124"
 	source.release.Assets[0].Name = "llama-b124-bin-ubuntu-x64.tar.gz"
 	source.files[source.release.Assets[0].Name] = runtimeArchive(t, "b124")
+	source.release.Assets[0].Size = int64(len(source.files[source.release.Assets[0].Name]))
 	state, err = m.UpdateLlama(context.Background(), "", false)
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +178,7 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	source.release.Tag = "b122"
 	source.release.Assets[0].Name = "llama-b122-bin-ubuntu-x64.tar.gz"
 	source.files[source.release.Assets[0].Name] = runtimeArchive(t, "b122")
+	source.release.Assets[0].Size = int64(len(source.files[source.release.Assets[0].Name]))
 	if _, err = m.UpdateLlama(context.Background(), "", false); err == nil {
 		t.Fatal("downgrade accepted")
 	}
@@ -128,9 +193,11 @@ func TestPrepareLauncherStrictBundleAndSums(t *testing.T) {
 	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	asset := release.Asset{Name: "llamalc-linux-amd64-v1.1.0.tar.gz", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-	sums := release.Asset{Name: "SHA256SUMS.txt", Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	source := &fakeSource{release: release.GitHubRelease{Tag: "v1.1.0", Assets: []release.Asset{asset, sums}}, files: map[string][]byte{asset.Name: launcherArchive(t, "v1.1.0", false), sums.Name: []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  " + asset.Name + "\n")}}
+	launcherData := launcherArchive(t, "v1.1.0", false)
+	sumsData := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  llamalc-linux-amd64-v1.1.0.tar.gz\n")
+	asset := release.Asset{Name: "llamalc-linux-amd64-v1.1.0.tar.gz", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Size: int64(len(launcherData))}
+	sums := release.Asset{Name: "SHA256SUMS.txt", Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Size: int64(len(sumsData))}
+	source := &fakeSource{release: release.GitHubRelease{Tag: "v1.1.0", Assets: []release.Asset{asset, sums}}, files: map[string][]byte{asset.Name: launcherData, sums.Name: sumsData}}
 	m := NewManager(l, source)
 	m.GOOS = "linux"
 	m.GOARCH = "amd64"

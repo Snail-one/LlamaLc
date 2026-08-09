@@ -2,14 +2,15 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/Snail-one/LlamaLc/internal/config"
@@ -68,6 +69,11 @@ func (a *App) Run(args []string) int {
 		if errors.Is(err, flag.ErrHelp) || errors.Is(err, ErrHandoff) {
 			return 0
 		}
+		var processExit *processExitError
+		if errors.As(err, &processExit) {
+			fmt.Fprintln(a.Err, "错误:", err)
+			return processExit.code
+		}
 		if errors.Is(err, errSyntax) {
 			code = 2
 		} else {
@@ -124,7 +130,7 @@ func (a *App) syntax(message string) int {
 	return 2
 }
 func Usage(w io.Writer) {
-	fmt.Fprint(w, `LlamaLc v1 命令行
+	fmt.Fprint(w, `LlamaLc 命令行
 
 用法:
   llamalc run api [选项] [-- llama.cpp 参数]
@@ -157,6 +163,8 @@ func (a *App) run(args []string) error {
 	set.SetOutput(a.Err)
 	model := set.String("model", "", "模型文件名或路径")
 	mmproj := set.String("mmproj", "", "多模态 projector")
+	imageMinTokens := set.Int("image-min-tokens", 0, "最小图片 token 数")
+	imageMaxTokens := set.Int("image-max-tokens", 0, "最大图片 token 数")
 	defaultPreset := a.Layout.AutoRouterPreset
 	if info, statErr := os.Lstat(a.Layout.RouterPreset); statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 		defaultPreset = a.Layout.RouterPreset
@@ -164,8 +172,12 @@ func (a *App) run(args []string) error {
 	preset := set.String("preset", defaultPreset, "Router preset")
 	host := set.String("host", a.Config.API.Host, "监听地址")
 	port := set.Int("port", a.Config.API.Port, "监听端口")
-	gpu := set.String("gpu-layers", a.Config.Runtime.GPULayers, "GPU layers")
-	ctx := set.Int("context-size", a.Config.Runtime.ContextSize, "上下文大小")
+	gpu := a.Config.Runtime.GPULayers
+	set.StringVar(&gpu, "gpu-layers", gpu, "GPU layers")
+	set.StringVar(&gpu, "n-gpu-layers", gpu, "--gpu-layers 的兼容参数名")
+	ctx := a.Config.Runtime.ContextSize
+	set.IntVar(&ctx, "context-size", ctx, "上下文大小")
+	set.IntVar(&ctx, "ctx-size", ctx, "--context-size 的兼容参数名")
 	threads := set.Int("threads", a.Config.Runtime.Threads, "线程数")
 	batchDefault := a.Config.Runtime.BatchSize
 	ubatchDefault := a.Config.Runtime.UBatchSize
@@ -175,15 +187,21 @@ func (a *App) run(args []string) error {
 	}
 	batch := set.Int("batch-size", batchDefault, "batch size")
 	ubatch := set.Int("ubatch-size", ubatchDefault, "ubatch size")
-	flash := set.String("flash-attention", a.Config.Runtime.FlashAttention, "auto|on|off")
+	flash := a.Config.Runtime.FlashAttention
+	set.StringVar(&flash, "flash-attention", flash, "auto|on|off")
+	set.StringVar(&flash, "flash-attn", flash, "--flash-attention 的兼容参数名")
 	parallel := set.Int("parallel", a.Config.API.Parallel, "并发数")
 	ui := set.Bool("ui", a.Config.API.UI, "启用 Web UI")
 	pooling := set.String("pooling", a.Config.Embedding.Pooling, "Embedding pooling")
-	normalize := set.Int("normalize", a.Config.Embedding.Normalize, "Embedding normalize")
+	normalize := a.Config.Embedding.Normalize
+	set.IntVar(&normalize, "normalize", normalize, "Embedding normalize")
+	set.IntVar(&normalize, "embd-normalize", normalize, "--normalize 的兼容参数名")
+	embeddingBatch := set.Int("embedding-batch-size", a.Config.Embedding.BatchSize, "Router Embedding batch size")
+	embeddingUBatch := set.Int("embedding-ubatch-size", a.Config.Embedding.UBatchSize, "Router Embedding ubatch size")
 	modelsMax := set.Int("models-max", a.Config.Router.ModelsMax, "Router 最大已加载模型数")
 	autoload := set.Bool("autoload", a.Config.Router.Autoload, "Router 自动加载")
 	if err := set.Parse(args[1:]); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
 	extra := set.Args()
 	s, exists, err := update.LoadState(a.Layout)
@@ -197,7 +215,7 @@ func (a *App) run(args []string) error {
 	if err != nil {
 		return err
 	}
-	o := llama.Options{Preset: *preset, Host: *host, Port: *port, GPULayers: *gpu, ContextSize: *ctx, Threads: *threads, BatchSize: *batch, UBatchSize: *ubatch, FlashAttention: *flash, Parallel: *parallel, UI: *ui, Pooling: *pooling, Normalize: *normalize, NormalizeSet: true, ModelsMax: *modelsMax, Autoload: *autoload, APIKeyFile: a.Layout.APIKeyFile, Extra: extra}
+	o := llama.Options{Preset: *preset, Host: *host, Port: *port, GPULayers: strings.ToLower(strings.TrimSpace(gpu)), ContextSize: ctx, Threads: *threads, BatchSize: *batch, UBatchSize: *ubatch, FlashAttention: strings.ToLower(strings.TrimSpace(flash)), Parallel: *parallel, UI: *ui, Pooling: strings.ToLower(strings.TrimSpace(*pooling)), Normalize: normalize, NormalizeSet: true, ModelsMax: *modelsMax, Autoload: *autoload, APIKeyFile: a.Layout.APIKeyFile, Extra: extra, ImageMinTokens: *imageMinTokens, ImageMaxTokens: *imageMaxTokens}
 	if mode != llama.Router {
 		kind := models.Generation
 		if mode == llama.Embedding {
@@ -212,15 +230,22 @@ func (a *App) run(args []string) error {
 		}
 		o.Model = f.Path
 	} else {
-		if *preset == a.Layout.AutoRouterPreset {
-			files, scanErr := models.Scan(a.Layout, models.Generation)
-			if scanErr != nil {
-				return scanErr
-			}
-			if writeErr := models.WriteRouterPreset(a.Layout, a.Layout.AutoRouterPreset, files); writeErr != nil {
-				return writeErr
-			}
-		} else {
+		files, projectors, scanErr := models.CollectRouterModels(a.Layout)
+		if scanErr != nil {
+			return scanErr
+		}
+		presetOptions := models.PresetOptions{
+			GPULayers: strings.ToLower(strings.TrimSpace(gpu)), ContextSize: ctx,
+			Pooling: strings.ToLower(strings.TrimSpace(*pooling)), BatchSize: *embeddingBatch,
+			UBatchSize: *embeddingUBatch,
+		}
+		if err := validateRouterPresetOptions(gpu, ctx, *pooling, *embeddingBatch, *embeddingUBatch); err != nil {
+			return err
+		}
+		if writeErr := models.WriteRouterPresetWithOptions(a.Layout, a.Layout.AutoRouterPreset, files, projectors, presetOptions); writeErr != nil {
+			return writeErr
+		}
+		if *preset != a.Layout.AutoRouterPreset {
 			info, statErr := os.Lstat(*preset)
 			if statErr != nil {
 				return statErr
@@ -231,6 +256,9 @@ func (a *App) run(args []string) error {
 		}
 	}
 	if *mmproj != "" {
+		if mode != llama.API {
+			return errors.New("--mmproj 仅适用于单模型 API 模式")
+		}
 		f, err := models.Resolve(a.Layout, models.MMProj, *mmproj)
 		if err != nil {
 			return err
@@ -241,18 +269,49 @@ func (a *App) run(args []string) error {
 		if err := llama.ValidateExposure(*host, a.Layout.APIKeyFile, append([]string{"--api-key-file", a.Layout.APIKeyFile}, extra...)); err != nil {
 			return err
 		}
+		effectiveHost := llama.EffectiveHost(*host, extra)
+		if !llama.IsLocalHost(effectiveHost) {
+			label := "服务"
+			if mode == llama.Router {
+				label = "Router"
+			}
+			fmt.Fprintf(a.Err, "安全警告: %s 将监听非本机地址 %s，请确认防火墙和 API key 配置。\n", label, effectiveHost)
+			fmt.Fprintln(a.Err, "安全提示: llama-server 的 /models、/v1/models、健康检查和 UI 静态资源不受 API key 保护。")
+		}
 	}
 	command, err := llama.Build(mode, rt, a.Layout.Root, o)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(a.Out, "执行:", llama.Format(command))
+	if mode == llama.Router {
+		if *preset == a.Layout.RouterPreset {
+			fmt.Fprintln(a.Out, "检测到手动配置，运行时优先使用且不会覆盖:", *preset)
+		} else {
+			fmt.Fprintln(a.Out, "已生成自动 Router 配置:", a.Layout.AutoRouterPreset)
+		}
+		files, _, _ := models.CollectRouterModels(a.Layout)
+		fmt.Fprintf(a.Out, "Router 共发现 %d 个模型。\n", len(files))
+	}
+	fmt.Fprintln(a.Out, "最终命令:")
+	fmt.Fprintln(a.Out, " ", llama.Format(command))
+	if mode != llama.Chat {
+		path := ""
+		switch mode {
+		case llama.Embedding:
+			path = "/v1/embeddings"
+		case llama.Rerank:
+			path = "/v1/rerank"
+		case llama.Router:
+			path = "/models"
+		}
+		fmt.Fprintln(a.Out, "访问地址:", serviceURL(llama.EffectiveHost(*host, extra), *port, path))
+	}
 	code, err := a.Executor.Execute(command, a.In, a.Out, a.Err)
 	if err != nil {
 		return err
 	}
 	if code != 0 {
-		return fmt.Errorf("llama.cpp 退出码 %d", code)
+		return &processExitError{code: code}
 	}
 	return nil
 }
@@ -264,12 +323,41 @@ func (a *App) goos() string {
 }
 
 func (a *App) config(args []string) error {
-	if len(args) == 2 && args[0] == "router" && args[1] == "generate" {
-		files, err := models.Scan(a.Layout, models.Generation)
+	if len(args) >= 2 && args[0] == "router" && args[1] == "generate" {
+		set := flag.NewFlagSet("config router generate", flag.ContinueOnError)
+		set.SetOutput(a.Err)
+		force := set.Bool("force", false, "覆盖已有手动 preset")
+		gpu := set.String("gpu-layers", a.Config.Runtime.GPULayers, "每个模型的 GPU layers")
+		contextSize := set.Int("context-size", a.Config.Runtime.ContextSize, "每个模型的上下文大小")
+		pooling := set.String("pooling", a.Config.Embedding.Pooling, "Embedding pooling")
+		batch := set.Int("embedding-batch-size", a.Config.Embedding.BatchSize, "Embedding batch size")
+		ubatch := set.Int("embedding-ubatch-size", a.Config.Embedding.UBatchSize, "Embedding ubatch size")
+		mmprojAuto := set.Bool("mmproj-auto", true, "按文件名前缀自动匹配 mmproj")
+		if err := set.Parse(args[2:]); err != nil {
+			return fmt.Errorf("%w: %v", errSyntax, err)
+		}
+		if set.NArg() != 0 {
+			return fmt.Errorf("%w: config router generate 参数无效", errSyntax)
+		}
+		if err := validateRouterPresetOptions(*gpu, *contextSize, *pooling, *batch, *ubatch); err != nil {
+			return err
+		}
+		if info, err := os.Lstat(a.Layout.RouterPreset); err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("Router preset 必须是普通文件且不能是符号链接")
+			}
+			if !*force {
+				return errors.New("手动 Router preset 已存在；确认覆盖后使用 --force")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		files, projectors, err := models.CollectRouterModels(a.Layout)
 		if err != nil {
 			return err
 		}
-		if err = models.WriteRouterPreset(a.Layout, a.Layout.RouterPreset, files); err != nil {
+		options := models.PresetOptions{GPULayers: *gpu, ContextSize: *contextSize, Pooling: *pooling, BatchSize: *batch, UBatchSize: *ubatch, DisableMMProjAuto: !*mmprojAuto, Manual: true}
+		if err = models.WriteRouterPresetWithOptions(a.Layout, a.Layout.RouterPreset, files, projectors, options); err != nil {
 			return err
 		}
 		fmt.Fprintln(a.Out, "已生成 Router preset:", a.Layout.RouterPreset)
@@ -282,18 +370,52 @@ func (a *App) config(args []string) error {
 			if err != nil {
 				return err
 			}
+			fmt.Fprintln(a.Out, "\nAPI key（请勿共享）")
+			fmt.Fprintln(a.Out, "------------------------------------------------------------")
 			fmt.Fprintln(a.Out, key)
+			fmt.Fprintln(a.Out, "\nAPI key 文件:", a.Layout.APIKeyFile)
 			return nil
 		case "reset":
 			key, err := secrets.Reset(a.Layout)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(a.Out, "API key 已重置:", key)
+			fmt.Fprintf(a.Out, "已重置 %d 位 API key 并保存到: %s\n", len(key), a.Layout.APIKeyFile)
+			fmt.Fprintln(a.Out, "API key 文件:", a.Layout.APIKeyFile)
 			return nil
 		}
 	}
 	return fmt.Errorf("%w: config 仅支持 router generate、key show、key reset", errSyntax)
+}
+
+func serviceURL(host string, port int, path string) string {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.HasSuffix(strings.ToLower(host), ".sock") {
+		return host + path
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + path
+}
+
+func validateRouterPresetOptions(gpu string, contextSize int, pooling string, batch, ubatch int) error {
+	gpu = strings.ToLower(strings.TrimSpace(gpu))
+	if gpu != "auto" && gpu != "all" {
+		value, err := strconv.Atoi(gpu)
+		if err != nil || value < -1 {
+			return errors.New("gpu-layers 必须为 auto、all 或不小于 -1 的整数")
+		}
+	}
+	if contextSize < 0 {
+		return errors.New("context-size 不能小于 0")
+	}
+	switch strings.ToLower(strings.TrimSpace(pooling)) {
+	case "", "none", "mean", "cls", "last", "rank":
+	default:
+		return errors.New("pooling 无效")
+	}
+	if batch <= 0 || ubatch <= 0 || ubatch > batch {
+		return errors.New("embedding batch-size/ubatch-size 无效")
+	}
+	return nil
 }
 
 func (a *App) update(args []string) error {
@@ -368,7 +490,7 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 	backend := set.String("backend", "", "运行时后端")
 	reinstall := set.Bool("reinstall", false, "重装同版本")
 	if err := set.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
 	if set.NArg() != 0 {
 		return fmt.Errorf("%w: update llama 参数无效", errSyntax)
@@ -384,6 +506,10 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 	fmt.Fprintf(a.Out, "llama.cpp %s (%s) 安装/更新成功。\n", s.LlamaTag, s.Backend)
 	return nil
 }
+
+type processExitError struct{ code int }
+
+func (e *processExitError) Error() string { return fmt.Sprintf("llama.cpp 退出码 %d", e.code) }
 func empty(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback
@@ -395,30 +521,5 @@ func (a *App) maintenance(args []string) error {
 	if len(args) != 1 || args[0] != "cleanup" {
 		return fmt.Errorf("%w: maintenance 仅支持 cleanup", errSyntax)
 	}
-	items, err := update.CleanupCandidates(a.Layout)
-	if err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		fmt.Fprintln(a.Out, "没有可清理项目。")
-		return nil
-	}
-	reader := bufio.NewReader(a.In)
-	for _, item := range items {
-		fmt.Fprintf(a.Out, "%s\n  类型: %s\n  说明: %s\n逐项删除此项目？[y/N] ", item.Path, item.Kind, item.Reason)
-		answer, e := reader.ReadString('\n')
-		if e != nil && !errors.Is(e, io.EOF) {
-			return e
-		}
-		if strings.EqualFold(strings.TrimSpace(answer), "y") {
-			if err = update.DeleteCandidate(a.Layout, item); err != nil {
-				fmt.Fprintln(a.Err, "清理失败:", err)
-			} else {
-				fmt.Fprintln(a.Out, "已清理:", item.Path)
-			}
-		} else {
-			fmt.Fprintln(a.Out, "已保留:", item.Path)
-		}
-	}
-	return nil
+	return a.runCleanupMenu()
 }
