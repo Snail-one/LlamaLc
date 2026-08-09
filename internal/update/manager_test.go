@@ -80,6 +80,10 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	m := NewManager(l, source)
 	m.GOOS = "linux"
 	m.GOARCH = "amd64"
+	tag, ids, current, err := m.AvailableLlamaBackends(context.Background())
+	if err != nil || tag != "b123" || len(ids) != 1 || ids[0] != "cpu" || current != "" {
+		t.Fatalf("catalog: tag=%q ids=%v current=%q err=%v", tag, ids, current, err)
+	}
 	if _, err := m.UpdateLlama(context.Background(), "", false); err == nil {
 		t.Fatal("first install accepted empty backend")
 	}
@@ -89,6 +93,10 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	}
 	if filepath.Base(RuntimePath(l, state)) != "b123" {
 		t.Fatalf("runtime=%s", RuntimePath(l, state))
+	}
+	_, _, current, err = m.AvailableLlamaBackends(context.Background())
+	if err != nil || current != "cpu" {
+		t.Fatalf("current=%q err=%v", current, err)
 	}
 	if _, err = m.UpdateLlama(context.Background(), "", false); err == nil {
 		t.Fatal("same version updated without reinstall")

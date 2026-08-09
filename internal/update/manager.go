@@ -44,6 +44,34 @@ type CheckResult struct {
 func NewManager(l layout.Layout, source Source) *Manager {
 	return &Manager{Layout: l, Source: source, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}
 }
+
+// AvailableLlamaBackends returns the backend IDs published for the current
+// platform together with the backend recorded by an existing installation.
+func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids []string, current string, err error) {
+	state, exists, err := LoadState(m.Layout)
+	if err != nil {
+		return "", nil, "", err
+	}
+	rel, err := m.Source.Latest(ctx, LlamaRepository)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if _, err = CompareLlamaTag(rel.Tag, rel.Tag); err != nil {
+		return "", nil, "", err
+	}
+	options, err := release.LlamaAssets(rel, m.GOOS, m.GOARCH)
+	if err != nil {
+		return "", nil, "", err
+	}
+	ids = make([]string, len(options))
+	for i, option := range options {
+		ids[i] = option.ID
+	}
+	if exists {
+		current = state.Backend
+	}
+	return rel.Tag, ids, current, nil
+}
 func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, error) {
 	var out []CheckResult
 	s, _, err := LoadState(m.Layout)

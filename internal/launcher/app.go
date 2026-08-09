@@ -102,7 +102,8 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	if notice != buildversion.Version {
 		notice = ""
 	}
-	menu := &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: app.Run, Ready: signalUpdateReady}
+	menu := &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: app.Run, Ready: signalUpdateReady,
+		BackendOptions: func() (string, []string, string, error) { return manager.AvailableLlamaBackends(context.Background()) }}
 	return menu.RunMenu()
 }
 

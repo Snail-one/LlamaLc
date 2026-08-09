@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -15,6 +16,7 @@ type App struct {
 	Root, LauncherVersion, LlamaVersion, UpdateNotice string
 	Run                                               func([]string) int
 	Ready                                             func() error
+	BackendOptions                                    func() (tag string, ids []string, current string, err error)
 }
 type category struct {
 	title, summary string
@@ -112,13 +114,15 @@ func (a *App) submenu(c category) (exit bool) {
 			command = append(command, "--model", value)
 		}
 		if item.promptBackend {
-			value, e := a.read("后端 ID（首次安装必填，回车沿用当前后端）: ")
+			value, back, e := a.selectBackend()
 			if e != nil {
-				return errors.Is(e, io.EOF)
+				fmt.Fprintln(a.Err, "错误: 无法获取可用后端:", e)
+				continue
 			}
-			if value != "" {
-				command = append(command, "--backend", value)
+			if back {
+				continue
 			}
+			command = append(command, "--backend", value)
 		}
 		code := a.Run(command)
 		if code == 0 {
@@ -129,6 +133,69 @@ func (a *App) submenu(c category) (exit bool) {
 		if item.handoff && code == 0 {
 			return true
 		}
+	}
+}
+
+func (a *App) selectBackend() (string, bool, error) {
+	if a.BackendOptions == nil {
+		return "", false, errors.New("后端目录服务不可用")
+	}
+	tag, ids, current, err := a.BackendOptions()
+	if err != nil {
+		return "", false, err
+	}
+	if len(ids) == 0 {
+		return "", false, errors.New("当前平台没有可用后端")
+	}
+	fmt.Fprintf(a.Out, "\nllama.cpp Release: %s\n可用后端:\n", tag)
+	currentAvailable := false
+	for i, id := range ids {
+		marker := ""
+		if current != "" && strings.EqualFold(id, current) {
+			marker = "（当前）"
+			currentAvailable = true
+		}
+		fmt.Fprintf(a.Out, "  [%d] %s%s\n", i+1, id, marker)
+	}
+	if current != "" && !currentAvailable {
+		fmt.Fprintf(a.Out, "  当前后端 %s 已不在此 Release 的可用列表中，必须重新选择。\n", current)
+	}
+	for {
+		prompt := "请选择后端编号或完整 ID（0/q 返回）: "
+		if currentAvailable {
+			prompt = fmt.Sprintf("请选择后端编号或完整 ID（回车沿用 %s，0/q 返回）: ", current)
+		}
+		value, readErr := a.read(prompt)
+		if readErr != nil {
+			return "", false, readErr
+		}
+		if value == "0" || strings.EqualFold(value, "q") {
+			return "", true, nil
+		}
+		if value == "" {
+			if currentAvailable {
+				for _, id := range ids {
+					if strings.EqualFold(id, current) {
+						return id, false, nil
+					}
+				}
+			}
+			fmt.Fprintln(a.Err, "错误: 首次安装必须选择一个后端。")
+			continue
+		}
+		if index, parseErr := strconv.Atoi(value); parseErr == nil {
+			if index >= 1 && index <= len(ids) {
+				return ids[index-1], false, nil
+			}
+			fmt.Fprintf(a.Err, "错误: 后端编号必须在 1 到 %d 之间。\n", len(ids))
+			continue
+		}
+		for _, id := range ids {
+			if strings.EqualFold(value, id) {
+				return id, false, nil
+			}
+		}
+		fmt.Fprintf(a.Err, "错误: 后端 %q 不在当前可用列表中。\n", value)
 	}
 }
 func (a *App) read(prompt string) (string, error) {
