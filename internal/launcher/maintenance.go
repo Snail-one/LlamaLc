@@ -62,10 +62,6 @@ func runMaintenanceMenu(manager *UpdateManager, stdin io.Reader) maintenanceMenu
 			fmt.Fprintln(manager.Stdout, "llama.cpp 安装完成，正在进入主菜单……")
 			return maintenanceMenuResult{installed: true, input: reader}
 		case "2":
-			if confirmErr := requireConfirmation(reader, manager.Stdout, false, true, "更新启动器"); confirmErr != nil {
-				fmt.Fprintln(manager.Stderr, "错误:", confirmErr)
-				continue
-			}
 			code, commandErr := runManagementCommand(context.Background(), manager, "update", []string{"--component", "launcher", "--yes"}, reader, false)
 			if errors.Is(commandErr, errUpdaterHandoff) {
 				return maintenanceMenuResult{code: code, input: reader}

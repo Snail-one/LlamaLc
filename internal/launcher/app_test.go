@@ -79,7 +79,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	app := &Application{
 		Root:     filepath.Join(t.TempDir(), "llama.cpp"),
 		Config:   DefaultConfig(),
-		Stdin:    menuInput("3", "2", "n", "", "q"),
+		Stdin:    menuInput("3", "0", "q"),
 		Stdout:   stdout,
 		Stderr:   stderr,
 		Executor: &fakeExecutor{},
@@ -92,14 +92,13 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 		"运行状态", "功能目录", "[1] 启动", "[2] 配置", "升级维护",
 		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复",
 		"子菜单输入 0 返回主菜单",
-		"将联网检查并更新启动器，是否继续",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
 	}
-	if strings.Contains(stdout.String(), "检查并更新启动器与 llama.cpp") {
-		t.Fatalf("combined update option still present:\n%s", stdout)
+	if strings.Contains(stdout.String(), "是否继续") {
+		t.Fatalf("upgrade confirmation is still present:\n%s", stdout)
 	}
 }
 

@@ -338,9 +338,9 @@ func (m *menu) runChoice(choice int) error {
 		}
 		return m.confirmAndRun("chat", append(args, runtimeArgs...))
 	case 7:
-		return m.updateComponent(componentLlama, "llama.cpp")
+		return m.updateComponent(componentLlama)
 	case 8:
-		return m.updateComponent(componentLauncher, "启动器")
+		return m.updateComponent(componentLauncher)
 	case 9:
 		return m.resetAPIKey()
 	case 10:
@@ -587,19 +587,11 @@ func (m *menu) resetAPIKey() error {
 	return m.pause()
 }
 
-func (m *menu) updateComponent(component componentSelection, label string) error {
+func (m *menu) updateComponent(component componentSelection) error {
 	if m.app.Updater == nil {
 		return errors.New("更新管理器未初始化")
 	}
-	confirmed, err := m.readYesNo("将联网检查并更新"+label+"，是否继续", false)
-	if err != nil {
-		return err
-	}
-	if !confirmed {
-		fmt.Fprintln(m.app.Stdout, "已取消。")
-		return m.pause()
-	}
-	_, err = runManagementCommand(context.Background(), m.app.Updater, "update", []string{"--component", string(component), "--yes"}, m.reader, true)
+	_, err := runManagementCommand(context.Background(), m.app.Updater, "update", []string{"--component", string(component), "--yes"}, m.reader, true)
 	if err != nil {
 		return err
 	}
