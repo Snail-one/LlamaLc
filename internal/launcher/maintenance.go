@@ -21,11 +21,22 @@ func RunMaintenanceMenu(manager *UpdateManager, stdin io.Reader) int {
 
 func runMaintenanceMenu(manager *UpdateManager, stdin io.Reader) maintenanceMenuResult {
 	reader := bufio.NewReader(stdin)
+	updateNotice := consumeUpdateNotice()
+	readyReported := false
 	for {
 		fmt.Fprintf(manager.Stdout, `
 ============================================================
  llama.cpp 维护模式
 ============================================================
+`)
+		if updateNotice != "" {
+			fmt.Fprintf(manager.Stdout, `
+更新结果
+  启动器: %s
+  状态: 更新成功，已自动重新启动
+`, safeTerminalText(updateNotice))
+		}
+		fmt.Fprintf(manager.Stdout, `
 
 运行状态
   llama.cpp: 未安装或运行时无效
@@ -38,6 +49,12 @@ func runMaintenanceMenu(manager *UpdateManager, stdin io.Reader) maintenanceMenu
 
 ------------------------------------------------------------
 `, manager.Root)
+		if !readyReported {
+			if err := reportUpdateReady(); err != nil {
+				fmt.Fprintln(manager.Stderr, "警告: 无法向更新器报告维护菜单就绪:", safeTerminalText(err.Error()))
+			}
+			readyReported = true
+		}
 		fmt.Fprint(manager.Stdout, "请选择操作: ")
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {

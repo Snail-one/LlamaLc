@@ -21,6 +21,8 @@ const (
 
 var launchUpdatedLauncher = startUpdatedLauncher
 
+var updateReplaceFile = replaceFile
+
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version" || args[0] == "version") {
 		fmt.Fprintln(stdout, buildversion.String())
@@ -71,14 +73,21 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := waitForParent(*parentPID); err != nil {
-		fmt.Fprintln(stderr, "错误: 等待启动器退出失败:", err)
-		return 1
+		return handoffFailure(stdin, stderr, "等待启动器退出失败", err)
 	}
 	if err := applyUpdate(root, runtime.GOOS, *launcherSourceName, *updaterSourceName); err != nil {
-		fmt.Fprintln(stderr, "错误: 无法应用更新:", err)
-		return 1
+		return handoffFailure(stdin, stderr, "无法应用更新", err)
 	}
 	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdin, stdout, stderr)
+}
+
+func handoffFailure(stdin io.Reader, stderr io.Writer, label string, err error) int {
+	fmt.Fprintf(stderr, "错误: %s: %v\n", label, err)
+	if runtime.GOOS == "windows" && stdin != nil {
+		fmt.Fprint(stderr, "\n按 Enter 关闭...")
+		_, _ = bufio.NewReader(stdin).ReadString('\n')
+	}
+	return 1
 }
 
 func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -195,11 +204,100 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 			return fmt.Errorf("%s不是普通文件: %s", item.label, item.path)
 		}
 	}
-	if err := replaceFile(updaterSource, updaterTarget); err != nil {
+	return replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget)
+}
+
+func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget string) error {
+	updaterBackup, err := copyUpdateBackup(updaterTarget)
+	if err != nil {
+		return fmt.Errorf("备份当前更新器: %w", err)
+	}
+	removeUpdaterBackup := true
+	defer func() {
+		if removeUpdaterBackup {
+			_ = os.Remove(updaterBackup)
+		}
+	}()
+
+	launcherBackup, err := copyUpdateBackup(launcherTarget)
+	if err != nil {
+		return fmt.Errorf("备份当前启动器: %w", err)
+	}
+	removeLauncherBackup := true
+	defer func() {
+		if removeLauncherBackup {
+			_ = os.Remove(launcherBackup)
+		}
+	}()
+
+	if err := updateReplaceFile(updaterSource, updaterTarget); err != nil {
 		return fmt.Errorf("替换更新器: %w", err)
 	}
-	if err := replaceFile(launcherSource, launcherTarget); err != nil {
-		return fmt.Errorf("替换启动器: %w", err)
+	if err := updateReplaceFile(launcherSource, launcherTarget); err != nil {
+		rollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
+		if rollbackErr != nil {
+			removeUpdaterBackup = false
+			return fmt.Errorf("替换启动器: %w；同时无法恢复原更新器，备份保留在 %s: %v", err, updaterBackup, rollbackErr)
+		}
+		return fmt.Errorf("替换启动器: %w；已恢复原更新器", err)
 	}
-	return syncDirectory(bin)
+	if err := syncDirectory(bin); err != nil {
+		launcherRollbackErr := updateReplaceFile(launcherBackup, launcherTarget)
+		if launcherRollbackErr != nil {
+			removeLauncherBackup = false
+		}
+		updaterRollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
+		if updaterRollbackErr != nil {
+			removeUpdaterBackup = false
+		}
+		if launcherRollbackErr != nil || updaterRollbackErr != nil {
+			return fmt.Errorf("同步更新目录失败: %w；回滚也未完整成功（launcher: %v，updater: %v）", err, launcherRollbackErr, updaterRollbackErr)
+		}
+		return fmt.Errorf("同步更新目录失败: %w；已恢复原启动器和更新器", err)
+	}
+	return nil
+}
+
+func copyUpdateBackup(source string) (string, error) {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("不是普通文件: %s", source)
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	defer input.Close()
+
+	extension := filepath.Ext(source)
+	base := strings.TrimSuffix(filepath.Base(source), extension)
+	backup, err := os.CreateTemp(filepath.Dir(source), "."+base+"-rollback-*"+extension)
+	if err != nil {
+		return "", err
+	}
+	backupPath := backup.Name()
+	completed := false
+	defer func() {
+		if !completed {
+			_ = backup.Close()
+			_ = os.Remove(backupPath)
+		}
+	}()
+	if _, err := io.Copy(backup, input); err != nil {
+		return "", err
+	}
+	if err := backup.Sync(); err != nil {
+		return "", err
+	}
+	if err := backup.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(backupPath, info.Mode().Perm()); err != nil {
+		return "", err
+	}
+	completed = true
+	return backupPath, nil
 }

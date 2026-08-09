@@ -89,6 +89,14 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 		for _, entry := range entries {
 			name := entry.Name()
 			path := filepath.Join(bin, name)
+			if isUpdateRollbackBackup(name) {
+				if entry.Type().IsRegular() {
+					appendCandidate(path, "启动器更新恢复备份", "双文件更新回滚未完成时保留的原程序，需要确认当前 launcher 和 updater 后再处理", false)
+				} else {
+					appendCandidate(path, "异常启动器恢复备份", "名称类似更新恢复备份，但不是普通文件", false)
+				}
+				continue
+			}
 			runningUpdaterTemp := isRunningUpdaterTemp(name)
 			executableTemp := runningUpdaterTemp || numericTempSuffix(name, ".llama-launcher-new-", "") ||
 				numericTempSuffix(name, ".llama-launcher-new-", ".exe") ||

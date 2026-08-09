@@ -17,6 +17,8 @@ var errMenuBack = errors.New("返回主菜单")
 
 const menuRule = "------------------------------------------------------------"
 
+var reportUpdateReady = signalUpdateReady
+
 type menu struct {
 	app    *Application
 	reader *bufio.Reader
@@ -85,12 +87,19 @@ func (app *Application) RunMenu() int {
 	// remain visible to llama-cli/llama-server.
 	app.Stdin = m.reader
 	clearBeforeMenu := false
+	readyReported := false
 	for {
 		if clearBeforeMenu {
 			clearTerminal(app.Stdout)
 		}
 		clearBeforeMenu = false
 		app.printMainMenu()
+		if !readyReported {
+			if err := reportUpdateReady(); err != nil {
+				fmt.Fprintln(app.Stderr, "警告: 无法向更新器报告主菜单就绪:", safeTerminalText(err.Error()))
+			}
+			readyReported = true
+		}
 		choice, err := m.readMainChoice()
 		if errors.Is(err, io.EOF) {
 			return 0

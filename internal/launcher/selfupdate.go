@@ -18,6 +18,8 @@ const (
 	updaterBaseName          = "llamaup"
 	runningUpdaterTempPrefix = ".llamaup-run-"
 	stagedUpdaterTempPrefix  = ".llamaup-new-"
+	rollbackUpdaterPrefix    = ".llamaup-rollback-"
+	rollbackLauncherPrefix   = ".llama-launcher-rollback-"
 )
 
 func updaterExecutableName(base, goos string) string {
@@ -35,6 +37,13 @@ func isRunningUpdaterTemp(name string) bool {
 func isStagedUpdaterTemp(name string) bool {
 	return numericTempSuffix(name, stagedUpdaterTempPrefix, "") ||
 		numericTempSuffix(name, stagedUpdaterTempPrefix, ".exe")
+}
+
+func isUpdateRollbackBackup(name string) bool {
+	return numericTempSuffix(name, rollbackUpdaterPrefix, "") ||
+		numericTempSuffix(name, rollbackUpdaterPrefix, ".exe") ||
+		numericTempSuffix(name, rollbackLauncherPrefix, "") ||
+		numericTempSuffix(name, rollbackLauncherPrefix, ".exe")
 }
 
 func launcherAssetName(tag, goos, goarch string) string {

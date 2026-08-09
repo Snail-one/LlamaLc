@@ -58,6 +58,8 @@ func TestScanCleanupCandidatesClassifiesOwnedAndReviewItems(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	rollbackBackup := filepath.Join(bin, ".llamaup-rollback-12345.exe")
+	touchFile(t, rollbackBackup)
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +95,9 @@ func TestScanCleanupCandidatesClassifiesOwnedAndReviewItems(t *testing.T) {
 	}
 	if candidate, ok := byPath[recovery]; !ok || candidate.Automatic || candidate.Kind != "恢复备份" {
 		t.Fatalf("recovery classification=%#v exists=%v", candidate, ok)
+	}
+	if candidate, ok := byPath[rollbackBackup]; !ok || candidate.Automatic || candidate.Kind != "启动器更新恢复备份" {
+		t.Fatalf("rollback backup classification=%#v exists=%v", candidate, ok)
 	}
 }
 

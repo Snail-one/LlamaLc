@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,57 @@ func TestApplyUpdateUsesFixedTargets(t *testing.T) {
 		if err != nil || string(content) != want {
 			t.Fatalf("target %s=%q err=%v", path, content, err)
 		}
+	}
+}
+
+func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcherTarget := filepath.Join(bin, "llama-launcher")
+	updaterTarget := filepath.Join(bin, "llamaup")
+	launcherSourceName := ".llama-launcher-new-test"
+	updaterSourceName := ".llamaup-new-test"
+	launcherSource := filepath.Join(bin, launcherSourceName)
+	updaterSource := filepath.Join(bin, updaterSourceName)
+	for path, content := range map[string]string{
+		launcherTarget: "old launcher",
+		updaterTarget:  "old updater",
+		launcherSource: "new launcher",
+		updaterSource:  "new updater",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	original := updateReplaceFile
+	t.Cleanup(func() { updateReplaceFile = original })
+	updateReplaceFile = func(source, destination string) error {
+		if source == launcherSource {
+			return errors.New("simulated launcher replacement failure")
+		}
+		return os.Rename(source, destination)
+	}
+
+	err := applyUpdate(root, "linux", launcherSourceName, updaterSourceName)
+	if err == nil || !strings.Contains(err.Error(), "已恢复原更新器") {
+		t.Fatalf("apply update error=%v", err)
+	}
+	for path, want := range map[string]string{launcherTarget: "old launcher", updaterTarget: "old updater"} {
+		content, readErr := os.ReadFile(path)
+		if readErr != nil || string(content) != want {
+			t.Fatalf("target %s=%q err=%v, want %q", path, content, readErr, want)
+		}
+	}
+	backups, err := filepath.Glob(filepath.Join(bin, ".*-rollback-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("successful rollback left backups: %v", backups)
 	}
 }
 

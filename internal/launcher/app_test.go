@@ -180,6 +180,51 @@ func TestLauncherUpdateExitWaitsForAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestMainMenuReportsUpdateReadyAfterRendering(t *testing.T) {
+	original := reportUpdateReady
+	t.Cleanup(func() { reportUpdateReady = original })
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	calls := 0
+	reportUpdateReady = func() error {
+		calls++
+		if !strings.Contains(stdout.String(), "功能目录") || !strings.Contains(stdout.String(), "[q] 退出") {
+			t.Fatalf("ready reported before main menu was rendered: %s", stdout)
+		}
+		return nil
+	}
+	app := &Application{
+		Root: t.TempDir(), Config: DefaultConfig(),
+		Stdin: menuInput("q"), Stdout: stdout, Stderr: stderr,
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, stderr)
+	}
+	if calls != 1 {
+		t.Fatalf("ready report calls=%d, want 1", calls)
+	}
+}
+
+func TestMaintenanceMenuReportsUpdateReadyAfterRendering(t *testing.T) {
+	original := reportUpdateReady
+	t.Cleanup(func() { reportUpdateReady = original })
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	calls := 0
+	reportUpdateReady = func() error {
+		calls++
+		if !strings.Contains(stdout.String(), "可用操作") || !strings.Contains(stdout.String(), "[2] 更新启动器") {
+			t.Fatalf("ready reported before maintenance menu was rendered: %s", stdout)
+		}
+		return nil
+	}
+	manager := &UpdateManager{Root: t.TempDir(), Stdout: stdout, Stderr: stderr}
+	if code := RunMaintenanceMenu(manager, menuInput("q")); code != 0 {
+		t.Fatalf("maintenance menu returned %d: %s", code, stderr)
+	}
+	if calls != 1 {
+		t.Fatalf("ready report calls=%d, want 1", calls)
+	}
+}
+
 func TestMainMenuShowsAutomaticRestartResult(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
