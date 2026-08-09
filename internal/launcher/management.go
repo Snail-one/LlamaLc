@@ -213,6 +213,9 @@ func runManagementCommand(ctx context.Context, manager *UpdateManager, name stri
 		}
 		if component == componentAll || component == componentLauncher {
 			if err := manager.UpdateLauncher(ctx, launcherRelease, *force, *allowDowngrade); err != nil {
+				if errors.Is(err, errUpdaterHandoff) {
+					return 0, err
+				}
 				return 1, err
 			}
 		}

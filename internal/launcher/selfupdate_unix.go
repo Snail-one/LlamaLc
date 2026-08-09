@@ -31,7 +31,10 @@ func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launche
 		return err
 	}
 	fmt.Fprintf(manager.Stdout, "启动器与更新器已更新到 %s；请重新运行命令。\n", release.TagName)
-	return nil
+	// The executable on disk is new, but this process still contains the old
+	// embedded version and code. Exit through the same successful restart path
+	// used by Windows instead of returning to a stale interactive menu.
+	return errUpdaterHandoff
 }
 
 func stageUnixExecutable(source, directory, pattern string) (string, error) {

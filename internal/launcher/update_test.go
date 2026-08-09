@@ -1125,8 +1125,8 @@ func TestStandaloneUpdaterReplacesFixedLauncherTarget(t *testing.T) {
 		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
 	}
 
-	if err := manager.UpdateLauncher(context.Background(), release, false, false); err != nil {
-		t.Fatal(err)
+	if err := manager.UpdateLauncher(context.Background(), release, false, false); !errors.Is(err, errUpdaterHandoff) {
+		t.Fatalf("launcher update did not require a successful restart: %v", err)
 	}
 	if content, err := os.ReadFile(launcherPath); err != nil || !bytes.Equal(content, newLauncher) {
 		t.Fatalf("launcher target content=%q err=%v", content, err)
