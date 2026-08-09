@@ -91,7 +91,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	for _, want := range []string{
 		"运行状态", "功能目录", "[1] 启动", "[2] 配置", "升级维护",
 		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复",
-		"子菜单输入 0 返回主菜单",
+		"子菜单输入 0 或 q 返回主菜单",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
@@ -118,7 +118,7 @@ func TestMenuShowsOperationAndParameterSections(t *testing.T) {
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
-	for _, want := range []string{"启动\n" + menuRule, "启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[0] 返回主菜单", "[q] 返回主菜单"} {
+	for _, want := range []string{"启动\n" + menuRule, "启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[0/q] 返回主菜单"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}

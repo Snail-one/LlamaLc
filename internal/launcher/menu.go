@@ -90,7 +90,7 @@ func (app *Application) printMainMenu() {
   [3] 升级维护              更新 / 清理恢复
   [q] 退出
 
-选择目录后再选择具体操作；子菜单输入 0 返回主菜单。
+选择目录后再选择具体操作；子菜单输入 0 或 q 返回主菜单。
 %s
 `, buildversion.Version, app.llamaVersionDisplay(), safeTerminalText(app.Root), menuRule)
 }
@@ -407,8 +407,7 @@ func (m *menu) readSubmenuChoice(title string, options []menuOption) (int, error
 	for index, option := range options {
 		fmt.Fprintf(m.app.Stdout, "  [%d] %s\n", index+1, option.label)
 	}
-	fmt.Fprintln(m.app.Stdout, "  [0] 返回主菜单")
-	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
+	fmt.Fprintln(m.app.Stdout, "  [0/q] 返回主菜单")
 	for {
 		line, err := m.readLine("请选择操作 [1]: ")
 		if err != nil {
@@ -441,18 +440,21 @@ func (m *menu) runCleanupMenu() error {
 			automatic, review, recent := cleanupCandidateCounts(candidates)
 			fmt.Fprintf(m.app.Stdout, "发现 %d 项：可安全清理 %d，需确认 %d，暂不处理 %d。\n", len(candidates), automatic, review, recent)
 			fmt.Fprintln(m.app.Stdout, "批量清理只处理“可安全清理”项目。")
+		}
+		fmt.Fprintln(m.app.Stdout, "\n操作")
+		fmt.Fprintln(m.app.Stdout, "  [1] 清理全部安全项")
+		fmt.Fprintln(m.app.Stdout, "  [0/q] 返回主菜单")
+		if len(candidates) > 0 {
+			fmt.Fprintln(m.app.Stdout, "\n待处理项目")
 			for index, candidate := range candidates {
-				fmt.Fprintf(m.app.Stdout, "\n[%d] %s\n", index+1, candidate.Kind)
+				fmt.Fprintf(m.app.Stdout, "\n[%d] %s\n", index+2, candidate.Kind)
 				fmt.Fprintf(m.app.Stdout, "    状态: %s\n", cleanupCandidateStatus(candidate))
 				fmt.Fprintf(m.app.Stdout, "    大小: %s\n", cleanupSizeDisplay(candidate))
 				fmt.Fprintf(m.app.Stdout, "    路径: %s\n", safeTerminalText(candidate.Path))
 				fmt.Fprintf(m.app.Stdout, "    说明: %s\n", safeTerminalText(candidate.Reason))
 			}
 		}
-		fmt.Fprintln(m.app.Stdout, "\n操作")
-		fmt.Fprintln(m.app.Stdout, "  [a] 清理全部安全项")
-		fmt.Fprintln(m.app.Stdout, "  [0] 返回主菜单")
-		line, err := m.readLine("请选择项目编号或操作: ")
+		line, err := m.readLine("请选择操作或项目编号: ")
 		if errors.Is(err, errMenuBack) {
 			return nil
 		}
@@ -462,7 +464,7 @@ func (m *menu) runCleanupMenu() error {
 		if line == "0" {
 			return nil
 		}
-		if strings.EqualFold(line, "a") {
+		if line == "1" {
 			cleaned := 0
 			for _, candidate := range candidates {
 				if !candidate.Automatic {
@@ -480,12 +482,13 @@ func (m *menu) runCleanupMenu() error {
 			}
 			continue
 		}
-		index, parseErr := strconv.Atoi(line)
-		if parseErr != nil || index < 1 || index > len(candidates) {
-			fmt.Fprintln(m.app.Stderr, "请输入有效项目编号、a、0 或 q。")
+		selection, parseErr := strconv.Atoi(line)
+		index := selection - 2
+		if parseErr != nil || index < 0 || index >= len(candidates) {
+			fmt.Fprintf(m.app.Stderr, "请输入 0 到 %d 之间的有效编号，或输入 q。\n", len(candidates)+1)
 			continue
 		}
-		if err := m.manageCleanupCandidate(candidates[index-1]); err != nil {
+		if err := m.manageCleanupCandidate(candidates[index]); err != nil {
 			if errors.Is(err, errMenuBack) {
 				return nil
 			}
@@ -521,11 +524,11 @@ func cleanupCandidateStatus(candidate cleanupCandidate) string {
 
 func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), safeTerminalText(candidate.Reason), safeTerminalText(candidate.Path))
-	fmt.Fprintln(m.app.Stdout, "  [v] 查看目录内容")
-	fmt.Fprintln(m.app.Stdout, "  [o] 使用系统文件管理器打开")
-	fmt.Fprintln(m.app.Stdout, "  [d] 永久删除")
+	fmt.Fprintln(m.app.Stdout, "  [1] 查看目录内容")
+	fmt.Fprintln(m.app.Stdout, "  [2] 使用系统文件管理器打开")
+	fmt.Fprintln(m.app.Stdout, "  [3] 永久删除")
 	fmt.Fprintln(m.app.Stdout, "  [0] 返回列表")
-	fmt.Fprintln(m.app.Stdout, "  [Enter] 返回列表")
+	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
 	line, err := m.readLine("请选择操作: ")
 	if err != nil {
 		return err
@@ -533,15 +536,15 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 	switch strings.ToLower(line) {
 	case "", "0":
 		return nil
-	case "v":
+	case "1":
 		return m.viewCleanupCandidate(candidate)
-	case "o":
+	case "2":
 		if err := launchCleanupPath(candidate.Path); err != nil {
 			return fmt.Errorf("无法打开目录 %s: %w", candidate.Path, err)
 		}
 		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", safeTerminalText(candidate.Path))
 		return nil
-	case "d":
+	case "3":
 		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", safeTerminalText(candidate.Path))
 		confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
 		if err != nil {
@@ -557,7 +560,7 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 		fmt.Fprintln(m.app.Stdout, "已删除:", safeTerminalText(candidate.Path))
 		return nil
 	default:
-		fmt.Fprintln(m.app.Stderr, "请输入 v、o、d、0，或直接按 Enter 返回。")
+		fmt.Fprintln(m.app.Stderr, "请输入 0 到 3，或输入 q 返回主菜单。")
 		return nil
 	}
 }
@@ -670,8 +673,7 @@ func (m *menu) selectModel(directory string, kind ModelKind, extensions map[stri
 	}
 	fmt.Fprintln(m.app.Stdout, "\n选择模型")
 	fmt.Fprintln(m.app.Stdout, menuRule)
-	fmt.Fprintln(m.app.Stdout, "  [0] 返回主菜单")
-	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
+	fmt.Fprintln(m.app.Stdout, "  [0/q] 返回主菜单")
 	for i, model := range models {
 		fmt.Fprintf(m.app.Stdout, "  %2d. %s  (%s)\n", i+1, safeTerminalText(model.ID), formatSize(model.Size))
 	}
