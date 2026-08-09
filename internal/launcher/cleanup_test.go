@@ -144,7 +144,7 @@ func TestCleanupMenuDisplaysCandidateSummary(t *testing.T) {
 	}
 	for _, want := range []string{
 		"发现 1 项：可安全清理 0，需确认 0，暂不处理 1。",
-		"[1] 清理全部安全项", "待处理项目", "[2] 近期运行时下载暂存", "状态: 暂不处理（可能正在使用）",
+		"[1] 清理全部安全项（当前无可清理项）", "待处理项目", "[2] 近期运行时下载暂存", "状态: 暂不处理（可能正在使用）",
 		"大小:", "路径: " + target, "说明: 最近 24 小时内创建或修改",
 		"操作", "[0/q] 返回主菜单",
 	} {
@@ -189,8 +189,35 @@ func TestCleanupMenuUsesOneForBatchCleanup(t *testing.T) {
 	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("numeric batch cleanup did not remove safe target: %v", err)
 	}
-	if !strings.Contains(out.String(), "[1] 清理全部安全项") || !strings.Contains(out.String(), "已清理: "+target) {
+	if !strings.Contains(out.String(), "[1] 清理全部安全项（1 项）") || !strings.Contains(out.String(), "已清理: "+target) {
 		t.Fatalf("numeric batch cleanup output missing:\n%s", out)
+	}
+}
+
+func TestCleanupMenuDisablesDeletionForRecentItem(t *testing.T) {
+	root := t.TempDir()
+	base := managedRuntimeRoot(root)
+	target := filepath.Join(base, ".staging-12345")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := markManagedTempDirectory(base, target); err != nil {
+		t.Fatal(err)
+	}
+	touchFile(t, filepath.Join(target, "active-download"))
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "3", "2", "3", "0", "q"),
+		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, errOut)
+	}
+	if !strings.Contains(out.String(), "[3] 永久删除（当前不可用）") || !strings.Contains(out.String(), "当前不允许删除") {
+		t.Fatalf("recent cleanup item did not disable deletion:\n%s", out)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("recent cleanup item was changed: %v", err)
 	}
 }
 

@@ -22,9 +22,59 @@ type menu struct {
 	reader *bufio.Reader
 }
 
+type menuAction int
+
+const (
+	actionServe menuAction = iota + 1
+	actionEmbedding
+	actionRerank
+	actionRouterConfig
+	actionRouter
+	actionChat
+	actionUpdateLlama
+	actionUpdateLauncher
+	actionResetAPIKey
+	actionCleanup
+)
+
 type menuOption struct {
 	label  string
-	action int
+	action menuAction
+}
+
+type menuCategory struct {
+	title        string
+	summary      string
+	defaultFirst bool
+	options      []menuOption
+}
+
+var menuCategories = []menuCategory{
+	{
+		title: "启动", summary: "API / 多模型 Router / CLI", defaultFirst: true,
+		options: []menuOption{
+			{label: "启动单模型 API", action: actionServe},
+			{label: "启动 Embedding API", action: actionEmbedding},
+			{label: "启动 Rerank API", action: actionRerank},
+			{label: "启动多模型 Router", action: actionRouter},
+			{label: "启动 CLI 聊天", action: actionChat},
+		},
+	},
+	{
+		title: "配置", summary: "Router 配置 / API key", defaultFirst: true,
+		options: []menuOption{
+			{label: "生成 Router 配置", action: actionRouterConfig},
+			{label: "重置 API key", action: actionResetAPIKey},
+		},
+	},
+	{
+		title: "升级维护", summary: "更新 / 清理恢复",
+		options: []menuOption{
+			{label: "更新 llama.cpp", action: actionUpdateLlama},
+			{label: "更新启动器", action: actionUpdateLauncher},
+			{label: "清理与恢复", action: actionCleanup},
+		},
+	},
 }
 
 func (app *Application) RunMenu() int {
@@ -85,30 +135,28 @@ func (app *Application) printMainMenu() {
   根目录:      %s
 
 功能目录
-  [1] 启动                  API / 多模型 Router / CLI
-  [2] 配置                  Router 配置 / API key
-  [3] 升级维护              更新 / 清理恢复
-  [q] 退出
+`, buildversion.Version, app.llamaVersionDisplay(), safeTerminalText(app.Root))
+	for index, category := range menuCategories {
+		fmt.Fprintf(app.Stdout, "  [%d] %s（%s）\n", index+1, category.title, category.summary)
+	}
+	fmt.Fprintf(app.Stdout, `  [q] 退出
 
 选择目录后再选择具体操作；子菜单输入 0 或 q 返回主菜单。
 %s
-`, buildversion.Version, app.llamaVersionDisplay(), safeTerminalText(app.Root), menuRule)
+`, menuRule)
 }
 
-func (m *menu) printOperationHeader(choice int) {
-	titles := map[int]string{
-		1: "启动单模型 API",
-		2: "启动 Embedding API",
-		3: "启动 Rerank API",
-		4: "生成 Router 配置",
-		5: "启动多模型 Router",
-		6: "启动 CLI 聊天",
-		7: "更新 llama.cpp",
-		8: "更新启动器",
-		9: "重置 API key",
+func (m *menu) printOperationHeader(choice menuAction) {
+	if choice == actionCleanup {
+		return
 	}
-	if title := titles[choice]; title != "" {
-		fmt.Fprintf(m.app.Stdout, "\n%s\n%s\n", title, menuRule)
+	for _, category := range menuCategories {
+		for _, option := range category.options {
+			if option.action == choice {
+				fmt.Fprintf(m.app.Stdout, "\n%s\n%s\n", option.label, menuRule)
+				return
+			}
+		}
 	}
 }
 
@@ -134,9 +182,9 @@ func (app *Application) llamaVersionDisplay() string {
 	return "unknown"
 }
 
-func (m *menu) runChoice(choice int) error {
+func (m *menu) runChoice(choice menuAction) error {
 	switch choice {
-	case 1:
+	case actionServe:
 		model, err := m.selectModel(m.app.Paths.Models, GenerationModel, generationExtensions)
 		if err != nil {
 			return err
@@ -190,7 +238,7 @@ func (m *menu) runChoice(choice int) error {
 		}
 		args = append(args, networkArgs...)
 		return m.confirmAndRun("serve", args)
-	case 2:
+	case actionEmbedding:
 		model, err := m.selectModel(m.app.Paths.Embeddings, EmbeddingModel, ggufExtension)
 		if err != nil {
 			return err
@@ -220,7 +268,7 @@ func (m *menu) runChoice(choice int) error {
 			return err
 		}
 		return m.confirmAndRun("embedding", append(args, networkArgs...))
-	case 3:
+	case actionRerank:
 		model, err := m.selectModel(m.app.Paths.Rerank, RerankModel, ggufExtension)
 		if err != nil {
 			return err
@@ -237,7 +285,7 @@ func (m *menu) runChoice(choice int) error {
 		args = append(args, runtimeArgs...)
 		args = append(args, networkArgs...)
 		return m.confirmAndRun("rerank", args)
-	case 4:
+	case actionRouterConfig:
 		args := []string{}
 		if _, err := os.Stat(m.app.Paths.RouterManual); err == nil {
 			overwrite, err := m.readYesNo("手动配置已存在，是否覆盖", false)
@@ -292,7 +340,7 @@ func (m *menu) runChoice(choice int) error {
 			return err
 		}
 		return m.pause()
-	case 5:
+	case actionRouter:
 		args, err := m.readRuntimeArguments(m.app.Config.Server.BatchSize, m.app.Config.Server.UBatchSize, true)
 		if err != nil {
 			return err
@@ -326,7 +374,7 @@ func (m *menu) runChoice(choice int) error {
 		)
 		args = append(args, networkArgs...)
 		return m.confirmAndRun("router", args)
-	case 6:
+	case actionChat:
 		model, err := m.selectModel(m.app.Paths.Models, GenerationModel, generationExtensions)
 		if err != nil {
 			return err
@@ -337,19 +385,19 @@ func (m *menu) runChoice(choice int) error {
 			return err
 		}
 		return m.confirmAndRun("chat", append(args, runtimeArgs...))
-	case 7:
+	case actionUpdateLlama:
 		return m.updateComponent(componentLlama)
-	case 8:
+	case actionUpdateLauncher:
 		return m.updateComponent(componentLauncher)
-	case 9:
+	case actionResetAPIKey:
 		return m.resetAPIKey()
-	case 10:
+	case actionCleanup:
 		return m.runCleanupMenu()
 	}
 	return nil
 }
 
-func (m *menu) readMainChoice() (int, error) {
+func (m *menu) readMainChoice() (menuAction, error) {
 	for {
 		line, err := m.readLine("请选择功能目录 [1]: ")
 		if err != nil {
@@ -359,40 +407,13 @@ func (m *menu) readMainChoice() (int, error) {
 			line = "1"
 		}
 		category, parseErr := strconv.Atoi(line)
-		if parseErr != nil || category < 1 || category > 3 {
-			fmt.Fprintln(m.app.Stderr, "请输入 1 到 3 或 q；直接按 Enter 进入启动菜单。")
+		if parseErr != nil || category < 1 || category > len(menuCategories) {
+			fmt.Fprintf(m.app.Stderr, "请输入 1 到 %d 或 q；直接按 Enter 进入启动菜单。\n", len(menuCategories))
 			continue
 		}
 
-		title := ""
-		var options []menuOption
-		switch category {
-		case 1:
-			title = "启动"
-			options = []menuOption{
-				{label: "启动单模型 API", action: 1},
-				{label: "启动 Embedding API", action: 2},
-				{label: "启动 Rerank API", action: 3},
-				{label: "启动多模型 Router", action: 5},
-				{label: "启动 CLI 聊天", action: 6},
-			}
-		case 2:
-			title = "配置"
-			options = []menuOption{
-				{label: "生成 Router 配置", action: 4},
-				{label: "重置 API key", action: 9},
-			}
-		case 3:
-			title = "升级维护"
-			options = []menuOption{
-				{label: "更新 llama.cpp", action: 7},
-				{label: "更新启动器", action: 8},
-				{label: "清理与恢复", action: 10},
-			}
-		}
-
 		clearTerminal(m.app.Stdout)
-		action, err := m.readSubmenuChoice(title, options)
+		action, err := m.readSubmenuChoice(menuCategories[category-1])
 		if errors.Is(err, errMenuBack) {
 			clearTerminal(m.app.Stdout)
 			m.app.printMainMenu()
@@ -402,14 +423,18 @@ func (m *menu) readMainChoice() (int, error) {
 	}
 }
 
-func (m *menu) readSubmenuChoice(title string, options []menuOption) (int, error) {
-	fmt.Fprintf(m.app.Stdout, "\n%s\n%s\n", title, menuRule)
-	for index, option := range options {
+func (m *menu) readSubmenuChoice(category menuCategory) (menuAction, error) {
+	fmt.Fprintf(m.app.Stdout, "\n%s\n%s\n", category.title, menuRule)
+	for index, option := range category.options {
 		fmt.Fprintf(m.app.Stdout, "  [%d] %s\n", index+1, option.label)
 	}
 	fmt.Fprintln(m.app.Stdout, "  [0/q] 返回主菜单")
+	prompt := "请选择操作: "
+	if category.defaultFirst {
+		prompt = "请选择操作 [1]: "
+	}
 	for {
-		line, err := m.readLine("请选择操作 [1]: ")
+		line, err := m.readLine(prompt)
 		if err != nil {
 			return 0, err
 		}
@@ -417,13 +442,21 @@ func (m *menu) readSubmenuChoice(title string, options []menuOption) (int, error
 			return 0, errMenuBack
 		}
 		if line == "" {
-			return options[0].action, nil
+			if category.defaultFirst {
+				return category.options[0].action, nil
+			}
+			fmt.Fprintf(m.app.Stderr, "请输入 0 到 %d；升级维护不使用默认选项。\n", len(category.options))
+			continue
 		}
 		choice, parseErr := strconv.Atoi(line)
-		if parseErr == nil && choice >= 1 && choice <= len(options) {
-			return options[choice-1].action, nil
+		if parseErr == nil && choice >= 1 && choice <= len(category.options) {
+			return category.options[choice-1].action, nil
 		}
-		fmt.Fprintf(m.app.Stderr, "请输入 0 到 %d 或 q；0 返回，直接按 Enter 选择 1。\n", len(options))
+		if category.defaultFirst {
+			fmt.Fprintf(m.app.Stderr, "请输入 0 到 %d 或 q；0 返回，直接按 Enter 选择 1。\n", len(category.options))
+		} else {
+			fmt.Fprintf(m.app.Stderr, "请输入 0 到 %d 或 q；0 返回。\n", len(category.options))
+		}
 	}
 }
 
@@ -434,15 +467,19 @@ func (m *menu) runCleanupMenu() error {
 		for _, warning := range warnings {
 			fmt.Fprintln(m.app.Stderr, "警告:", safeTerminalText(warning))
 		}
+		automatic, review, recent := cleanupCandidateCounts(candidates)
 		if len(candidates) == 0 {
 			fmt.Fprintln(m.app.Stdout, "未发现需要处理的残留或恢复目录。")
 		} else {
-			automatic, review, recent := cleanupCandidateCounts(candidates)
 			fmt.Fprintf(m.app.Stdout, "发现 %d 项：可安全清理 %d，需确认 %d，暂不处理 %d。\n", len(candidates), automatic, review, recent)
 			fmt.Fprintln(m.app.Stdout, "批量清理只处理“可安全清理”项目。")
 		}
 		fmt.Fprintln(m.app.Stdout, "\n操作")
-		fmt.Fprintln(m.app.Stdout, "  [1] 清理全部安全项")
+		if automatic > 0 {
+			fmt.Fprintf(m.app.Stdout, "  [1] 清理全部安全项（%d 项）\n", automatic)
+		} else {
+			fmt.Fprintln(m.app.Stdout, "  [1] 清理全部安全项（当前无可清理项）")
+		}
 		fmt.Fprintln(m.app.Stdout, "  [0/q] 返回主菜单")
 		if len(candidates) > 0 {
 			fmt.Fprintln(m.app.Stdout, "\n待处理项目")
@@ -465,6 +502,10 @@ func (m *menu) runCleanupMenu() error {
 			return nil
 		}
 		if line == "1" {
+			if automatic == 0 {
+				fmt.Fprintln(m.app.Stdout, "当前没有可安全批量清理的项目。")
+				continue
+			}
 			cleaned := 0
 			for _, candidate := range candidates {
 				if !candidate.Automatic {
@@ -526,7 +567,11 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), safeTerminalText(candidate.Reason), safeTerminalText(candidate.Path))
 	fmt.Fprintln(m.app.Stdout, "  [1] 查看目录内容")
 	fmt.Fprintln(m.app.Stdout, "  [2] 使用系统文件管理器打开")
-	fmt.Fprintln(m.app.Stdout, "  [3] 永久删除")
+	if candidate.Recent {
+		fmt.Fprintln(m.app.Stdout, "  [3] 永久删除（当前不可用）")
+	} else {
+		fmt.Fprintln(m.app.Stdout, "  [3] 永久删除")
+	}
 	fmt.Fprintln(m.app.Stdout, "  [0] 返回列表")
 	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
 	line, err := m.readLine("请选择操作: ")
@@ -545,6 +590,10 @@ func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", safeTerminalText(candidate.Path))
 		return nil
 	case "3":
+		if candidate.Recent {
+			fmt.Fprintln(m.app.Stdout, "该项目可能仍在使用，当前不允许删除。")
+			return nil
+		}
 		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", safeTerminalText(candidate.Path))
 		confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
 		if err != nil {

@@ -153,6 +153,23 @@ func TestMainMenuGroupsRelatedOperationsIntoSubmenus(t *testing.T) {
 	}
 }
 
+func TestUpgradeMenuRequiresExplicitSelection(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root: t.TempDir(), Config: DefaultConfig(),
+		Stdin: menuInput("3", "", "0", "q"), Stdout: stdout, Stderr: stderr,
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, stderr)
+	}
+	if !strings.Contains(stderr.String(), "升级维护不使用默认选项") {
+		t.Fatalf("blank upgrade selection did not require an explicit choice: %s", stderr)
+	}
+	if strings.Contains(stderr.String(), "更新管理器未初始化") {
+		t.Fatalf("blank upgrade selection unexpectedly started an update: %s", stderr)
+	}
+}
+
 func TestRefreshManagedRuntimeUpdatesHomepageState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	runtimeDir := filepath.Join(root, "data", "llama.cpp", "b10328-cuda-13.3")
