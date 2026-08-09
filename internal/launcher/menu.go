@@ -432,28 +432,26 @@ func (m *menu) runCleanupMenu() error {
 	for {
 		candidates, warnings := scanCleanupCandidates(m.app.Root)
 		fmt.Fprintf(m.app.Stdout, "\n清理与恢复\n%s\n", menuRule)
-		fmt.Fprintln(m.app.Stdout, "自动清理项经过严格命名、文件类型或所有权标记验证；其余项目必须逐个确认。")
 		for _, warning := range warnings {
 			fmt.Fprintln(m.app.Stderr, "警告:", safeTerminalText(warning))
 		}
 		if len(candidates) == 0 {
 			fmt.Fprintln(m.app.Stdout, "未发现需要处理的残留或恢复目录。")
 		} else {
+			automatic, review, recent := cleanupCandidateCounts(candidates)
+			fmt.Fprintf(m.app.Stdout, "发现 %d 项：可安全清理 %d，需确认 %d，暂不处理 %d。\n", len(candidates), automatic, review, recent)
+			fmt.Fprintln(m.app.Stdout, "批量清理只处理“可安全清理”项目。")
 			for index, candidate := range candidates {
-				mode := "需确认"
-				if candidate.Automatic {
-					mode = "可安全清理"
-				} else if candidate.Recent {
-					mode = "可能正在使用"
-				}
-				fmt.Fprintf(m.app.Stdout, "  %d. [%s] %s（%s）\n", index+1, mode, candidate.Kind, cleanupSizeDisplay(candidate))
-				fmt.Fprintf(m.app.Stdout, "     %s\n", safeTerminalText(candidate.Path))
-				fmt.Fprintf(m.app.Stdout, "     原因: %s\n", safeTerminalText(candidate.Reason))
+				fmt.Fprintf(m.app.Stdout, "\n[%d] %s\n", index+1, candidate.Kind)
+				fmt.Fprintf(m.app.Stdout, "    状态: %s\n", cleanupCandidateStatus(candidate))
+				fmt.Fprintf(m.app.Stdout, "    大小: %s\n", cleanupSizeDisplay(candidate))
+				fmt.Fprintf(m.app.Stdout, "    路径: %s\n", safeTerminalText(candidate.Path))
+				fmt.Fprintf(m.app.Stdout, "    说明: %s\n", safeTerminalText(candidate.Reason))
 			}
 		}
-		fmt.Fprintln(m.app.Stdout, "\n  [a] 清理全部已验证安全残留")
+		fmt.Fprintln(m.app.Stdout, "\n操作")
+		fmt.Fprintln(m.app.Stdout, "  [a] 清理全部安全项")
 		fmt.Fprintln(m.app.Stdout, "  [0] 返回主菜单")
-		fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
 		line, err := m.readLine("请选择项目编号或操作: ")
 		if errors.Is(err, errMenuBack) {
 			return nil
@@ -493,6 +491,31 @@ func (m *menu) runCleanupMenu() error {
 			}
 			return err
 		}
+	}
+}
+
+func cleanupCandidateCounts(candidates []cleanupCandidate) (automatic, review, recent int) {
+	for _, candidate := range candidates {
+		switch {
+		case candidate.Automatic:
+			automatic++
+		case candidate.Recent:
+			recent++
+		default:
+			review++
+		}
+	}
+	return automatic, review, recent
+}
+
+func cleanupCandidateStatus(candidate cleanupCandidate) string {
+	switch {
+	case candidate.Automatic:
+		return "可安全清理"
+	case candidate.Recent:
+		return "暂不处理（可能正在使用）"
+	default:
+		return "需手动确认"
 	}
 }
 

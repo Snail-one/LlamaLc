@@ -41,7 +41,7 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 		candidate := cleanupCandidate{Path: filepath.Clean(path), Kind: kind, Reason: reason, Automatic: automatic, Identity: identity}
 		if automatic && kind != "临时 updater 副本" && !oldEnoughForAutomaticCleanupPath(path, identity) {
 			candidate.Kind = "近期" + kind
-			candidate.Reason = fmt.Sprintf("创建或修改不足 %s，可能仍被其他 launcher 使用，暂不允许删除", automaticCleanupMinAge)
+			candidate.Reason = fmt.Sprintf("最近 %s内创建或修改，可能仍被其他 launcher 使用，暂不允许删除", formatCleanupDuration(automaticCleanupMinAge))
 			candidate.Automatic = false
 			candidate.Recent = true
 		}
@@ -173,6 +173,16 @@ func scanCleanupCandidates(root string) ([]cleanupCandidate, []string) {
 		return strings.ToLower(candidates[i].Path) < strings.ToLower(candidates[j].Path)
 	})
 	return candidates, warnings
+}
+
+func formatCleanupDuration(value time.Duration) string {
+	if value > 0 && value%time.Hour == 0 {
+		return fmt.Sprintf("%d 小时", int64(value/time.Hour))
+	}
+	if value > 0 && value%time.Minute == 0 {
+		return fmt.Sprintf("%d 分钟", int64(value/time.Minute))
+	}
+	return value.String()
 }
 
 func readManagedDirectory(root, path, label string) ([]os.DirEntry, error) {
@@ -330,7 +340,7 @@ func deleteCleanupCandidate(root string, selected cleanupCandidate, automatic bo
 		return errors.New("目标不再满足自动清理条件")
 	}
 	if current.Recent {
-		return fmt.Errorf("目标创建或修改不足 %s，可能仍在使用，拒绝删除", automaticCleanupMinAge)
+		return fmt.Errorf("目标在最近 %s内创建或修改，可能仍在使用，拒绝删除", formatCleanupDuration(automaticCleanupMinAge))
 	}
 	_, finalSnapshot, err := inspectCleanupPath(current.Path)
 	if err != nil {
