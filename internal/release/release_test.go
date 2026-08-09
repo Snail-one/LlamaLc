@@ -19,11 +19,12 @@ import (
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestLauncherAssetNamingAndCUDACompanion(t *testing.T) {
-	r := GitHubRelease{Tag: "v2.3.4", Assets: []Asset{{Name: "llamalc-windows-amd64-v2.3.4.zip", Digest: digest}, {Name: "llama-b123-bin-win-cuda-12.4-x64.zip", Digest: digest}, {Name: "cudart-llama-bin-win-cuda-12.4-x64.zip", Digest: digest}}}
-	if _, err := LauncherAsset(r, "windows", "amd64"); err != nil {
+	launcherRelease := GitHubRelease{Tag: "v2.3.4", Assets: []Asset{{Name: "llamalc-windows-amd64-v2.3.4.zip", Digest: digest}}}
+	if _, err := LauncherAsset(launcherRelease, "windows", "amd64"); err != nil {
 		t.Fatal(err)
 	}
-	backends, err := LlamaAssets(r, "windows", "amd64")
+	llamaRelease := GitHubRelease{Tag: "b123", Assets: []Asset{{Name: "llama-b123-bin-win-cuda-12.4-x64.zip", Digest: digest}, {Name: "cudart-llama-bin-win-cuda-12.4-x64.zip", Digest: digest}}}
+	backends, err := LlamaAssets(llamaRelease, "windows", "amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +110,103 @@ func TestDownloadPrefixProxyFallsBackToOriginalURL(t *testing.T) {
 	}
 	if !containsPhase(phases, DownloadFallback) || phases[len(phases)-1] != DownloadComplete {
 		t.Fatalf("phases=%v", phases)
+	}
+}
+
+type interruptedReader struct {
+	data []byte
+	done bool
+}
+
+func (reader *interruptedReader) Read(buffer []byte) (int, error) {
+	if !reader.done {
+		reader.done = true
+		return copy(buffer, reader.data), nil
+	}
+	return 0, errors.New("connection reset")
+}
+
+func TestDownloadInterruptedProxyRemovesPartialAndRetriesDirectOnce(t *testing.T) {
+	payload := []byte("complete payload")
+	hash := sha256.Sum256(payload)
+	proxy, _ := url.Parse("http://127.0.0.1:7890")
+	proxyCalls, directCalls := 0, 0
+	client := &Client{
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			proxyCalls++
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(&interruptedReader{data: payload[:4]}), Request: request}, nil
+		})},
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			directCalls++
+			return downloadResponse(request, payload), nil
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxy, nil },
+	}
+	destination := filepath.Join(t.TempDir(), "asset.zip")
+	asset := Asset{Name: "asset.zip", URL: "https://example.invalid/asset.zip", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(hash[:])}
+	if err := client.Download(context.Background(), asset, destination); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+	if proxyCalls != 1 || directCalls != 1 {
+		t.Fatalf("proxy=%d direct=%d", proxyCalls, directCalls)
+	}
+}
+
+func TestReleaseResponseRejectsTrailingJSONAndOversize(t *testing.T) {
+	for name, body := range map[string]string{
+		"trailing": `{"tag_name":"v1.2.3","assets":[]} {}`,
+		"oversize": strings.Repeat(" ", int(maxReleaseResponse)+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})}}
+			if _, err := client.Latest(context.Background(), "owner/repo"); err == nil {
+				t.Fatal("accepted invalid response")
+			}
+		})
+	}
+}
+
+func TestExtractRejectsDuplicatePathsAndSharedEntryOverflow(t *testing.T) {
+	makeZip := func(path string, names ...string) {
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer := zip.NewWriter(file)
+		for _, name := range names {
+			entry, e := writer.Create(name)
+			if e != nil {
+				t.Fatal(e)
+			}
+			_, _ = entry.Write([]byte("x"))
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	duplicate := filepath.Join(t.TempDir(), "duplicate.zip")
+	makeZip(duplicate, "same", "same")
+	if err := Extract(duplicate, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("accepted duplicate archive path")
+	}
+	first, second := filepath.Join(t.TempDir(), "first.zip"), filepath.Join(t.TempDir(), "second.zip")
+	makeZip(first, "one")
+	makeZip(second, "two")
+	budget := NewExtractBudget(1, 8<<30)
+	if err := ExtractWithBudget(first, filepath.Join(t.TempDir(), "one"), budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExtractWithBudget(second, filepath.Join(t.TempDir(), "two"), budget); err == nil {
+		t.Fatal("shared entry budget was reset")
 	}
 }
 

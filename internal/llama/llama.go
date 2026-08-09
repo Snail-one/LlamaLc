@@ -41,10 +41,10 @@ type Command struct {
 }
 
 func Locate(directory, goos string) (Runtime, error) {
-	serverName, cliNames := "llama-server", []string{"llama-cli", "llama"}
+	serverName, cliName := "llama-server", "llama-cli"
 	if goos == "windows" {
 		serverName = "llama-server.exe"
-		cliNames = []string{"llama-cli.exe", "llama.exe"}
+		cliName = "llama-cli.exe"
 	}
 	if goos != "linux" && goos != "windows" {
 		return Runtime{}, fmt.Errorf("不支持的平台 %s", goos)
@@ -53,12 +53,9 @@ func Locate(directory, goos string) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
-	cli := ""
-	for _, n := range cliNames {
-		if p, e := uniqueFile(directory, n); e == nil {
-			cli = p
-			break
-		}
+	cli, err := uniqueFile(directory, cliName)
+	if err != nil {
+		return Runtime{}, err
 	}
 	return Runtime{Directory: directory, Server: server, CLI: cli}, nil
 }
@@ -96,20 +93,42 @@ func ProbeVersion(ctx context.Context, executable string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "--version")
-	var out bytes.Buffer
+	var out cappedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", errors.New("探测 llama.cpp 版本超时")
+		}
 		return "", fmt.Errorf("探测 llama.cpp 版本: %w", err)
 	}
 	line := strings.TrimSpace(out.String())
 	if line == "" {
 		return "", errors.New("llama.cpp --version 没有输出")
 	}
+	if !strings.Contains(strings.ToLower(line), "llama") {
+		return "", errors.New("llama.cpp --version 输出缺少可识别签名")
+	}
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
 		line = line[:i]
 	}
 	return line, nil
+}
+
+type cappedBuffer struct {
+	bytes.Buffer
+}
+
+func (buffer *cappedBuffer) Write(data []byte) (int, error) {
+	const limit = 1 << 20
+	if buffer.Len()+len(data) > limit {
+		remaining := limit - buffer.Len()
+		if remaining > 0 {
+			_, _ = buffer.Buffer.Write(data[:remaining])
+		}
+		return len(data), errors.New("版本探测输出超过 1 MiB")
+	}
+	return buffer.Buffer.Write(data)
 }
 
 func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) {
@@ -259,6 +278,23 @@ func EffectiveHost(initial string, extra []string) string {
 		}
 	}
 	return strings.TrimSpace(effective)
+}
+
+func EffectivePort(initial int, extra []string) int {
+	effective := initial
+	for index := 0; index < len(extra); index++ {
+		value := ""
+		if extra[index] == "--port" && index+1 < len(extra) {
+			value = extra[index+1]
+			index++
+		} else if strings.HasPrefix(extra[index], "--port=") {
+			value = strings.TrimPrefix(extra[index], "--port=")
+		}
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1 && parsed <= 65535 {
+			effective = parsed
+		}
+	}
+	return effective
 }
 
 func IsLocalHost(host string) bool {

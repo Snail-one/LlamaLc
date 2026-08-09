@@ -9,4 +9,4 @@ update   -> layout / llama / release / managedfs / version
 config,secrets,models,release,updater -> managedfs / layout
 ```
 
-各包只拥有一种状态：`config` 只读写主配置，`secrets` 只拥有 API key，`update` 只拥有 `state/update.json`。模型和旧版内容不属于更新事务。
+各包只拥有一种状态：`config` 只读写主配置，`secrets` 只拥有 API key，`update` 只拥有 `state/update.json`。模型不属于更新事务，布局之外的内容永远不进入发现或清理范围。

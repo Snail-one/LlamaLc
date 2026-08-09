@@ -88,3 +88,17 @@ func TestRouterRejectsDuplicateIDsAcrossDirectories(t *testing.T) {
 		t.Fatalf("duplicate IDs accepted: %v", err)
 	}
 }
+
+func TestRouterDoesNotCollectNonGGUFGenerationModels(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.GenerationModels, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(l.GenerationModels, "legacy.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CollectRouterModels(l); err == nil {
+		t.Fatal("router accepted non-GGUF model")
+	}
+}

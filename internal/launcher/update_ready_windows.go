@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"syscall"
@@ -14,6 +15,16 @@ func signalUpdateReady() error {
 	_ = os.Unsetenv("LLAMALC_UPDATE_READY_EVENT")
 	if name == "" {
 		return nil
+	}
+	const prefix = `Local\LlamaLcUpdateReady-`
+	token := strings.TrimPrefix(name, prefix)
+	if token == name || len(token) != 32 {
+		return errors.New("更新就绪事件名称无效")
+	}
+	for _, character := range token {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return errors.New("更新就绪事件 token 无效")
+		}
 	}
 	p, err := syscall.UTF16PtrFromString(name)
 	if err != nil {

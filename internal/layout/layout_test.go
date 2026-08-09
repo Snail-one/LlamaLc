@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestV1LayoutAndLegacyDetection(t *testing.T) {
+func TestCurrentLayoutIgnoresLegacyPaths(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "LlamaLc")
 	l, err := New(root, "linux")
 	if err != nil {
@@ -25,9 +25,8 @@ func TestV1LayoutAndLegacyDetection(t *testing.T) {
 	if err = os.WriteFile(oldModel, []byte("model"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	found := l.LegacyPaths()
-	if len(found) != 2 {
-		t.Fatalf("legacy=%v", found)
+	if l.GenerationModels != filepath.Join(root, "models", "llm") {
+		t.Fatalf("llm directory=%s", l.GenerationModels)
 	}
 	if _, err = os.Stat(filepath.Join(root, "runtime")); !os.IsNotExist(err) {
 		t.Fatalf("detection modified new layout: %v", err)

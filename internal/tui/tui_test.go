@@ -69,7 +69,7 @@ func TestBackendEnterKeepsCurrentSelection(t *testing.T) {
 }
 
 func TestModelChoicesMatchV015MenuBehavior(t *testing.T) {
-	input := bufio.NewReader(strings.NewReader("1\n1\n\n9\n2\nq\nq\n"))
+	input := bufio.NewReader(strings.NewReader("1\n1\n\nq\nq\n"))
 	var out, stderr bytes.Buffer
 	var command []string
 	a := App{
@@ -78,9 +78,9 @@ func TestModelChoicesMatchV015MenuBehavior(t *testing.T) {
 			if kind != "generation" {
 				t.Fatalf("kind=%q", kind)
 			}
-			return "/LlamaLc/models/generation", []ModelOption{
-				{ID: "A.gguf", Path: "/LlamaLc/models/generation/A.gguf", Size: 2 << 30},
-				{ID: "B.gguf", Path: "/LlamaLc/models/generation/B.gguf", Size: 512 << 20},
+			return "/LlamaLc/models/llm", []ModelOption{
+				{ID: "A.gguf", Path: "/LlamaLc/models/llm/A.gguf", Size: 2 << 30},
+				{ID: "B.gguf", Path: "/LlamaLc/models/llm/B.gguf", Size: 512 << 20},
 			}, nil
 		},
 		Run: func(args []string) int { command = append([]string(nil), args...); return 0 },
@@ -88,15 +88,15 @@ func TestModelChoicesMatchV015MenuBehavior(t *testing.T) {
 	if code := a.RunMenu(); code != 0 {
 		t.Fatal(code)
 	}
-	for _, want := range []string{"选择模型", "目录: /LlamaLc/models/generation", "1. A.gguf  (2.00 GB)", "2. B.gguf  (512.00 MB)", "[0/q] 返回主菜单"} {
+	for _, want := range []string{"选择模型", "目录: /LlamaLc/models/llm", "1. A.gguf  (2.00 GB)", "2. B.gguf  (512.00 MB)", "[0/q] 返回主菜单"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %s", want, out.String())
 		}
 	}
-	if !strings.Contains(stderr.String(), "必须选择一个模型") || !strings.Contains(stderr.String(), "1 到 2") {
+	if stderr.Len() != 0 {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
-	if got := strings.Join(command, " "); got != "run api --model /LlamaLc/models/generation/B.gguf" {
+	if got := strings.Join(command, " "); got != "run api --model /LlamaLc/models/llm/A.gguf" {
 		t.Fatalf("command=%q", got)
 	}
 }
@@ -172,12 +172,12 @@ func TestV015LaunchWizardRestoresParametersAndConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(command, " ")
-	for _, want := range []string{"--mmproj /models/mmproj/mmproj-Qwen-VL.gguf", "-- --image-min-tokens 16", "--image-max-tokens 32", "--context-size 0", "--gpu-layers auto", "--threads -1", "--batch-size 2048", "--ubatch-size 512", "--flash-attention auto", "--parallel -1", "--host 127.0.0.1", "--port 29856", "--ui=false", "--jinja --chat-template my template"} {
+	for _, want := range []string{"--mmproj /models/mmproj/mmproj-Qwen-VL.gguf", "--image-min-tokens 16", "--image-max-tokens 32", "--context-size 0", "--gpu-layers auto", "--threads -1", "--batch-size 2048", "--ubatch-size 512", "--flash-attention auto", "--parallel -1", "--host 127.0.0.1", "--port 29856", "--ui=false", "-- --jinja --chat-template my template"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
 		}
 	}
-	for _, want := range []string{"选择 mmproj", "[自动匹配]", "运行参数", "网络参数", "高级选项", "确认使用以上参数启动"} {
+	for _, want := range []string{"选择 mmproj", "[自动匹配]", "运行参数", "网络参数", "高级选项"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %s", want, out.String())
 		}

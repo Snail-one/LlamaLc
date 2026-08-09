@@ -1,3 +1,5 @@
+//go:build !windows
+
 package update
 
 import (
@@ -82,6 +84,12 @@ func TestDamagedStateIsQuarantinedAndRepairCanRollback(t *testing.T) {
 }
 
 func (f *fakeSource) Latest(context.Context, string) (release.GitHubRelease, error) {
+	return f.release, nil
+}
+func (f *fakeSource) Release(_ context.Context, _ string, tag string) (release.GitHubRelease, error) {
+	if f.release.Tag != tag {
+		return release.GitHubRelease{}, os.ErrNotExist
+	}
 	return f.release, nil
 }
 func (f *fakeSource) Download(_ context.Context, a release.Asset, path string) error {
@@ -172,8 +180,11 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.PendingCleanup) != 1 {
-		t.Fatalf("pending=%v", state.PendingCleanup)
+	if len(state.PendingCleanup) != 0 {
+		t.Fatalf("old runtime should be removed immediately, pending=%v", state.PendingCleanup)
+	}
+	if _, statErr := os.Stat(filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")); !os.IsNotExist(statErr) {
+		t.Fatalf("old runtime still exists: %v", statErr)
 	}
 	source.release.Tag = "b122"
 	source.release.Assets[0].Name = "llama-b122-bin-ubuntu-x64.tar.gz"
@@ -219,5 +230,53 @@ func TestPrepareLauncherStrictBundleAndSums(t *testing.T) {
 	if _, _, _, badStage, err := m.PrepareLauncher(context.Background()); err == nil {
 		os.RemoveAll(badStage)
 		t.Fatal("accepted extra archive file")
+	}
+}
+
+func TestReinstallCannotOverwriteUnregisteredRuntimeTarget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	active := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	unregistered := filepath.Join(l.LlamaRuntimeDir, "vulkan", "b123")
+	for _, directory := range []string{active, unregistered} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"llama-server", "llama-cli"} {
+		if err := os.WriteFile(filepath.Join(active, name), []byte("old"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(unregistered, "keep")
+	if err := os.WriteFile(marker, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := State{Schema: 1, LlamaTag: "b123", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b123"), Assets: []InstalledAsset{{Name: "cpu.tar.gz", SHA256: strings.Repeat("a", 64)}}}
+	if err := os.MkdirAll(l.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(l, state); err != nil {
+		t.Fatal(err)
+	}
+	archive := runtimeArchive(t, "b123")
+	asset := release.Asset{Name: "llama-b123-bin-ubuntu-vulkan-x64.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64), Size: int64(len(archive))}
+	manager := NewManager(l, &fakeSource{release: release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}, files: map[string][]byte{asset.Name: archive}})
+	manager.GOOS, manager.GOARCH = "linux", "amd64"
+	if _, err := manager.UpdateLlamaWithOptions(context.Background(), LlamaOptions{Version: "b123", Backend: "vulkan", Reinstall: true}); err == nil || !strings.Contains(err.Error(), "未由更新状态登记") {
+		t.Fatalf("err=%v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "user" {
+		t.Fatalf("unregistered target changed: %q %v", data, err)
+	}
+}
+
+func TestLauncherProbeRequiresExactVersionField(t *testing.T) {
+	program := filepath.Join(t.TempDir(), "llamalc")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\necho 'Commit: v1.2.3'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := probeBundleVersion(context.Background(), program, "v1.2.3"); err == nil {
+		t.Fatal("accepted tag outside Version field")
 	}
 }

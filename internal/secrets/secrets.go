@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 )
 
 func Generate() (string, error) {
-	// 96 random bytes encode to the 128 URL-safe characters used by v0.1.5.
+	// 96 random bytes encode to the configured 128 URL-safe characters.
 	b := make([]byte, 96)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -26,20 +27,29 @@ func Read(l layout.Layout) (string, error) {
 	if err := managedfs.Validate(l.Root, l.APIKeyFile, false); err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(l.APIKeyFile)
+	f, err := os.Open(l.APIKeyFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
 		return "", errors.New("API key 不是普通文件")
 	}
-	if info.Size() > 4096 {
+	// 8167 key characters plus an optional CRLF terminator.
+	if info.Size() > 8169 {
 		return "", errors.New("API key 文件过大")
 	}
-	if err := os.Chmod(l.APIKeyFile, 0o600); err != nil {
+	if err := f.Chmod(0o600); err != nil {
 		return "", fmt.Errorf("保护 API key 权限: %w", err)
 	}
-	b, err := os.ReadFile(l.APIKeyFile)
+	if err := managedfs.Protect(l.Root, l.APIKeyFile, 0o600); err != nil {
+		return "", fmt.Errorf("保护 API key ACL: %w", err)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 8170))
 	if err != nil {
 		return "", err
 	}

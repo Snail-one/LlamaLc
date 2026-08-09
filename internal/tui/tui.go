@@ -47,8 +47,8 @@ type item struct {
 
 var categories = []category{
 	{title: "启动", summary: "API / 多模型 Router / CLI", defaultFirst: true, items: []item{{"启动单模型 API", []string{"run", "api"}, true, false, false}, {"启动 Embedding API", []string{"run", "embedding"}, true, false, false}, {"启动 Rerank API", []string{"run", "rerank"}, true, false, false}, {"启动多模型 Router", []string{"run", "router"}, false, false, false}, {"启动 CLI 聊天", []string{"run", "chat"}, true, false, false}}},
-	{title: "配置", summary: "Router 配置 / API key", defaultFirst: true, items: []item{{"生成 Router 配置", []string{"config", "router", "generate"}, false, false, false}, {"重置 API key", []string{"config", "key", "reset"}, false, false, false}, {"显示 API key", []string{"config", "key", "show"}, false, false, false}}},
-	{title: "升级维护", summary: "更新 / 清理恢复", items: []item{{"安装/更新 llama.cpp", []string{"update", "llama"}, false, true, false}, {"更新启动器", []string{"update", "launcher"}, false, false, true}, {"清理与恢复", []string{"maintenance", "cleanup"}, false, false, false}, {"检查全部更新", []string{"update", "check", "all"}, false, false, false}}},
+	{title: "配置", summary: "Router 配置 / API key", defaultFirst: true, items: []item{{"生成 Router 配置", []string{"router", "generate"}, false, false, false}, {"重置 API key", []string{"key", "reset"}, false, false, false}, {"显示 API key", []string{"key", "show"}, false, false, false}}},
+	{title: "升级维护", summary: "更新 / 清理恢复", items: []item{{"安装/更新 llama.cpp", []string{"update", "llama"}, false, true, false}, {"更新启动器", []string{"update", "launcher"}, false, false, true}, {"清理与恢复", []string{"cleanup"}, false, false, false}, {"检查全部更新", []string{"update", "check", "all"}, false, false, false}}},
 }
 
 func (a *App) RunMenu() int {
@@ -248,7 +248,7 @@ func (a *App) submenu(c category) (exit bool) {
 			}
 			command = configured
 		}
-		if a.ClassicInteraction && len(command) == 3 && command[0] == "config" && command[1] == "router" && command[2] == "generate" {
+		if a.ClassicInteraction && len(command) == 2 && command[0] == "router" && command[1] == "generate" {
 			configured, e := a.configureRouterPreset(command)
 			if errors.Is(e, errLaunchBack) {
 				return false
@@ -266,16 +266,19 @@ func (a *App) submenu(c category) (exit bool) {
 			}
 			command = configured
 		}
-		if a.ClassicInteraction && len(command) == 3 && command[0] == "config" && command[1] == "key" {
+		if a.ClassicInteraction && len(command) == 2 && command[0] == "key" {
 			prompt := "将生成新的 API key，旧 key 将立即失效，是否继续"
 			cancelled := "已取消，API key 未修改。"
-			if command[2] == "show" {
+			if command[1] == "show" {
 				prompt = "API key 将以明文显示，请确认终端未共享或录屏，是否继续"
 				cancelled = "已取消，未显示 API key。"
 			}
 			confirmed, e := a.readYesNo(prompt, false)
 			if errors.Is(e, errLaunchBack) {
 				return false
+			}
+			if command[1] == "reset" {
+				command = append(command, "--yes")
 			}
 			if e != nil {
 				return errors.Is(e, io.EOF)
@@ -302,7 +305,7 @@ func (a *App) submenu(c category) (exit bool) {
 		if code == 0 && len(command) >= 2 && command[0] == "update" && command[1] == "llama" && a.RefreshLlamaVersion != nil {
 			a.LlamaVersion = a.RefreshLlamaVersion()
 		}
-		if a.ClassicInteraction && len(command) == 2 && command[0] == "maintenance" && command[1] == "cleanup" {
+		if a.ClassicInteraction && len(command) == 1 && command[0] == "cleanup" {
 			return false
 		}
 		if a.ClassicInteraction && a.pause() {
@@ -353,7 +356,11 @@ func (a *App) selectModel(kind string) (string, bool, error) {
 		return "", false, fmt.Errorf("目录中没有找到支持的模型: %s", directory)
 	}
 
-	fmt.Fprintln(a.Out, "\n选择模型")
+	title := "选择模型"
+	if kind == "generation" {
+		title = "选择对话/生成模型"
+	}
+	fmt.Fprintln(a.Out, "\n"+title)
 	fmt.Fprintln(a.Out, "------------------------------------------------------------")
 	fmt.Fprintf(a.Out, "目录: %s\n", safeText(directory))
 	fmt.Fprintln(a.Out, "  [0/q] 返回主菜单")
@@ -361,7 +368,7 @@ func (a *App) selectModel(kind string) (string, bool, error) {
 		fmt.Fprintf(a.Out, "  %2d. %s  (%s)\n", i+1, safeText(option.ID), formatModelSize(option.Size))
 	}
 	for {
-		value, readErr := a.read("请选择模型编号、文件名或完整路径: ")
+		value, readErr := a.read("请选择模型编号、文件名或完整路径 [1]: ")
 		if readErr != nil {
 			return "", false, readErr
 		}
@@ -369,8 +376,7 @@ func (a *App) selectModel(kind string) (string, bool, error) {
 			return "", true, nil
 		}
 		if value == "" {
-			fmt.Fprintln(a.Err, "错误: 必须选择一个模型；输入 0 或 q 返回。")
-			continue
+			return options[0].Path, false, nil
 		}
 		if index, parseErr := strconv.Atoi(value); parseErr == nil {
 			if index >= 1 && index <= len(options) {

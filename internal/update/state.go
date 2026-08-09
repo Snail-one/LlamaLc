@@ -2,6 +2,7 @@
 package update
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,33 +44,41 @@ func ValidateState(l layout.Layout, s State) error {
 	if s.Schema != StateSchema {
 		return fmt.Errorf("不支持的更新状态 schema %d", s.Schema)
 	}
+	if s.LauncherVersion != "" && !strings.EqualFold(s.LauncherVersion, "dev") {
+		if _, err := CompareSemVer(s.LauncherVersion, s.LauncherVersion); err != nil {
+			return fmt.Errorf("更新状态中的 launcher_version 无效: %w", err)
+		}
+	}
 	if s.ActiveRuntime == "" {
 		if s.LlamaTag != "" || s.Backend != "" || len(s.Assets) > 0 {
 			return errors.New("更新状态中的运行时字段不完整")
 		}
-		return nil
-	}
-	if !safeComponent.MatchString(s.LlamaTag) || !safeComponent.MatchString(s.Backend) {
+	} else if !safeComponent.MatchString(s.LlamaTag) || !safeComponent.MatchString(s.Backend) {
 		return errors.New("更新状态中的 tag 或 backend 无效")
-	}
-	if _, err := CompareLlamaTag(s.LlamaTag, s.LlamaTag); err != nil {
+	} else if _, err := CompareLlamaTag(s.LlamaTag, s.LlamaTag); err != nil {
 		return err
-	}
-	expected := runtimeRelative(s.Backend, s.LlamaTag)
-	if filepath.Clean(filepath.FromSlash(s.ActiveRuntime)) != filepath.Clean(filepath.FromSlash(expected)) {
+	} else if expected := runtimeRelative(s.Backend, s.LlamaTag); filepath.Clean(filepath.FromSlash(s.ActiveRuntime)) != filepath.Clean(filepath.FromSlash(expected)) {
 		return errors.New("活动运行时必须为 runtime/llama.cpp/<backend>/<version>")
-	}
-	if len(s.Assets) == 0 {
+	} else if len(s.Assets) == 0 {
 		return errors.New("更新状态缺少资产摘要")
-	}
-	if err := managedfs.Within(l.LlamaRuntimeDir, RuntimePath(l, s)); err != nil {
+	} else if err := managedfs.Within(l.LlamaRuntimeDir, RuntimePath(l, s)); err != nil {
 		return err
 	}
+	seenAssets := make(map[string]struct{})
 	for _, a := range s.Assets {
 		if filepath.Base(a.Name) != a.Name || a.Name == "" || len(a.SHA256) != 64 {
 			return errors.New("更新状态包含无效资产")
 		}
+		if _, err := hex.DecodeString(a.SHA256); err != nil {
+			return errors.New("更新状态包含非十六进制资产摘要")
+		}
+		key := strings.ToLower(a.Name)
+		if _, exists := seenAssets[key]; exists {
+			return errors.New("更新状态包含重复资产")
+		}
+		seenAssets[key] = struct{}{}
 	}
+	seenCleanup := make(map[string]struct{})
 	for _, p := range s.PendingCleanup {
 		absolute := filepath.Join(l.Root, filepath.FromSlash(p))
 		if err := managedfs.Within(l.LlamaRuntimeDir, absolute); err != nil {
@@ -86,6 +95,11 @@ func ValidateState(l layout.Layout, s State) error {
 		if filepath.Clean(p) == filepath.Clean(s.ActiveRuntime) {
 			return errors.New("待清理路径不能是活动运行时")
 		}
+		key := strings.ToLower(filepath.Clean(filepath.FromSlash(p)))
+		if _, exists := seenCleanup[key]; exists {
+			return errors.New("更新状态包含重复待清理路径")
+		}
+		seenCleanup[key] = struct{}{}
 	}
 	return nil
 }

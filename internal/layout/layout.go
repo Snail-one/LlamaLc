@@ -47,7 +47,10 @@ func New(root, goos string) (Layout, error) {
 	l.LlamaRuntimeDir = filepath.Join(l.RuntimeDir, "llama.cpp")
 	l.RecoveryDir = filepath.Join(l.RuntimeDir, "recovery")
 	l.ModelsDir = filepath.Join(l.Root, "models")
-	l.GenerationModels = filepath.Join(l.ModelsDir, "generation")
+	// GenerationModels keeps the internal field name used by the schema-1
+	// configuration code, but the public deployment directory is models/llm.
+	// models/generation is intentionally neither read nor migrated.
+	l.GenerationModels = filepath.Join(l.ModelsDir, "llm")
 	l.EmbeddingModels = filepath.Join(l.ModelsDir, "embedding")
 	l.RerankModels = filepath.Join(l.ModelsDir, "rerank")
 	l.MMProjModels = filepath.Join(l.ModelsDir, "mmproj")
@@ -93,32 +96,4 @@ func (l Layout) Directories() []string {
 	return []string{l.Bin, l.ConfigDir, l.RouterConfigDir, l.SecretsDir, l.StateDir,
 		l.RouterStateDir, l.LlamaRuntimeDir, l.RecoveryDir, l.GenerationModels,
 		l.EmbeddingModels, l.RerankModels, l.MMProjModels}
-}
-
-// LegacyPaths reports old-layout artifacts without reading or modifying them.
-func (l Layout) LegacyPaths() []string {
-	candidates := []string{
-		filepath.Join(l.Root, "data", "llama.cpp"), filepath.Join(l.Root, "config", "launcher.json"),
-		filepath.Join(l.Root, "launcher.json"), filepath.Join(l.Root, "models"), filepath.Join(l.Root, "embeddings"),
-		filepath.Join(l.Root, "rerank"), filepath.Join(l.Root, "mmproj"),
-	}
-	var found []string
-	for _, p := range candidates {
-		if p == l.ModelsDir { // The directory is v1-owned; only flat model files are legacy.
-			entries, err := os.ReadDir(p)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if !e.IsDir() {
-					found = append(found, filepath.Join(p, e.Name()))
-				}
-			}
-			continue
-		}
-		if _, err := os.Lstat(p); err == nil {
-			found = append(found, p)
-		}
-	}
-	return found
 }

@@ -182,14 +182,20 @@ func CollectRouterModels(l layout.Layout) ([]File, []File, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		all = append(all, files...)
+		for _, file := range files {
+			// Router model IDs and presets are defined only for GGUF. Generation
+			// .bin/.ggml files remain usable by single-model API/chat modes.
+			if strings.EqualFold(filepath.Ext(file.Path), ".gguf") {
+				all = append(all, file)
+			}
+		}
 	}
 	projectors, err := Scan(l, MMProj)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(all) == 0 {
-		return nil, projectors, errors.New("generation、embedding 和 rerank 目录中没有可用于 Router 的 .gguf 模型")
+		return nil, projectors, errors.New("llm、embedding 和 rerank 目录中没有可用于 Router 的 .gguf 模型")
 	}
 	if err := CheckModelIDConflicts(all); err != nil {
 		return nil, nil, err

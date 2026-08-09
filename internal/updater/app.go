@@ -2,6 +2,8 @@ package updater
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -168,13 +170,32 @@ func validateReleaseVersion(version string) error {
 }
 
 func validateStagedName(name, prefix, label, goos string) error {
-	if filepath.Base(name) != name || !strings.HasPrefix(name, prefix) {
+	if name != strings.ToLower(name) || filepath.Base(name) != name || !strings.HasPrefix(name, prefix) {
 		return fmt.Errorf("暂存%s文件名无效", label)
 	}
-	if goos == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
-		return fmt.Errorf("Windows 暂存%s必须是 .exe", label)
+	value := name
+	if goos == "windows" {
+		if !strings.HasSuffix(strings.ToLower(name), ".exe") {
+			return fmt.Errorf("Windows 暂存%s必须是 .exe", label)
+		}
+		value = name[:len(name)-4]
+	} else if strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return fmt.Errorf("非 Windows 暂存%s不能是 .exe", label)
+	}
+	token := strings.TrimPrefix(value, prefix)
+	if token == value || len(token) != 16 || !lowerHex(token) {
+		return fmt.Errorf("暂存%s文件名必须包含固定 16 位十六进制 token", label)
 	}
 	return nil
+}
+
+func lowerHex(value string) bool {
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error {
@@ -282,11 +303,15 @@ func copyUpdateBackup(source string) (string, error) {
 
 	extension := filepath.Ext(source)
 	base := strings.TrimSuffix(filepath.Base(source), extension)
-	backup, err := os.CreateTemp(filepath.Dir(source), "."+base+"-rollback-*"+extension)
+	var tokenBytes [8]byte
+	if _, err := io.ReadFull(rand.Reader, tokenBytes[:]); err != nil {
+		return "", err
+	}
+	backupPath := filepath.Join(filepath.Dir(source), "."+base+"-rollback-"+hex.EncodeToString(tokenBytes[:])+extension)
+	backup, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 	if err != nil {
 		return "", err
 	}
-	backupPath := backup.Name()
 	completed := false
 	defer func() {
 		if !completed {

@@ -3,6 +3,7 @@ package update
 import (
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,27 @@ func TestVersionComparisons(t *testing.T) {
 		if err != nil || c != tc.want {
 			t.Fatalf("%s %s: %d %v", tc.a, tc.b, c, err)
 		}
+	}
+}
+
+func TestStateRejectsNonHexAndDuplicateFields(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	base := State{Schema: 1, LlamaTag: "b123", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b123"), Assets: []InstalledAsset{{Name: "a.zip", SHA256: strings.Repeat("a", 64)}}}
+	nonHex := base
+	nonHex.Assets = []InstalledAsset{{Name: "a.zip", SHA256: strings.Repeat("z", 64)}}
+	if err := ValidateState(l, nonHex); err == nil {
+		t.Fatal("accepted non-hex digest")
+	}
+	duplicate := base
+	duplicate.Assets = append(duplicate.Assets, duplicate.Assets[0])
+	if err := ValidateState(l, duplicate); err == nil {
+		t.Fatal("accepted duplicate assets")
+	}
+	duplicateCleanup := base
+	duplicateCleanup.PendingCleanup = []string{"runtime/llama.cpp/cpu/b122", "runtime/llama.cpp/cpu/b122"}
+	if err := ValidateState(l, duplicateCleanup); err == nil {
+		t.Fatal("accepted duplicate cleanup paths")
 	}
 }
 func TestStateRuntimeVersionIsLast(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,5 +27,21 @@ func TestEnsureResetAndRejectWhitespace(t *testing.T) {
 	}
 	if _, err = Read(l); err == nil {
 		t.Fatal("accepted whitespace")
+	}
+}
+
+func TestReadAcceptsMaximumLengthKey(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(filepath.Dir(l.APIKeyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("A", 8167)
+	if err := os.WriteFile(l.APIKeyFile, []byte(want+"\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(l)
+	if err != nil || got != want {
+		t.Fatalf("length=%d err=%v", len(got), err)
 	}
 }

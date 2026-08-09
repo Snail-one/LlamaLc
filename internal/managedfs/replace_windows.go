@@ -3,21 +3,31 @@
 package managedfs
 
 import (
-	"errors"
-	"os"
+	"syscall"
+	"unsafe"
 )
 
+const (
+	moveFileReplaceExisting = 0x1
+	moveFileWriteThrough    = 0x8
+)
+
+var moveFileExW = syscall.NewLazyDLL("kernel32.dll").NewProc("MoveFileExW")
+
 func replaceFile(source, destination string) error {
-	backup := destination + ".replace-backup"
-	_ = os.Remove(backup)
-	if err := os.Rename(destination, backup); err != nil && !errors.Is(err, os.ErrNotExist) {
+	sourcePointer, err := syscall.UTF16PtrFromString(source)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(source, destination); err != nil {
-		_ = os.Rename(backup, destination)
+	destinationPointer, err := syscall.UTF16PtrFromString(destination)
+	if err != nil {
 		return err
 	}
-	_ = os.Remove(backup)
+	result, _, callErr := moveFileExW.Call(uintptr(unsafe.Pointer(sourcePointer)), uintptr(unsafe.Pointer(destinationPointer)), moveFileReplaceExisting|moveFileWriteThrough)
+	if result == 0 {
+		return callErr
+	}
 	return nil
 }
+
 func syncDir(string) error { return nil }

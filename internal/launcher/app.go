@@ -4,9 +4,11 @@ package launcher
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -26,18 +28,16 @@ import (
 var detectLayout = layout.Detect
 
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor llama.Executor) int {
-	if len(args) == 1 && (args[0] == "version" || args[0] == "-v" || args[0] == "--version") {
-		fmt.Fprintln(stdout, buildversion.String())
-		return 0
-	}
-	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
-		cli.Usage(stdout)
-		return 0
+	if len(args) > 0 && (args[0] == "version" || args[0] == "-v" || args[0] == "--version" || args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
+		return (&cli.App{In: stdin, Out: stdout, Err: stderr}).Run(args)
 	}
 	if len(args) > 0 && !knownTopLevel(args[0]) {
 		fmt.Fprintf(stderr, "错误: 未知命令 %q\n", args[0])
 		cli.Usage(stderr)
 		return 2
+	}
+	if (len(args) == 1 && args[0] == "update") || helpRequested(args) {
+		return (&cli.App{In: stdin, Out: stdout, Err: stderr}).Run(args)
 	}
 	l, err := detectLayout()
 	if err != nil {
@@ -46,51 +46,49 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, executor lla
 	}
 	return MainWithLayout(args, l, stdin, stdout, stderr, executor)
 }
+
+func helpRequested(args []string) bool {
+	for _, argument := range args {
+		if argument == "--" {
+			return false
+		}
+		if argument == "-h" || argument == "--help" {
+			return true
+		}
+	}
+	return false
+}
 func knownTopLevel(name string) bool {
 	switch name {
-	case "run", "config", "update", "maintenance", "version":
+	case "run", "router", "key", "update", "cleanup", "version", "help", "-h", "--help", "-v", "--version":
 		return true
 	}
 	return false
 }
 func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, stderr io.Writer, executor llama.Executor) int {
-	for _, directory := range l.Directories() {
-		if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
-			fmt.Fprintln(stderr, "错误: 创建部署目录:", err)
-			return 1
-		}
-	}
-	cleanupUpdaterRunners(l, stderr)
-	cfg, created, err := config.Ensure(l)
-	if err != nil {
+	if err := validateDeploymentBin(l); err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
-	}
-	if created {
-		fmt.Fprintln(stdout, "已生成配置:", l.ConfigFile)
-	}
-	key, keyCreated, err := secrets.Ensure(l)
-	if err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
-	}
-	if keyCreated {
-		fmt.Fprintf(stdout, "已自动生成 %d 位 API key 并保存到: %s\n", len(key), l.APIKeyFile)
-		fmt.Fprintln(stdout, "API key 文件:", l.APIKeyFile)
-	}
-	for _, path := range l.LegacyPaths() {
-		fmt.Fprintf(stderr, "旧版路径提示: %s（不会自动迁移或删除；可在清理界面逐项处理）\n", path)
 	}
 	client := release.NewClient(os.Getenv("LLAMALC_GITHUB_PROXY"))
 	client.Progress = cli.NewDownloadReporter(stdout)
 	manager := update.NewManager(l, client)
 	manager.Out, manager.Err = stdout, stderr
-	app := &cli.App{Layout: l, Config: cfg, In: stdin, Out: stdout, Err: stderr, Executor: executor, Updates: manager, GOOS: runtime.GOOS}
+	app := &cli.App{Layout: l, Config: config.Default(), In: stdin, Out: stdout, Err: stderr, Executor: executor, Updates: manager, GOOS: runtime.GOOS, Interactive: inputIsTerminal(stdin)}
 	if len(args) > 0 {
+		if err := initializeForCommand(args, l, app, stdout); err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
 		return app.Run(args)
+	}
+	if err := ensureManagementDirectories(l); err != nil {
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
 	}
 	reader := bufio.NewReader(stdin)
 	app.In = reader
+	app.Interactive = true
 	llamaVersion := ""
 	runtimeInstalled := false
 	if state, exists, e := update.LoadState(l); e == nil && exists && state.ActiveRuntime != "" {
@@ -103,12 +101,38 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 			}
 		}
 	}
+	cfg := config.Default()
+	if runtimeInstalled {
+		var initErr error
+		cfg, initErr = initializeOperational(l, stdout)
+		if initErr != nil {
+			fmt.Fprintln(stderr, "错误:", initErr)
+			return 1
+		}
+		app.Config = cfg
+	}
 	notice := strings.TrimSpace(os.Getenv("LLAMALC_UPDATED_VERSION"))
 	_ = os.Unsetenv("LLAMALC_UPDATED_VERSION")
 	if notice != buildversion.Version {
 		notice = ""
 	}
-	menu := &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: app.Run, Ready: signalUpdateReady,
+	var menu *tui.App
+	runFromMenu := func(command []string) int {
+		code := app.Run(command)
+		if code == 0 && len(command) >= 2 && command[0] == "update" && command[1] == "llama" {
+			loaded, err := initializeOperational(l, stdout)
+			if err != nil {
+				fmt.Fprintln(stderr, "错误: 安装完成但无法初始化运行目录:", err)
+				return 1
+			}
+			app.Config = loaded
+			if menu != nil {
+				menu.Defaults = launchDefaults(loaded)
+			}
+		}
+		return code
+	}
+	menu = &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: runFromMenu, Ready: signalUpdateReady,
 		LaunchWizard: true, ClassicInteraction: true, RuntimeInstalled: runtimeInstalled,
 		RefreshLlamaVersion: func() string {
 			state, exists, err := update.LoadState(l)
@@ -123,16 +147,7 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 			}
 			return value
 		},
-		Defaults: tui.LaunchDefaults{
-			GPULayers: cfg.Runtime.GPULayers, FlashAttention: cfg.Runtime.FlashAttention,
-			Host: cfg.API.Host, Pooling: cfg.Embedding.Pooling,
-			ContextSize: cfg.Runtime.ContextSize, Threads: cfg.Runtime.Threads,
-			BatchSize: cfg.Runtime.BatchSize, UBatchSize: cfg.Runtime.UBatchSize,
-			Parallel: cfg.API.Parallel, Port: cfg.API.Port,
-			EmbeddingBatch: cfg.Embedding.BatchSize, EmbeddingUBatch: cfg.Embedding.UBatchSize,
-			Normalize: cfg.Embedding.Normalize, ModelsMax: cfg.Router.ModelsMax,
-			UI: cfg.API.UI, Autoload: cfg.Router.Autoload,
-		},
+		Defaults:       launchDefaults(cfg),
 		BackendOptions: func() (string, []string, string, error) { return manager.AvailableLlamaBackends(context.Background()) },
 		RouterPresetExists: func() bool {
 			info, err := os.Lstat(l.RouterPreset)
@@ -157,32 +172,91 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	return menu.RunMenu()
 }
 
-func cleanupUpdaterRunners(l layout.Layout, stderr io.Writer) {
-	entries, err := os.ReadDir(l.Bin)
+func validateDeploymentBin(l layout.Layout) error {
+	if filepath.Base(l.Root) != layout.RootName && !(runtime.GOOS == "windows" && strings.EqualFold(filepath.Base(l.Root), layout.RootName)) {
+		return fmt.Errorf("部署根目录必须命名为 %s", layout.RootName)
+	}
+	info, err := os.Lstat(l.Bin)
 	if err != nil {
-		return
+		return fmt.Errorf("实际操作要求有效的 %s: %w", filepath.Join(layout.RootName, "bin"), err)
 	}
-	for _, entry := range entries {
-		if !validUpdaterRunnerName(entry.Name()) || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		if err := os.Remove(l.Bin + string(os.PathSeparator) + entry.Name()); err != nil {
-			fmt.Fprintln(stderr, "警告: 暂时无法清理 updater 运行副本:", entry.Name())
-		}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("LlamaLc/bin 必须是普通目录且不能是符号链接")
 	}
+	return nil
 }
 
-func validUpdaterRunnerName(name string) bool {
-	value := strings.ToLower(name)
-	value = strings.TrimSuffix(value, ".exe")
-	suffix := strings.TrimPrefix(value, ".llamaup-run-")
-	if suffix == value || len(suffix) != 16 {
+func inputIsTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
 		return false
 	}
-	for _, character := range suffix {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			return false
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func ensureManagementDirectories(l layout.Layout) error {
+	for _, directory := range []string{l.StateDir, l.RuntimeDir, l.LlamaRuntimeDir, l.RecoveryDir} {
+		if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
+			return err
 		}
 	}
-	return true
+	return nil
+}
+
+func initializeOperational(l layout.Layout, output io.Writer) (config.Config, error) {
+	for _, directory := range l.Directories() {
+		if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
+			return config.Config{}, err
+		}
+	}
+	cfg, created, err := config.Ensure(l)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if created {
+		fmt.Fprintln(output, "已生成配置:", l.ConfigFile)
+	}
+	key, keyCreated, err := secrets.Ensure(l)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if keyCreated {
+		fmt.Fprintf(output, "已自动生成 %d 位 API key 并保存到: %s\n", len(key), l.APIKeyFile)
+	}
+	return cfg, nil
+}
+
+func initializeForCommand(args []string, l layout.Layout, app *cli.App, output io.Writer) error {
+	switch args[0] {
+	case "update", "cleanup":
+		return ensureManagementDirectories(l)
+	case "router":
+		for _, directory := range []string{l.ConfigDir, l.RouterConfigDir, l.StateDir, l.RouterStateDir, l.GenerationModels, l.EmbeddingModels, l.RerankModels, l.MMProjModels} {
+			if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
+				return err
+			}
+		}
+		cfg, _, err := config.Load(l)
+		app.Config = cfg
+		return err
+	case "key":
+		if err := managedfs.EnsureDir(l.Root, l.SecretsDir, 0o700); err != nil {
+			return err
+		}
+		if len(args) >= 2 && args[1] == "reset" {
+			return nil
+		}
+		_, _, err := secrets.Ensure(l)
+		return err
+	case "run":
+		cfg, err := initializeOperational(l, output)
+		app.Config = cfg
+		return err
+	}
+	return nil
+}
+
+func launchDefaults(cfg config.Config) tui.LaunchDefaults {
+	return tui.LaunchDefaults{GPULayers: cfg.Runtime.GPULayers, FlashAttention: cfg.Runtime.FlashAttention, Host: cfg.API.Host, Pooling: cfg.Embedding.Pooling, ContextSize: cfg.Runtime.ContextSize, Threads: cfg.Runtime.Threads, BatchSize: cfg.Runtime.BatchSize, UBatchSize: cfg.Runtime.UBatchSize, Parallel: cfg.API.Parallel, Port: cfg.API.Port, EmbeddingBatch: cfg.Embedding.BatchSize, EmbeddingUBatch: cfg.Embedding.UBatchSize, Normalize: cfg.Embedding.Normalize, ModelsMax: cfg.Router.ModelsMax, UI: cfg.API.UI, Autoload: cfg.Router.Autoload}
 }

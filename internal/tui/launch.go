@@ -47,10 +47,10 @@ func (a *App) configureLaunch(mode string, command []string) ([]string, error) {
 				return nil, err
 			}
 			if minimum > 0 {
-				extra = append(extra, "--image-min-tokens", strconv.Itoa(minimum))
+				result = append(result, "--image-min-tokens", strconv.Itoa(minimum))
 			}
 			if maximum > 0 {
-				extra = append(extra, "--image-max-tokens", strconv.Itoa(maximum))
+				result = append(result, "--image-max-tokens", strconv.Itoa(maximum))
 			}
 		}
 	}
@@ -204,14 +204,8 @@ func (a *App) configureLaunch(mode string, command []string) ([]string, error) {
 		result = append(result, "--")
 		result = append(result, extra...)
 	}
-	fmt.Fprintln(a.Out, "启动参数:", safeText(strings.Join(result, " ")))
-	ok, err := a.readYesNo("确认使用以上参数启动", true)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, errLaunchCancelled
-	}
+	// The CLI resolves models, validates the mode-specific options and builds
+	// the actual llama.cpp command before showing the final confirmation.
 	return result, nil
 }
 

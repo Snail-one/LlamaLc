@@ -66,7 +66,17 @@ func EnsureDir(root, path string, perm os.FileMode) error {
 	if err := Validate(root, path, false); err != nil {
 		return err
 	}
-	return os.Chmod(path, perm)
+	return protectPath(path, perm)
+}
+
+// Protect reapplies the platform-specific private permissions to an existing
+// managed path. On Windows this installs a protected current-user/LocalSystem
+// DACL; on Unix it applies the requested mode.
+func Protect(root, path string, perm os.FileMode) error {
+	if err := Validate(root, path, false); err != nil {
+		return err
+	}
+	return protectPath(path, perm)
 }
 
 func AtomicWrite(root, path string, data []byte, perm os.FileMode) error {
@@ -101,7 +111,7 @@ func AtomicWrite(root, path string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if err = os.Chmod(tmp, perm); err != nil {
+	if err = protectPath(tmp, perm); err != nil {
 		return err
 	}
 	if err = replaceFile(tmp, path); err != nil {

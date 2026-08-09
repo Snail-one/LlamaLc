@@ -31,7 +31,7 @@ func (a *App) runCleanupMenu() error {
 			fmt.Fprintln(a.Out, "未发现需要处理的残留或恢复目录。")
 		} else {
 			fmt.Fprintf(a.Out, "发现 %d 项：可安全清理 %d，需确认 %d，暂不处理 %d。\n", len(items), automatic, review, recent)
-			fmt.Fprintln(a.Out, "批量清理只处理“可安全清理”项目；旧版路径绝不会批量删除。")
+			fmt.Fprintln(a.Out, "批量清理只处理经过所有权和快照复检的安全项。")
 		}
 		fmt.Fprintln(a.Out, "\n操作")
 		fmt.Fprintf(a.Out, "  [1] 清理全部安全项（%d 项）\n", automatic)
@@ -91,7 +91,7 @@ func (a *App) manageCleanupCandidate(reader *bufio.Reader, item update.CleanupCa
 		fmt.Fprintln(a.Out, "\n项目操作")
 		fmt.Fprintln(a.Out, "  [1] 查看目录内容")
 		fmt.Fprintln(a.Out, "  [2] 使用系统文件管理器打开")
-		if item.Recent {
+		if item.Recent || item.Warning {
 			fmt.Fprintln(a.Out, "  [3] 永久删除（当前不可用）")
 		} else {
 			fmt.Fprintln(a.Out, "  [3] 永久删除")
@@ -117,6 +117,10 @@ func (a *App) manageCleanupCandidate(reader *bufio.Reader, item update.CleanupCa
 			}
 			fmt.Fprintln(a.Out, "已请求系统文件管理器打开:", safeOutput(item.Path))
 		case "3":
+			if item.Warning {
+				fmt.Fprintln(a.Out, "扫描警告仅供检查，不能删除。")
+				continue
+			}
 			if item.Recent {
 				fmt.Fprintln(a.Out, "该项目可能仍在使用，当前不允许删除。")
 				continue
@@ -189,6 +193,9 @@ func cleanupCounts(items []update.CleanupCandidate) (automatic, review, recent i
 }
 
 func cleanupStatus(item update.CleanupCandidate) string {
+	if item.Warning {
+		return "扫描警告（不可删除）"
+	}
 	if item.Automatic {
 		return "可安全清理"
 	}

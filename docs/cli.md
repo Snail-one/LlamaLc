@@ -1,36 +1,27 @@
 # CLI、菜单与配置
 
-命令按功能分组：
+完整公开接口：
 
 ```text
-llamalc run api|embedding|rerank|router|chat
-llamalc config router generate [--force] [preset 选项]
-llamalc config key show|reset
-llamalc update check [all|llama|launcher]
-llamalc update llama|launcher|all
-llamalc maintenance cleanup
+llamalc run api|embedding|rerank|router|chat [模式选项] [-- llama.cpp 参数]
+llamalc router generate [--force] [preset 选项]
+llamalc key show
+llamalc key reset [--yes]
+llamalc update check [all|llama|launcher] [--json]
+llamalc update llama [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+llamalc update launcher [--version SEMVER] [--reinstall] [--allow-downgrade] [--yes]
+llamalc update all [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+llamalc cleanup
 llamalc version
+llamalc help
 ```
 
-运行命令用 `--` 分隔要原样传给 llama.cpp 的参数。配置优先级是命令行参数、`config/llamalc.json`、内置默认值。旧的 `serve`、`install`、`router-config` 等命令不是别名，会按未知命令拒绝。
+裸 `llamalc update` 只显示帮助。`serve`、`install`、`check-update`、`router-config`、`config` 和 `maintenance` 均不是别名。
 
-主菜单固定为 `[1] 启动`、`[2] 配置`、`[3] 升级维护`。主菜单直接回车进入启动目录；启动和配置子菜单直接回车选择第一项，升级维护必须输入明确编号。子菜单、模型选择和参数向导输入 `q` 返回主菜单；允许值为 `0` 的参数仍把 `0` 当作参数值。
+每种运行模式使用独立参数集。例如 Router 不接受 `--model`，Chat 不接受 `--host`、`--port` 或其他网络参数。推荐使用 `--gpu-layers`、`--context-size`、`--flash-attention` 和 `--normalize`；现有的 `--n-gpu-layers`、`--ctx-size`、`--flash-attn` 与 `--embd-normalize` 仍可使用。额外 llama.cpp 参数必须位于 `--` 后。
 
-启动菜单会递归扫描分类模型目录并稳定排序，显示编号、文件名和大小：
+配置优先级为命令行、schema 1 的 `config/llamalc.json`、内置默认值。API/Chat 使用 `models/llm`，Embedding、Rerank 和 mmproj 分别使用同名分类目录。Router 仅收录 GGUF，并拒绝跨目录模型 ID 冲突。
 
-- API 与聊天读取 `models/generation`；
-- Embedding 读取 `models/embedding`；
-- Rerank 读取 `models/rerank`；
-- API 还会读取 `models/mmproj`，标记文件名匹配的推荐项，也允许填写其他路径。
+菜单回车默认进入第一目录和第一操作；模型列表回车默认选择第一项，`0/q` 返回。参数向导只收集输入，模型解析、最终校验和命令生成完成后才显示经过脱敏的真实命令并请求启动确认。
 
-选定模型后，菜单逐项询问上下文、GPU 层、CPU 线程、batch/ubatch、Flash Attention、服务并发、监听地址、端口和 Web UI。Embedding 还询问 pooling 与归一化；Router 还询问模型加载上限、autoload 和 Embedding preset 参数。直接回车使用 `llamalc.json` 默认值，最后可填写带引号的自定义 llama.cpp 参数，并在启动前确认。进程退出后按 Enter 返回主菜单；llama.cpp 的退出码会原样返回给命令行调用者。
-
-`config router generate` 同时收集 generation、embedding 和 rerank 模型，为生成模型匹配 mmproj，并拒绝跨目录同名 ID。已有手动 preset 默认不覆盖，必须使用 `--force` 或在菜单中明确确认。
-
-显示或重置 API key 前，菜单会分别要求明文显示确认或失效确认。自动生成的 key 是 128 个 URL-safe 字符。
-
-菜单安装或更新 llama.cpp 时，会先读取当前 Release 并按编号列出本平台的全部可用后端。首次安装必须选择；已有安装会标记当前后端，直接回车即可沿用。当前后端已被上游移除时必须重新选择。
-
-没有有效运行时时，无参数启动会先进入维护模式，可安装 llama.cpp、更新启动器或退出。状态损坏或存在未登记的新布局运行时时，修复安装会先隔离到 `runtime/recovery`；安装失败会恢复原状态。
-
-配置必须是 schema 1，未知字段、尾随 JSON 或非法值会立即报错。完整示例见 [examples/llamalc.json](../examples/llamalc.json)。API key 与更新状态不会写入主配置。
+更新、检查和清理不加载主配置或 API key；Router 配置不要求运行时；只有服务启动才加载配置、密钥和运行时。没有有效运行时时，无参数启动直接进入维护模式，安装成功后才创建正常运行所需的配置、密钥和模型目录。

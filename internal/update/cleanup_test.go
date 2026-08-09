@@ -3,12 +3,13 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
 )
 
-func TestCleanupClassifiesLegacyAndSafeUpdaterSeparately(t *testing.T) {
+func TestCleanupIgnoresLegacyAndStrictlyRecognizesUpdaterRunner(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "LlamaLc")
 	l, _ := layout.New(root, "linux")
 	legacy := filepath.Join(root, "data", "llama.cpp")
@@ -29,25 +30,78 @@ func TestCleanupClassifiesLegacyAndSafeUpdaterSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var legacyItem, runnerItem *CleanupCandidate
+	var runnerItem *CleanupCandidate
 	for i := range items {
 		switch items[i].Path {
-		case legacy:
-			legacyItem = &items[i]
 		case runner:
 			runnerItem = &items[i]
 		}
 	}
-	if legacyItem == nil || legacyItem.Automatic || !legacyItem.Legacy {
-		t.Fatalf("legacy=%+v", legacyItem)
+	for _, item := range items {
+		if item.Path == legacy {
+			t.Fatalf("legacy path was inspected: %+v", item)
+		}
 	}
 	if runnerItem == nil || !runnerItem.Automatic || runnerItem.Recent {
 		t.Fatalf("runner=%+v", runnerItem)
 	}
-	if err := os.WriteFile(filepath.Join(legacy, "changed"), []byte("x"), 0o600); err != nil {
+	invalid := filepath.Join(l.Bin, ".llamaup-run-not-a-token")
+	if err := os.WriteFile(invalid, []byte("runner"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := DeleteCandidate(l, *legacyItem); err == nil {
-		t.Fatal("changed legacy directory was deleted")
+	items, _ = CleanupCandidates(l)
+	for _, item := range items {
+		if item.Path == invalid {
+			t.Fatal("accepted invalid runner name")
+		}
+	}
+}
+
+func TestCleanupDamagedStateStillListsRuntimeWithWarning(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	runtimeDirectory := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(l.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(l.UpdateStateFile, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := CleanupCandidates(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRuntime, foundWarning := false, false
+	for _, item := range items {
+		if item.Path == runtimeDirectory && strings.Contains(item.Reason, "扫描警告") {
+			foundRuntime = true
+		}
+		if item.Warning && strings.Contains(item.Reason, "更新状态损坏") {
+			foundWarning = true
+		}
+	}
+	if !foundRuntime || !foundWarning {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestCleanupRequiresValidOwnershipMarkerForTempDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	path := filepath.Join(l.LlamaRuntimeDir, ".staging-0123456789abcdef")
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := CleanupCandidates(l)
+	for _, item := range items {
+		if item.Path == path && item.Automatic {
+			t.Fatal("unmarked directory accepted")
+		}
+	}
+	if err := createOwnedTempDirectory(l, path+"2", "0123456789abcdef", "llama-runtime-staging"); err == nil {
+		t.Fatal("accepted path whose name does not match token")
 	}
 }

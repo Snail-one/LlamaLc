@@ -1,41 +1,43 @@
 # LlamaLc
 
-`LlamaLc` 是只使用 Go 标准库的 llama.cpp 启动、配置和更新工具，支持 Linux/Windows 的 amd64 与 arm64。当前架构使用全新部署布局，不兼容旧版配置，也不会迁移或自动删除旧版运行时和模型。正式版本号只来自构建时对应的 Git tag；未打 tag 的本地构建显示 `dev`。
+`LlamaLc` 是仅使用 Go 标准库的 llama.cpp 启动、配置与更新工具，支持 Linux/Windows 的 amd64 和 arm64。
 
-## 快速安装
-
-从 Releases 下载 `llamalc-<os>-<arch>-<version>`，校验 `SHA256SUMS.txt` 后解压。归档会创建：
+发布归档严格包含：
 
 ```text
 LlamaLc/bin/llamalc[.exe]
 LlamaLc/bin/llamaup[.exe]
 ```
 
-首次安装运行时并启动 API：
+全新部署后先安装运行时，再把对话/生成模型放入 `LlamaLc/models/llm`：
 
 ```sh
-LlamaLc/bin/llamalc update llama --backend cpu
+LlamaLc/bin/llamalc update llama --backend cpu --yes
 LlamaLc/bin/llamalc run api --model your-model.gguf
 ```
 
-不带参数运行 `llamalc` 可进入中文菜单。常用命令：
+不带参数运行可进入中文菜单。公开命令只有：
 
-```sh
-llamalc run embedding --model embedding.gguf
-llamalc config router generate
-llamalc config key reset
-llamalc update check all
-llamalc update all
-llamalc maintenance cleanup
+```text
+llamalc run api|embedding|rerank|router|chat
+llamalc router generate
+llamalc key show
+llamalc key reset [--yes]
+llamalc update check [all|llama|launcher] [--json]
+llamalc update llama|launcher|all [更新选项]
+llamalc cleanup
 llamalc version
+llamalc help
 ```
 
-交互菜单延续 `v0.1.5` 的完整使用流程：按目录扫描并编号选择模型、选择或自动匹配 mmproj、逐项设置运行和网络参数、显示最终参数并确认启动；下载会显示地址、代理/直连路线、进度、速度、SHA-256 校验及直连回退状态。
+运行参数按模式独立校验；透传给 llama.cpp 的参数必须放在 `--` 后。更新与密钥重置在交互终端要求确认，非交互调用必须给出 `--yes`。
 
-## 文档
+本项目不兼容、不检测、不迁移也不清理任何旧布局。`models/generation` 同样不会被读取、提示或操作。
 
-- [架构与包职责](docs/architecture.md)
+详细说明：
+
 - [CLI、菜单和配置](docs/cli.md)
-- [部署与全新安装](docs/deployment.md)
+- [部署目录](docs/deployment.md)
 - [更新、安全校验和恢复](docs/updates.md)
-- [构建、测试和发布](docs/development.md)
+- [架构](docs/architecture.md)
+- [开发与发布](docs/development.md)

@@ -93,8 +93,8 @@ func TestApplyUpdateUsesFixedTargets(t *testing.T) {
 	}
 	launcherTarget := filepath.Join(bin, "llamalc")
 	updaterTarget := filepath.Join(bin, "llamaup")
-	launcherSourceName := ".llamalc-new-test"
-	updaterSourceName := ".llamaup-new-test"
+	launcherSourceName := ".llamalc-new-0123456789abcdef"
+	updaterSourceName := ".llamaup-new-0123456789abcdef"
 	for path, content := range map[string]string{
 		launcherTarget:                         "old launcher",
 		updaterTarget:                          "old updater",
@@ -124,8 +124,8 @@ func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
 	}
 	launcherTarget := filepath.Join(bin, "llamalc")
 	updaterTarget := filepath.Join(bin, "llamaup")
-	launcherSourceName := ".llamalc-new-test"
-	updaterSourceName := ".llamaup-new-test"
+	launcherSourceName := ".llamalc-new-0123456789abcdef"
+	updaterSourceName := ".llamaup-new-0123456789abcdef"
 	launcherSource := filepath.Join(bin, launcherSourceName)
 	updaterSource := filepath.Join(bin, updaterSourceName)
 	for path, content := range map[string]string{
@@ -145,6 +145,7 @@ func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
 		if source == launcherSource {
 			return errors.New("simulated launcher replacement failure")
 		}
+		_ = os.Remove(destination)
 		return os.Rename(source, destination)
 	}
 
@@ -168,12 +169,12 @@ func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
 }
 
 func TestRejectsArbitrarySourceName(t *testing.T) {
-	for _, name := range []string{"launcher.exe", "../.llamalc-new-x.exe", ".llamalc-new-x"} {
+	for _, name := range []string{"launcher.exe", "../.llamalc-new-0123456789abcdef.exe", ".llamalc-new-x.exe", ".llamalc-new-0123456789ABCDEG.exe"} {
 		if err := validateStagedName(name, stagedLauncherPrefix, "启动器", "windows"); err == nil {
 			t.Fatalf("accepted unsafe source name %q", name)
 		}
 	}
-	if err := validateStagedName(".llamalc-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
+	if err := validateStagedName(".llamalc-new-0123456789abcdef.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
 		t.Fatal("accepted launcher staging name as updater staging name")
 	}
 }
