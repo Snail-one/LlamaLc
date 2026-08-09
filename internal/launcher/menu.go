@@ -15,6 +15,8 @@ import (
 
 var errMenuBack = errors.New("返回主菜单")
 
+const menuRule = "------------------------------------------------------------"
+
 type menu struct {
 	app    *Application
 	reader *bufio.Reader
@@ -31,31 +33,7 @@ func (app *Application) RunMenu() int {
 			clearTerminal(app.Stdout)
 		}
 		clearBeforeMenu = false
-		fmt.Fprintf(app.Stdout, `
-llama.cpp Go 启动器
-启动器版本: %s
-llama.cpp: %s
-根目录: %s
-提示: 操作中输入 q 返回主菜单（主菜单输入 q 退出）
-
-API 服务
-  1. 启动单模型 API
-  2. 启动 Embedding API
-  3. 启动 Rerank API
-
-Router 与本地工具
-  4. 生成 Router 配置
-  5. 启动多模型 Router
-  6. 启动 CLI 聊天
-
-维护
-  7. 更新 llama.cpp
-  8. 更新启动器
-  9. 重置 API key
-
-  d. 清理与恢复
-  q. 退出
-`, buildversion.Version, app.llamaVersionDisplay(), app.Root)
+		app.printMainMenu()
 		choice, err := m.readMainChoice()
 		if errors.Is(err, io.EOF) {
 			return 0
@@ -71,6 +49,7 @@ Router 与本地工具
 			continue
 		}
 		clearTerminal(app.Stdout)
+		m.printOperationHeader(choice)
 		if err := m.runChoice(choice); err != nil {
 			if errors.Is(err, io.EOF) {
 				return 0
@@ -86,6 +65,58 @@ Router 与本地工具
 			continue
 		}
 		clearBeforeMenu = true
+	}
+}
+
+func (app *Application) printMainMenu() {
+	fmt.Fprintf(app.Stdout, `
+============================================================
+ llama.cpp Go 启动器
+============================================================
+
+运行状态
+  启动器版本: %s
+  llama.cpp:   %s
+  根目录:      %s
+
+API 服务
+  [1] 启动单模型 API
+  [2] 启动 Embedding API
+  [3] 启动 Rerank API
+
+Router 与本地工具
+  [4] 生成 Router 配置
+  [5] 启动多模型 Router
+  [6] 启动 CLI 聊天
+
+维护
+  [7] 更新 llama.cpp
+  [8] 更新启动器
+  [9] 重置 API key
+
+快捷操作
+  [d] 清理与恢复
+  [q] 退出
+
+直接按 Enter 默认选择 [1]；操作中输入 q 返回主菜单。
+%s
+`, buildversion.Version, app.llamaVersionDisplay(), safeTerminalText(app.Root), menuRule)
+}
+
+func (m *menu) printOperationHeader(choice int) {
+	titles := map[int]string{
+		1: "启动单模型 API",
+		2: "启动 Embedding API",
+		3: "启动 Rerank API",
+		4: "生成 Router 配置",
+		5: "启动多模型 Router",
+		6: "启动 CLI 聊天",
+		7: "更新 llama.cpp",
+		8: "更新启动器",
+		9: "重置 API key",
+	}
+	if title := titles[choice]; title != "" {
+		fmt.Fprintf(m.app.Stdout, "\n%s\n%s\n", title, menuRule)
 	}
 }
 
@@ -328,7 +359,7 @@ func (m *menu) runChoice(choice int) error {
 
 func (m *menu) readMainChoice() (int, error) {
 	for {
-		line, err := m.readLine("请选择 [1]: ")
+		line, err := m.readLine("请选择操作 [1]: ")
 		if err != nil {
 			return 0, err
 		}
@@ -342,14 +373,14 @@ func (m *menu) readMainChoice() (int, error) {
 		if err == nil && value >= 1 && value <= 9 {
 			return value, nil
 		}
-		fmt.Fprintln(m.app.Stderr, "请输入 1 到 9、d 或 q。")
+		fmt.Fprintln(m.app.Stderr, "请输入 1 到 9、d 或 q；直接按 Enter 选择 1。")
 	}
 }
 
 func (m *menu) runCleanupMenu() error {
 	for {
 		candidates, warnings := scanCleanupCandidates(m.app.Root)
-		fmt.Fprintln(m.app.Stdout, "\n清理与恢复")
+		fmt.Fprintf(m.app.Stdout, "\n清理与恢复\n%s\n", menuRule)
 		fmt.Fprintln(m.app.Stdout, "自动清理项经过严格命名、文件类型或所有权标记验证；其余项目必须逐个确认。")
 		for _, warning := range warnings {
 			fmt.Fprintln(m.app.Stderr, "警告:", safeTerminalText(warning))
@@ -369,8 +400,8 @@ func (m *menu) runCleanupMenu() error {
 				fmt.Fprintf(m.app.Stdout, "     原因: %s\n", safeTerminalText(candidate.Reason))
 			}
 		}
-		fmt.Fprintln(m.app.Stdout, "\n  a. 清理全部已验证安全残留")
-		fmt.Fprintln(m.app.Stdout, "  q. 返回主菜单")
+		fmt.Fprintln(m.app.Stdout, "\n  [a] 清理全部已验证安全残留")
+		fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
 		line, err := m.readLine("请选择项目编号或操作: ")
 		if errors.Is(err, errMenuBack) {
 			return nil
@@ -412,10 +443,10 @@ func (m *menu) runCleanupMenu() error {
 
 func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), safeTerminalText(candidate.Reason), safeTerminalText(candidate.Path))
-	fmt.Fprintln(m.app.Stdout, "  v. 查看目录内容")
-	fmt.Fprintln(m.app.Stdout, "  o. 使用系统文件管理器打开")
-	fmt.Fprintln(m.app.Stdout, "  d. 永久删除")
-	fmt.Fprintln(m.app.Stdout, "  Enter. 返回列表")
+	fmt.Fprintln(m.app.Stdout, "  [v] 查看目录内容")
+	fmt.Fprintln(m.app.Stdout, "  [o] 使用系统文件管理器打开")
+	fmt.Fprintln(m.app.Stdout, "  [d] 永久删除")
+	fmt.Fprintln(m.app.Stdout, "  [Enter] 返回列表")
 	line, err := m.readLine("请选择操作: ")
 	if err != nil {
 		return err
@@ -527,8 +558,9 @@ func (m *menu) selectModel(directory string, kind ModelKind, extensions map[stri
 	if len(models) == 0 {
 		return ModelFile{}, fmt.Errorf("目录中没有找到支持的模型: %s", directory)
 	}
-	fmt.Fprintln(m.app.Stdout, "\n发现模型:")
-	fmt.Fprintln(m.app.Stdout, "   q. 返回主菜单")
+	fmt.Fprintln(m.app.Stdout, "\n选择模型")
+	fmt.Fprintln(m.app.Stdout, menuRule)
+	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
 	for i, model := range models {
 		fmt.Fprintf(m.app.Stdout, "  %2d. %s  (%s)\n", i+1, safeTerminalText(model.ID), formatSize(model.Size))
 	}
@@ -542,9 +574,10 @@ func (m *menu) selectModel(directory string, kind ModelKind, extensions map[stri
 func (m *menu) selectProjector(model ModelFile, projectors []ModelFile) (*ModelFile, error) {
 	recommended := FindMatchingMmproj(model, projectors)
 	defaultChoice := 0
-	fmt.Fprintln(m.app.Stdout, "\n可用 mmproj:")
-	fmt.Fprintln(m.app.Stdout, "   q. 返回主菜单")
-	fmt.Fprintln(m.app.Stdout, "   0. 不使用 mmproj")
+	fmt.Fprintln(m.app.Stdout, "\n选择 mmproj")
+	fmt.Fprintln(m.app.Stdout, menuRule)
+	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
+	fmt.Fprintln(m.app.Stdout, "  [0] 不使用 mmproj")
 	for i, projector := range projectors {
 		label := ""
 		if recommended != nil && projector.Path == recommended.Path {
@@ -620,6 +653,9 @@ func hasFlag(args []string, name string) bool {
 }
 
 func (m *menu) readRuntimeArguments(batchDefault, ubatchDefault int, includeParallel bool) ([]string, error) {
+	fmt.Fprintln(m.app.Stdout, "\n运行参数")
+	fmt.Fprintln(m.app.Stdout, menuRule)
+	fmt.Fprintln(m.app.Stdout, "直接按 Enter 使用方括号中的默认值。")
 	ctx, err := m.readNonNegativeInt("上下文长度 --ctx-size（0 使用模型元数据）", m.app.Config.Server.ContextSize)
 	if err != nil {
 		return nil, err
@@ -677,6 +713,8 @@ func (m *menu) readBatchPair(prefix string, batchDefault, ubatchDefault int) (in
 }
 
 func (m *menu) readNetworkArguments() ([]string, error) {
+	fmt.Fprintln(m.app.Stdout, "\n网络参数")
+	fmt.Fprintln(m.app.Stdout, menuRule)
 	host, err := m.readValidatedString("监听地址 --host", m.app.Config.Server.Host, func(value string) error {
 		if strings.TrimSpace(value) == "" {
 			return errors.New("监听地址不能为空")
@@ -776,6 +814,8 @@ func (m *menu) pause() error {
 }
 
 func (m *menu) readCustomArguments() ([]string, error) {
+	fmt.Fprintln(m.app.Stdout, "\n高级选项")
+	fmt.Fprintln(m.app.Stdout, menuRule)
 	for {
 		line, err := m.readLine("自定义 llama.cpp 参数（留空跳过）: ")
 		if err != nil {

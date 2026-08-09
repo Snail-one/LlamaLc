@@ -23,15 +23,22 @@ func runMaintenanceMenu(manager *UpdateManager, stdin io.Reader) maintenanceMenu
 	reader := bufio.NewReader(stdin)
 	for {
 		fmt.Fprintf(manager.Stdout, `
-llama.cpp 维护模式
-根目录: %s
-未找到有效的受管 llama.cpp 运行时。
+============================================================
+ llama.cpp 维护模式
+============================================================
 
-  1. 安装 llama.cpp
-  2. 更新启动器
-  q. 退出
+运行状态
+  llama.cpp: 未安装或运行时无效
+  根目录:    %s
+
+可用操作
+  [1] 安装 llama.cpp
+  [2] 更新启动器
+  [q] 退出
+
+------------------------------------------------------------
 `, manager.Root)
-		fmt.Fprint(manager.Stdout, "请选择: ")
+		fmt.Fprint(manager.Stdout, "请选择操作: ")
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			fmt.Fprintln(manager.Stderr, "错误:", err)
@@ -72,7 +79,7 @@ llama.cpp 维护模式
 			}
 			return maintenanceMenuResult{code: code, input: reader}
 		default:
-			fmt.Fprintln(manager.Stderr, "错误: 请输入 1、2 或 q")
+			fmt.Fprintln(manager.Stderr, "错误: 请输入 1、2 或 q。")
 			if errors.Is(err, io.EOF) {
 				return maintenanceMenuResult{code: 1, input: reader}
 			}

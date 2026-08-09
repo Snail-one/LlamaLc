@@ -88,9 +88,9 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"API 服务", "Router 与本地工具", "维护",
-		"7. 更新 llama.cpp", "8. 更新启动器", "9. 重置 API key",
-		"d. 清理与恢复",
+		"运行状态", "API 服务", "Router 与本地工具", "维护", "快捷操作",
+		"[7] 更新 llama.cpp", "[8] 更新启动器", "[9] 重置 API key",
+		"[d] 清理与恢复", "直接按 Enter 默认选择 [1]",
 		"将联网检查并更新启动器，是否继续",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -99,6 +99,29 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "检查并更新启动器与 llama.cpp") {
 		t.Fatalf("combined update option still present:\n%s", stdout)
+	}
+}
+
+func TestMenuShowsOperationAndParameterSections(t *testing.T) {
+	root := t.TempDir()
+	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
+	paths, err := ResolveFixedPaths(root, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root: root, Config: DefaultConfig(), Paths: paths,
+		Stdin: menuInput("1", "q", "q"), Stdout: stdout, Stderr: stderr,
+		Executor: &fakeExecutor{},
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, stderr)
+	}
+	for _, want := range []string{"启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[q] 返回主菜单"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("menu output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 
