@@ -29,3 +29,24 @@ func TestAtomicWriteAndSymlinkRejection(t *testing.T) {
 		t.Fatal("accepted symlink")
 	}
 }
+
+func TestEnsureDirPreservesExistingPermissions(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "models", "llm")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDir(root, target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("EnsureDir changed existing directory permissions to %o", got)
+	}
+}

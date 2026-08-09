@@ -36,6 +36,22 @@ func TestWindowsAtomicWriteReplaceAndProtectedDACL(t *testing.T) {
 	}
 }
 
+func TestWindowsEnsureDirPreservesExistingDACL(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "models", "llm")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := securityDescriptorString(t, target)
+	if err := EnsureDir(root, target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	after := securityDescriptorString(t, target)
+	if after != before {
+		t.Fatalf("EnsureDir changed existing directory DACL:\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
 func securityDescriptorString(t *testing.T, path string) string {
 	t.Helper()
 	pathPointer, err := syscall.UTF16PtrFromString(path)

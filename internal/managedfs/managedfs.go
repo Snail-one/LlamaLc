@@ -63,10 +63,12 @@ func EnsureDir(root, path string, perm os.FileMode) error {
 	if err := os.MkdirAll(path, perm); err != nil {
 		return err
 	}
-	if err := Validate(root, path, false); err != nil {
-		return err
-	}
-	return protectPath(path, perm)
+	// Directory permissions belong to the deployment owner. In particular,
+	// replacing a Windows directory DACL here can make user-provided models
+	// unreadable when the launcher is later run under a different token.
+	// MkdirAll applies perm only while creating missing directories; existing
+	// directories and their ACLs must remain untouched.
+	return Validate(root, path, false)
 }
 
 // Protect reapplies the platform-specific private permissions to an existing
