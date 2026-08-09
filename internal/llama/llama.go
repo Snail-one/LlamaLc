@@ -1,0 +1,274 @@
+// Package llama locates llama.cpp, builds commands, validates exposure and executes processes.
+package llama
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Mode string
+
+const (
+	API       Mode = "api"
+	Embedding Mode = "embedding"
+	Rerank    Mode = "rerank"
+	Router    Mode = "router"
+	Chat      Mode = "chat"
+)
+
+type Runtime struct{ Directory, Server, CLI, Version string }
+type Options struct {
+	Model, MMProj, Preset, Host, GPULayers, FlashAttention, Pooling, APIKeyFile       string
+	Port, ContextSize, Threads, BatchSize, UBatchSize, Parallel, Normalize, ModelsMax int
+	NormalizeSet, UI, Autoload                                                        bool
+	Extra                                                                             []string
+}
+type Command struct {
+	Path string
+	Args []string
+	Dir  string
+}
+
+func Locate(directory, goos string) (Runtime, error) {
+	serverName, cliNames := "llama-server", []string{"llama-cli", "llama"}
+	if goos == "windows" {
+		serverName = "llama-server.exe"
+		cliNames = []string{"llama-cli.exe", "llama.exe"}
+	}
+	if goos != "linux" && goos != "windows" {
+		return Runtime{}, fmt.Errorf("不支持的平台 %s", goos)
+	}
+	server, err := uniqueFile(directory, serverName)
+	if err != nil {
+		return Runtime{}, err
+	}
+	cli := ""
+	for _, n := range cliNames {
+		if p, e := uniqueFile(directory, n); e == nil {
+			cli = p
+			break
+		}
+	}
+	return Runtime{Directory: directory, Server: server, CLI: cli}, nil
+}
+func uniqueFile(root, name string) (string, error) {
+	var found []string
+	err := filepath.WalkDir(root, func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := e.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("运行时不允许符号链接: %s", path)
+		}
+		if !e.IsDir() && strings.EqualFold(e.Name(), name) {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("%s 不是普通文件", path)
+			}
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(found) != 1 {
+		return "", fmt.Errorf("%s 中必须且只能有一个 %s，实际 %d 个", root, name, len(found))
+	}
+	return found[0], nil
+}
+
+func ProbeVersion(ctx context.Context, executable string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "--version")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("探测 llama.cpp 版本: %w", err)
+	}
+	line := strings.TrimSpace(out.String())
+	if line == "" {
+		return "", errors.New("llama.cpp --version 没有输出")
+	}
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	return line, nil
+}
+
+func Build(mode Mode, runtime Runtime, root string, o Options) (Command, error) {
+	if mode == Chat && runtime.CLI == "" {
+		return Command{}, errors.New("当前运行时没有 llama-cli")
+	}
+	path := runtime.Server
+	if mode == Chat {
+		path = runtime.CLI
+	}
+	if mode != Router && strings.TrimSpace(o.Model) == "" {
+		return Command{}, errors.New("模型路径不能为空")
+	}
+	if mode == Router && strings.TrimSpace(o.Preset) == "" {
+		return Command{}, errors.New("Router preset 路径不能为空")
+	}
+	if mode != Chat {
+		if strings.TrimSpace(o.Host) == "" || o.Port < 1 || o.Port > 65535 {
+			return Command{}, errors.New("监听地址或端口无效")
+		}
+	}
+	if strings.TrimSpace(o.GPULayers) == "" {
+		return Command{}, errors.New("gpu-layers 不能为空")
+	}
+	if o.GPULayers != "auto" {
+		value, err := strconv.Atoi(o.GPULayers)
+		if err != nil || value < -1 {
+			return Command{}, errors.New("gpu-layers 必须为 auto 或不小于 -1 的整数")
+		}
+	}
+	if o.FlashAttention != "auto" && o.FlashAttention != "on" && o.FlashAttention != "off" {
+		return Command{}, errors.New("flash-attention 必须为 auto、on 或 off")
+	}
+	if o.ContextSize < 0 || o.BatchSize <= 0 || o.UBatchSize <= 0 || o.UBatchSize > o.BatchSize {
+		return Command{}, errors.New("运行参数 batch/context 无效")
+	}
+	if o.Threads < -1 || o.Threads == 0 {
+		return Command{}, errors.New("threads 必须为 -1 或正整数")
+	}
+	if mode != Chat && (o.Parallel < -1 || o.Parallel == 0) {
+		return Command{}, errors.New("parallel 必须为 -1 或正整数")
+	}
+	if mode == Router && o.ModelsMax < 0 {
+		return Command{}, errors.New("models-max 不能小于 0")
+	}
+	if mode == Embedding {
+		switch o.Pooling {
+		case "none", "mean", "cls", "last", "rank":
+		default:
+			return Command{}, errors.New("pooling 无效")
+		}
+		if o.NormalizeSet && o.Normalize < -1 {
+			return Command{}, errors.New("normalize 不能小于 -1")
+		}
+	}
+	var args []string
+	if mode == Router {
+		args = append(args, "--models-preset", o.Preset, "--models-max", strconv.Itoa(o.ModelsMax))
+		if o.Autoload {
+			args = append(args, "--models-autoload")
+		} else {
+			args = append(args, "--no-models-autoload")
+		}
+	} else {
+		args = append(args, "--model", o.Model)
+	}
+	if o.ContextSize > 0 {
+		args = append(args, "--ctx-size", strconv.Itoa(o.ContextSize))
+	}
+	args = append(args, "--n-gpu-layers", o.GPULayers, "--threads", strconv.Itoa(o.Threads), "--batch-size", strconv.Itoa(o.BatchSize), "--ubatch-size", strconv.Itoa(o.UBatchSize), "--flash-attn", o.FlashAttention)
+	if mode == Chat {
+		args = append(args, "-cnv")
+		args = append(args, o.Extra...)
+		return Command{Path: path, Args: args, Dir: root}, nil
+	}
+	if o.Parallel != 0 {
+		args = append(args, "--parallel", strconv.Itoa(o.Parallel))
+	}
+	if o.MMProj != "" {
+		args = append(args, "--mmproj", o.MMProj)
+	}
+	if mode == Embedding {
+		args = append(args, "--embedding", "--pooling", o.Pooling)
+		if o.NormalizeSet {
+			args = append(args, "--embd-normalize", strconv.Itoa(o.Normalize))
+		}
+	}
+	if mode == Rerank {
+		args = append(args, "--reranking")
+	}
+	args = append(args, "--host", o.Host, "--port", strconv.Itoa(o.Port))
+	if o.UI {
+		args = append(args, "--ui")
+	} else {
+		args = append(args, "--no-ui")
+	}
+	if o.APIKeyFile != "" {
+		args = append(args, "--api-key-file", o.APIKeyFile)
+	}
+	args = append(args, o.Extra...)
+	return Command{Path: path, Args: args, Dir: root}, nil
+}
+
+func ValidateExposure(host, keyFile string, extra []string) error {
+	effective := host
+	effectiveKey := keyFile
+	for i := 0; i < len(extra); i++ {
+		if extra[i] == "--host" && i+1 < len(extra) {
+			effective = extra[i+1]
+			i++
+		} else if strings.HasPrefix(extra[i], "--host=") {
+			effective = strings.TrimPrefix(extra[i], "--host=")
+		} else if extra[i] == "--api-key-file" && i+1 < len(extra) {
+			effectiveKey = extra[i+1]
+			i++
+		} else if strings.HasPrefix(extra[i], "--api-key-file=") {
+			effectiveKey = strings.TrimPrefix(extra[i], "--api-key-file=")
+		}
+	}
+	h := strings.Trim(strings.TrimSpace(effective), "[]")
+	if strings.EqualFold(h, "localhost") || strings.HasSuffix(strings.ToLower(h), ".sock") || (net.ParseIP(h) != nil && net.ParseIP(h).IsLoopback()) {
+		return nil
+	}
+	if effectiveKey != keyFile {
+		return fmt.Errorf("拒绝在非本机地址 %q 上无托管认证启动", effective)
+	}
+	return nil
+}
+
+type Executor interface {
+	Execute(Command, io.Reader, io.Writer, io.Writer) (int, error)
+}
+type OSExecutor struct{}
+
+func (OSExecutor) Execute(c Command, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	cmd := exec.Command(c.Path, c.Args...)
+	cmd.Dir = c.Dir
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), nil
+	}
+	return 1, err
+}
+func Format(c Command) string {
+	items := append([]string{c.Path}, c.Args...)
+	for i, v := range items {
+		if i > 0 && items[i-1] == "--api-key" {
+			v = "******"
+		}
+		if strings.ContainsAny(v, " \t\"") {
+			v = `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
+		}
+		items[i] = v
+	}
+	return strings.Join(items, " ")
+}

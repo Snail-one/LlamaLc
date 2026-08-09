@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "runtime": {
+    "gpu_layers": "auto",
+    "context_size": 0,
+    "threads": -1,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "flash_attention": "auto"
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 29856,
+    "parallel": -1,
+    "ui": false
+  },
+  "embedding": {
+    "pooling": "last",
+    "batch_size": 8192,
+    "ubatch_size": 8192,
+    "normalize": 2
+  },
+  "router": {
+    "models_max": 1,
+    "autoload": true
+  }
+}

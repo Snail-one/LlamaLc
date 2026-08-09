@@ -3,10 +3,18 @@
 package updater
 
 import (
-	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 )
 
-func startUpdatedLauncher(_, _ string, _, _ io.Writer) error {
-	return errors.New("自动启动新版 launcher 仅用于 Windows")
+func startUpdatedLauncher(root, version string, stdout, stderr io.Writer) error {
+	cmd := exec.Command(filepath.Join(root, "bin", "llamalc"))
+	cmd.Dir = root
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "LLAMALC_UPDATED_VERSION="+version)
+	return cmd.Start()
 }

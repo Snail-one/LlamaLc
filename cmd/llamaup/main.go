@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/joker/llama-launcher/internal/updater"
+	"github.com/Snail-one/LlamaLc/internal/updater"
 )
 
 func main() {

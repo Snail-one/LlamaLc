@@ -22,7 +22,7 @@ func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
 	}
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	root := filepath.Join(t.TempDir(), "llama.cpp")
+	root := filepath.Join(t.TempDir(), "LlamaLc")
 	if code := finishUpdate(root, "windows", "v1.2.3", nil, stdout, stderr); code != 0 {
 		t.Fatalf("finish code=%d stderr=%s", code, stderr)
 	}
@@ -53,7 +53,7 @@ func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
 	if code := finishUpdate(t.TempDir(), "windows", "v1.2.3", bytes.NewBufferString("\n"), stdout, stderr); code != 1 {
 		t.Fatalf("finish code=%d, want 1", code)
 	}
-	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llama-launcher.exe", "按 Enter 关闭"} {
+	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llamalc.exe", "按 Enter 关闭"} {
 		if !bytes.Contains(stderr.Bytes(), []byte(want)) {
 			t.Fatalf("failure output missing %q: %s", want, stderr)
 		}
@@ -75,7 +75,7 @@ func TestDirectInvocationExplainsLauncherMenuEntry(t *testing.T) {
 	if code := Main(nil, bytes.NewBufferString("\n"), stdout, stderr); code != 2 {
 		t.Fatalf("direct invocation code=%d, want 2", code)
 	}
-	for _, want := range []string{"内部更新组件", "llama-launcher.exe", "[3] 升级维护 -> [2] 更新启动器"} {
+	for _, want := range []string{"内部更新组件", "llamalc.exe", "[3] 升级维护 -> [2] 更新启动器"} {
 		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
 			t.Fatalf("direct invocation output missing %q: %s", want, stdout)
 		}
@@ -86,14 +86,14 @@ func TestDirectInvocationExplainsLauncherMenuEntry(t *testing.T) {
 }
 
 func TestApplyUpdateUsesFixedTargets(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "llama.cpp")
+	root := filepath.Join(t.TempDir(), "LlamaLc")
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	launcherTarget := filepath.Join(bin, "llama-launcher")
+	launcherTarget := filepath.Join(bin, "llamalc")
 	updaterTarget := filepath.Join(bin, "llamaup")
-	launcherSourceName := ".llama-launcher-new-test"
+	launcherSourceName := ".llamalc-new-test"
 	updaterSourceName := ".llamaup-new-test"
 	for path, content := range map[string]string{
 		launcherTarget:                         "old launcher",
@@ -117,14 +117,14 @@ func TestApplyUpdateUsesFixedTargets(t *testing.T) {
 }
 
 func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "llama.cpp")
+	root := filepath.Join(t.TempDir(), "LlamaLc")
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	launcherTarget := filepath.Join(bin, "llama-launcher")
+	launcherTarget := filepath.Join(bin, "llamalc")
 	updaterTarget := filepath.Join(bin, "llamaup")
-	launcherSourceName := ".llama-launcher-new-test"
+	launcherSourceName := ".llamalc-new-test"
 	updaterSourceName := ".llamaup-new-test"
 	launcherSource := filepath.Join(bin, launcherSourceName)
 	updaterSource := filepath.Join(bin, updaterSourceName)
@@ -168,12 +168,12 @@ func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
 }
 
 func TestRejectsArbitrarySourceName(t *testing.T) {
-	for _, name := range []string{"launcher.exe", "../.llama-launcher-new-x.exe", ".llama-launcher-new-x"} {
+	for _, name := range []string{"launcher.exe", "../.llamalc-new-x.exe", ".llamalc-new-x"} {
 		if err := validateStagedName(name, stagedLauncherPrefix, "启动器", "windows"); err == nil {
 			t.Fatalf("accepted unsafe source name %q", name)
 		}
 	}
-	if err := validateStagedName(".llama-launcher-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
+	if err := validateStagedName(".llamalc-new-x.exe", stagedUpdaterPrefix, "更新器", "windows"); err == nil {
 		t.Fatal("accepted launcher staging name as updater staging name")
 	}
 }

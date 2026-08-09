@@ -1,94 +1,34 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-
 cd /d "%~dp0.."
 
 if not "%~1"=="" set "VERSION=%~1"
-if not defined VERSION (
-    for /f "delims=" %%I in ('git describe --tags --always --dirty 2^>nul') do set "VERSION=%%I"
-)
-if not defined VERSION set "VERSION=dev"
-
-if not defined COMMIT (
-    for /f "delims=" %%I in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT=%%I"
-)
-if not defined COMMIT set "COMMIT=unknown"
-
-if not defined BUILD_DATE (
-    for /f "delims=" %%I in ('powershell -NoProfile -Command "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set "BUILD_DATE=%%I"
-)
-if not defined BUILD_DATE set "BUILD_DATE=unknown"
-
+if not defined VERSION set "VERSION=v1.0.0"
 set "TARGET_ARCH=%~2"
 if not defined TARGET_ARCH set "TARGET_ARCH=amd64"
-
 if /I not "%TARGET_ARCH%"=="amd64" if /I not "%TARGET_ARCH%"=="arm64" (
-    echo Error: architecture must be amd64 or arm64, current: %TARGET_ARCH%
-    echo Usage: scripts\build-windows.cmd [version] [amd64^|arm64]
-    exit /b 2
+  echo Error: architecture must be amd64 or arm64
+  exit /b 2
 )
+where go >nul 2>nul || (echo Error: Go 1.22 or later is required & exit /b 1)
+for /f "delims=" %%I in ('go list -m') do set "MODULE=%%I"
+for /f "delims=" %%I in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT=%%I"
+if not defined COMMIT set "COMMIT=unknown"
+for /f "delims=" %%I in ('powershell -NoProfile -Command "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set "BUILD_DATE=%%I"
 
-where go >nul 2>nul
-if errorlevel 1 (
-    echo Error: Go was not found. Install Go 1.22 or later first.
-    exit /b 1
-)
-
-if not exist "cmd\llama-launcher" (
-    echo Error: cmd\llama-launcher was not found.
-    exit /b 1
-)
-if not exist "cmd\llamaup" (
-    echo Error: cmd\llamaup was not found.
-    exit /b 1
-)
-
-for /f "delims=" %%I in ('go list -m') do set "MODULE_PATH=%%I"
-if not defined MODULE_PATH (
-    echo Error: unable to read module path from go.mod.
-    exit /b 1
-)
-
-set "OUTPUT_DIR=dist\windows-!TARGET_ARCH!\llama.cpp\bin"
-if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
-
-where go-winres >nul 2>nul
-if errorlevel 1 (
-    set "WINRES_COMMAND=go run github.com/tc-hib/go-winres@v0.3.3"
-) else (
-    set "WINRES_COMMAND=go-winres"
-)
-
-echo Building Windows !TARGET_ARCH! version !VERSION!...
+set "OUTPUT=dist\windows-!TARGET_ARCH!\LlamaLc\bin"
+if not exist "!OUTPUT!" mkdir "!OUTPUT!"
 set "GOOS=windows"
 set "GOARCH=!TARGET_ARCH!"
 set "CGO_ENABLED=0"
-
-for %%P in (llama-launcher llamaup) do (
-    go build -trimpath -ldflags "-s -w -X !MODULE_PATH!/internal/version.Version=!VERSION! -X !MODULE_PATH!/internal/version.Commit=!COMMIT! -X !MODULE_PATH!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT_DIR!\%%P.exe" ".\cmd\%%P"
-    if errorlevel 1 (
-        echo Build failed: %%P
-        exit /b 1
-    )
+for %%P in (llamalc llamaup) do (
+  go build -trimpath -ldflags "-s -w -X !MODULE!/internal/version.Version=!VERSION! -X !MODULE!/internal/version.Commit=!COMMIT! -X !MODULE!/internal/version.BuildDate=!BUILD_DATE!" -o "!OUTPUT!\%%P.exe" ".\cmd\%%P" || exit /b 1
 )
 
-for %%P in (llama-launcher llamaup) do (
-    !WINRES_COMMAND! patch --in windows-manifest.json --no-backup "!OUTPUT_DIR!\%%P.exe"
-    if errorlevel 1 (
-        echo Failed to embed the asInvoker manifest: %%P
-        exit /b 1
-    )
-    findstr /L /C:"asInvoker" "!OUTPUT_DIR!\%%P.exe" >nul
-    if errorlevel 1 (
-        echo Manifest verification failed: %%P
-        exit /b 1
-    )
+where go-winres >nul 2>nul
+if errorlevel 1 (set "WINRES=go run github.com/tc-hib/go-winres@v0.3.3") else (set "WINRES=go-winres")
+for %%P in (llamalc llamaup) do (
+  !WINRES! patch --in build\windows\manifest.json --no-backup "!OUTPUT!\%%P.exe" || exit /b 1
 )
-
-echo Build complete: %CD%\!OUTPUT_DIR!
-echo   llama-launcher.exe
-echo   llamaup.exe
-echo Version: !VERSION!
-echo Commit: !COMMIT!
-echo Build date: !BUILD_DATE!
+echo Build complete: %CD%\!OUTPUT!
 exit /b 0

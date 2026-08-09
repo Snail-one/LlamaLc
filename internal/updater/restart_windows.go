@@ -53,7 +53,7 @@ func startUpdatedLauncher(root, releaseVersion string, _, _ io.Writer) error {
 	}
 	defer restoreEvent()
 
-	launcher := filepath.Join(root, "bin", "llama-launcher.exe")
+	launcher := filepath.Join(root, "bin", "llamalc.exe")
 	launcherPointer, err := syscall.UTF16PtrFromString(launcher)
 	if err != nil {
 		return err

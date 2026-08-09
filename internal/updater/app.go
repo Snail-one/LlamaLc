@@ -11,11 +11,11 @@ import (
 	"runtime"
 	"strings"
 
-	buildversion "github.com/joker/llama-launcher/internal/version"
+	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
 
 const (
-	stagedLauncherPrefix = ".llama-launcher-new-"
+	stagedLauncherPrefix = ".llamalc-new-"
 	stagedUpdaterPrefix  = ".llamaup-new-"
 )
 
@@ -29,8 +29,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stdout, `llamaup 是 llama-launcher 的内部更新组件，不能单独执行更新。
-请启动 llama-launcher.exe，然后选择 [3] 升级维护 -> [2] 更新启动器。`)
+		fmt.Fprintln(stdout, `llamaup 是 LlamaLc 的内部更新组件，不能单独执行更新。
+请启动 llamalc（Windows 为 llamalc.exe），然后选择 [3] 升级维护 -> [2] 更新启动器。`)
 		if runtime.GOOS == "windows" && stdin != nil {
 			fmt.Fprint(stdout, "\n按 Enter 关闭...")
 			_, _ = bufio.NewReader(stdin).ReadString('\n')
@@ -100,8 +100,8 @@ func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, st
   下一步: 正在自动启动新版本
 `, releaseVersion, releaseVersion)
 		if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
-			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 launcher:", err)
-			fmt.Fprintln(stderr, "请手动启动 bin\\llama-launcher.exe。")
+			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 llamalc:", err)
+			fmt.Fprintln(stderr, "请手动启动 bin\\llamalc.exe。")
 			if stdin != nil {
 				fmt.Fprint(stderr, "\n按 Enter 关闭...")
 				_, _ = bufio.NewReader(stdin).ReadString('\n')
@@ -116,8 +116,12 @@ func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, st
   启动器: %s
   更新器: %s
   状态: 文件替换成功
-请重新启动 llama-launcher。
+  下一步: 正在自动启动新版本
 `, releaseVersion, releaseVersion)
+	if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
+		fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 llamalc:", err)
+		return 1
+	}
 	return 0
 }
 
@@ -136,11 +140,15 @@ func executableRoot() (string, error) {
 	}
 	bin := filepath.Dir(real)
 	if filepath.Base(bin) != "bin" {
-		return "", fmt.Errorf("独立更新器必须直接位于 llama.cpp/bin，当前为: %s", real)
+		return "", fmt.Errorf("独立更新器必须直接位于 LlamaLc/bin，当前为: %s", real)
 	}
 	root := filepath.Dir(bin)
-	if filepath.Base(root) != "llama.cpp" {
-		return "", fmt.Errorf("部署根目录必须字面命名为 llama.cpp，当前为: %s", root)
+	validRootName := filepath.Base(root) == "LlamaLc"
+	if runtime.GOOS == "windows" {
+		validRootName = strings.EqualFold(filepath.Base(root), "LlamaLc")
+	}
+	if !validRootName {
+		return "", fmt.Errorf("部署根目录必须命名为 LlamaLc，当前为: %s", root)
 	}
 	return root, nil
 }
@@ -177,7 +185,7 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 		return err
 	}
 	bin := filepath.Join(root, "bin")
-	launcherTargetName := "llama-launcher"
+	launcherTargetName := "llamalc"
 	updaterTargetName := "llamaup"
 	if goos == "windows" {
 		launcherTargetName += ".exe"

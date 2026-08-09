@@ -3,8 +3,9 @@
 package updater
 
 import (
-	"errors"
 	"os"
+	"syscall"
+	"time"
 )
 
 func replaceFile(source, destination string) error { return os.Rename(source, destination) }
@@ -18,6 +19,15 @@ func syncDirectory(path string) error {
 	return directory.Sync()
 }
 
-func waitForParent(_ int) error {
-	return errors.New("独立更新器的 launcher 替换操作仅用于 Windows")
+func waitForParent(pid int) error {
+	for {
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
+			return nil
+		}
+		if err != nil && err != syscall.EPERM {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
