@@ -13,6 +13,6 @@ LlamaLc/
 └─ models/generation, embedding, rerank, mmproj
 ```
 
-v1.0.0 只支持全新安装。发现 `data/llama.cpp`、`launcher.json` 或 `models/` 下的顶层文件时，程序只显示原路径。它们不会被读取或迁移；清理命令也必须逐项确认后才会删除。
+v1 系列只支持全新安装。发现 `data/llama.cpp`、`launcher.json` 或 `models/` 下的顶层文件时，程序只显示原路径。它们不会被读取或迁移；清理命令也必须逐项确认后才会删除。
 
 把模型手动放入相应分类目录，再用完整文件名或绝对路径启动。模型文件不允许是符号链接。

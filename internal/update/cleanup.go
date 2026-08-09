@@ -28,7 +28,7 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 		out = append(out, CleanupCandidate{Path: path, Kind: "旧运行时", Reason: "更新状态登记的非活动运行时"})
 	}
 	for _, path := range l.LegacyPaths() {
-		out = append(out, CleanupCandidate{Path: path, Kind: "旧版布局", Reason: "v1.0.0 不会迁移或自动删除此路径", Legacy: true})
+		out = append(out, CleanupCandidate{Path: path, Kind: "旧版布局", Reason: "新版不会迁移或自动删除此路径", Legacy: true})
 	}
 	if entries, readErr := os.ReadDir(l.Bin); readErr == nil {
 		for _, entry := range entries {

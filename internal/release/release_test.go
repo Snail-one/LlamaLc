@@ -11,7 +11,7 @@ import (
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestLauncherAssetNamingAndCUDACompanion(t *testing.T) {
-	r := GitHubRelease{Tag: "v1.0.0", Assets: []Asset{{Name: "llamalc-windows-amd64-v1.0.0.zip", Digest: digest}, {Name: "llama-b123-bin-win-cuda-12.4-x64.zip", Digest: digest}, {Name: "cudart-llama-bin-win-cuda-12.4-x64.zip", Digest: digest}}}
+	r := GitHubRelease{Tag: "v2.3.4", Assets: []Asset{{Name: "llamalc-windows-amd64-v2.3.4.zip", Digest: digest}, {Name: "llama-b123-bin-win-cuda-12.4-x64.zip", Digest: digest}, {Name: "cudart-llama-bin-win-cuda-12.4-x64.zip", Digest: digest}}}
 	if _, err := LauncherAsset(r, "windows", "amd64"); err != nil {
 		t.Fatal(err)
 	}

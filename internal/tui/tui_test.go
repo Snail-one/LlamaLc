@@ -11,7 +11,7 @@ func TestMenuNumbersAndBack(t *testing.T) {
 	input := bufio.NewReader(strings.NewReader("1\n0\n2\nq\n3\n0\nq\n"))
 	var out, err bytes.Buffer
 	calls := 0
-	a := App{Reader: input, Out: &out, Err: &err, Root: "/LlamaLc", LauncherVersion: "v1.0.0", Run: func([]string) int { calls++; return 0 }}
+	a := App{Reader: input, Out: &out, Err: &err, Root: "/LlamaLc", LauncherVersion: "v1.2.3", Run: func([]string) int { calls++; return 0 }}
 	if code := a.RunMenu(); code != 0 {
 		t.Fatal(code)
 	}

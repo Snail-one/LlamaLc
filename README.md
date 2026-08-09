@@ -1,6 +1,6 @@
 # LlamaLc
 
-`LlamaLc` 是只使用 Go 标准库的 llama.cpp 启动、配置和更新工具，支持 Linux/Windows 的 amd64 与 arm64。v1.0.0 使用全新部署布局，不兼容旧版配置，也不会迁移或自动删除旧版运行时和模型。
+`LlamaLc` 是只使用 Go 标准库的 llama.cpp 启动、配置和更新工具，支持 Linux/Windows 的 amd64 与 arm64。v1 系列使用全新部署布局，不兼容旧版配置，也不会迁移或自动删除旧版运行时和模型。正式版本号来自发布时的 Git tag。
 
 ## 快速安装
 

@@ -72,7 +72,7 @@ func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, erro
 		}
 		cmp, e := CompareSemVer(buildversion.Version, r.Tag)
 		if e != nil {
-			return nil, e
+			return nil, fmt.Errorf("当前启动器版本 %q 不是发布 SemVer；开发构建不支持自更新: %w", buildversion.Version, e)
 		}
 		out = append(out, CheckResult{Component: "launcher", Installed: buildversion.Version, Latest: r.Tag, Available: cmp < 0})
 	}
@@ -231,7 +231,7 @@ func (m *Manager) PrepareLauncher(ctx context.Context) (tag, launcherPath, updat
 		return
 	}
 	if cmp, e := CompareSemVer(buildversion.Version, r.Tag); e != nil {
-		err = e
+		err = fmt.Errorf("当前启动器版本 %q 不是发布 SemVer；开发构建不支持自更新: %w", buildversion.Version, e)
 		return
 	} else if cmp >= 0 {
 		err = fmt.Errorf("%w: 启动器 %s", ErrAlreadyCurrent, buildversion.Version)

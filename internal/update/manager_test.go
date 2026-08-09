@@ -11,6 +11,7 @@ import (
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"github.com/Snail-one/LlamaLc/internal/release"
+	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
 
 type fakeSource struct {
@@ -111,6 +112,9 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 }
 
 func TestPrepareLauncherStrictBundleAndSums(t *testing.T) {
+	oldVersion := buildversion.Version
+	buildversion.Version = "v1.0.9"
+	t.Cleanup(func() { buildversion.Version = oldVersion })
 	root := filepath.Join(t.TempDir(), "LlamaLc")
 	l, _ := layout.New(root, "linux")
 	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {

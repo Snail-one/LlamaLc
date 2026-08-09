@@ -3,7 +3,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0.."
 
 if not "%~1"=="" set "VERSION=%~1"
-if not defined VERSION set "VERSION=v1.0.0"
+if not defined VERSION (
+  for /f "delims=" %%I in ('git describe --tags --exact-match 2^>nul') do set "VERSION=%%I"
+)
+if not defined VERSION set "VERSION=dev"
 set "TARGET_ARCH=%~2"
 if not defined TARGET_ARCH set "TARGET_ARCH=amd64"
 if /I not "%TARGET_ARCH%"=="amd64" if /I not "%TARGET_ARCH%"=="arm64" (
