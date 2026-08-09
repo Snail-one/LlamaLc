@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,6 +123,59 @@ func TestMenuShowsOperationAndParameterSections(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestRefreshManagedRuntimeUpdatesHomepageState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	runtimeDir := filepath.Join(root, "data", "llama.cpp", "b10328-cuda-13.3")
+	touchFile(t, filepath.Join(runtimeDir, "llama-server"))
+	state := UpdateState{
+		Schema: UpdateStateSchema, LlamaTag: "b10328", Backend: "cuda-13.3",
+		ActiveRuntime: "data/llama.cpp/b10328-cuda-13.3",
+		Assets:        []InstalledAsset{{Name: "runtime.tar.gz", SHA256: testDigest}},
+	}
+	if err := WriteUpdateState(root, state); err != nil {
+		t.Fatal(err)
+	}
+	probe := &fakeInstallationProbe{output: "version: 10328 (newcommit)\nbuilt with test\n"}
+	app := &Application{
+		Root: root, LlamaTag: "b10327", LlamaBackend: "cuda-13.3", LlamaVersion: "version: 10327 (oldcommit)",
+		Updater: &UpdateManager{Root: root, GOOS: "linux", Probe: probe},
+	}
+	if err := app.refreshManagedRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	if app.LlamaTag != "b10328" || app.LlamaBackend != "cuda-13.3" || app.LlamaVersion != "version: 10328 (newcommit)" {
+		t.Fatalf("homepage runtime state was not refreshed: tag=%q backend=%q version=%q", app.LlamaTag, app.LlamaBackend, app.LlamaVersion)
+	}
+	if !strings.Contains(app.Paths.Server, filepath.Join("b10328-cuda-13.3", "llama-server")) {
+		t.Fatalf("runtime executable path was not refreshed: %q", app.Paths.Server)
+	}
+}
+
+func TestRefreshManagedRuntimeFailureKeepsPreviousHomepageState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	runtimeDir := filepath.Join(root, "data", "llama.cpp", "b10328-cpu")
+	touchFile(t, filepath.Join(runtimeDir, "llama-server"))
+	state := UpdateState{
+		Schema: UpdateStateSchema, LlamaTag: "b10328", Backend: "cpu",
+		ActiveRuntime: "data/llama.cpp/b10328-cpu",
+		Assets:        []InstalledAsset{{Name: "runtime.tar.gz", SHA256: testDigest}},
+	}
+	if err := WriteUpdateState(root, state); err != nil {
+		t.Fatal(err)
+	}
+	oldPaths := ResolvedPaths{Server: "old-server"}
+	app := &Application{
+		Root: root, Paths: oldPaths, LlamaTag: "b10327", LlamaBackend: "cpu", LlamaVersion: "version: 10327 (oldcommit)",
+		Updater: &UpdateManager{Root: root, GOOS: "linux", Probe: &fakeInstallationProbe{err: errors.New("probe failed")}},
+	}
+	if err := app.refreshManagedRuntime(); err == nil {
+		t.Fatal("failed runtime probe was accepted")
+	}
+	if app.Paths.Server != oldPaths.Server || app.LlamaTag != "b10327" || app.LlamaVersion != "version: 10327 (oldcommit)" {
+		t.Fatalf("failed refresh partially changed homepage state: %#v", app)
 	}
 }
 

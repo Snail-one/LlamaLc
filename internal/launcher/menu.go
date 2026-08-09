@@ -547,7 +547,46 @@ func (m *menu) updateComponent(component componentSelection, label string) error
 	if err != nil {
 		return err
 	}
+	if component == componentLlama {
+		if err := m.app.refreshManagedRuntime(); err != nil {
+			return fmt.Errorf("llama.cpp 已更新，但无法刷新主页状态: %w", err)
+		}
+		fmt.Fprintln(m.app.Stdout, "已载入活动 llama.cpp:", m.app.llamaVersionDisplay())
+	}
 	return m.pause()
+}
+
+func (app *Application) refreshManagedRuntime() error {
+	if app.Updater == nil {
+		return errors.New("更新管理器未初始化")
+	}
+	state, exists, err := LoadUpdateState(app.Root)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("未找到 config/update-state.json")
+	}
+	paths, err := ResolveManagedPaths(app.Root, app.Updater.GOOS, state)
+	if err != nil {
+		return err
+	}
+	probe := app.Updater.Probe
+	if probe == nil {
+		probe = OSInstallationProbe{}
+	}
+	detectedVersion, err := VerifyInstallation(app.Root, paths, probe)
+	if err != nil {
+		return err
+	}
+
+	// Commit the new in-memory view only after the state, paths, and executable
+	// have all been validated. A failed refresh must not leave a mixed view.
+	app.Paths = paths
+	app.LlamaTag = state.LlamaTag
+	app.LlamaBackend = state.Backend
+	app.LlamaVersion = detectedVersion
+	return nil
 }
 
 func (m *menu) selectModel(directory string, kind ModelKind, extensions map[string]bool) (ModelFile, error) {
