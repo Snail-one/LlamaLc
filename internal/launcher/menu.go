@@ -584,52 +584,55 @@ func cleanupCandidateStatus(candidate cleanupCandidate) string {
 
 func (m *menu) manageCleanupCandidate(candidate cleanupCandidate) error {
 	fmt.Fprintf(m.app.Stdout, "\n类型: %s\n大小: %s\n原因: %s\n完整路径: %s\n", candidate.Kind, cleanupSizeDisplay(candidate), safeTerminalText(candidate.Reason), safeTerminalText(candidate.Path))
-	fmt.Fprintln(m.app.Stdout, "  [1] 查看目录内容")
-	fmt.Fprintln(m.app.Stdout, "  [2] 使用系统文件管理器打开")
-	if candidate.Recent {
-		fmt.Fprintln(m.app.Stdout, "  [3] 永久删除（当前不可用）")
-	} else {
-		fmt.Fprintln(m.app.Stdout, "  [3] 永久删除")
-	}
-	fmt.Fprintln(m.app.Stdout, "  [0] 返回列表")
-	fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
-	line, err := m.readLine("请选择操作: ")
-	if err != nil {
-		return err
-	}
-	switch strings.ToLower(line) {
-	case "", "0":
-		return nil
-	case "1":
-		return m.viewCleanupCandidate(candidate)
-	case "2":
-		if err := launchCleanupPath(candidate.Path); err != nil {
-			return fmt.Errorf("无法打开目录 %s: %w", candidate.Path, err)
-		}
-		fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", safeTerminalText(candidate.Path))
-		return nil
-	case "3":
+	for {
+		fmt.Fprintln(m.app.Stdout, "\n项目操作")
+		fmt.Fprintln(m.app.Stdout, "  [1] 查看目录内容")
+		fmt.Fprintln(m.app.Stdout, "  [2] 使用系统文件管理器打开")
 		if candidate.Recent {
-			fmt.Fprintln(m.app.Stdout, "该项目可能仍在使用，当前不允许删除。")
-			return nil
+			fmt.Fprintln(m.app.Stdout, "  [3] 永久删除（当前不可用）")
+		} else {
+			fmt.Fprintln(m.app.Stdout, "  [3] 永久删除")
 		}
-		fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", safeTerminalText(candidate.Path))
-		confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
+		fmt.Fprintln(m.app.Stdout, "  [0] 返回列表")
+		fmt.Fprintln(m.app.Stdout, "  [q] 返回主菜单")
+		line, err := m.readLine("请选择操作: ")
 		if err != nil {
 			return err
 		}
-		if !confirmed {
-			fmt.Fprintln(m.app.Stdout, "已取消，未修改任何文件。")
+		switch strings.ToLower(line) {
+		case "", "0":
 			return nil
+		case "1":
+			if err := m.viewCleanupCandidate(candidate); err != nil {
+				return err
+			}
+		case "2":
+			if err := launchCleanupPath(candidate.Path); err != nil {
+				return fmt.Errorf("无法打开目录 %s: %w", candidate.Path, err)
+			}
+			fmt.Fprintln(m.app.Stdout, "已请求系统文件管理器打开:", safeTerminalText(candidate.Path))
+		case "3":
+			if candidate.Recent {
+				fmt.Fprintln(m.app.Stdout, "该项目可能仍在使用，当前不允许删除。")
+				continue
+			}
+			fmt.Fprintln(m.app.Stdout, "即将永久删除完整路径:", safeTerminalText(candidate.Path))
+			confirmed, err := m.readYesNo("确认已检查并转移需要保留的文件，是否继续删除", false)
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				fmt.Fprintln(m.app.Stdout, "已取消，未修改任何文件。")
+				continue
+			}
+			if err := deleteCleanupCandidate(m.app.Root, candidate, false); err != nil {
+				return err
+			}
+			fmt.Fprintln(m.app.Stdout, "已删除:", safeTerminalText(candidate.Path))
+			return nil
+		default:
+			fmt.Fprintln(m.app.Stderr, "请输入 0 到 3，或输入 q 返回主菜单。")
 		}
-		if err := deleteCleanupCandidate(m.app.Root, candidate, false); err != nil {
-			return err
-		}
-		fmt.Fprintln(m.app.Stdout, "已删除:", safeTerminalText(candidate.Path))
-		return nil
-	default:
-		fmt.Fprintln(m.app.Stderr, "请输入 0 到 3，或输入 q 返回主菜单。")
-		return nil
 	}
 }
 

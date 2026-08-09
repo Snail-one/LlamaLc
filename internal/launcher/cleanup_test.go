@@ -207,7 +207,7 @@ func TestCleanupMenuDisablesDeletionForRecentItem(t *testing.T) {
 	touchFile(t, filepath.Join(target, "active-download"))
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
-		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "3", "2", "3", "0", "q"),
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "3", "2", "3", "q", "q"),
 		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
@@ -215,6 +215,12 @@ func TestCleanupMenuDisablesDeletionForRecentItem(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "[3] 永久删除（当前不可用）") || !strings.Contains(out.String(), "当前不允许删除") {
 		t.Fatalf("recent cleanup item did not disable deletion:\n%s", out)
+	}
+	if count := strings.Count(out.String(), "清理与恢复\n"+menuRule); count != 1 {
+		t.Fatalf("cleanup list repeated after unavailable action %d times:\n%s", count, out)
+	}
+	if count := strings.Count(out.String(), "项目操作"); count != 2 {
+		t.Fatalf("candidate actions were not redisplayed in place, count=%d:\n%s", count, out)
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("recent cleanup item was changed: %v", err)
