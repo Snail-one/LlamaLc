@@ -40,7 +40,7 @@ func TestMainMenuUsesDForCleanupAndRecovery(t *testing.T) {
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
-	for _, want := range []string{"维护与管理", "[3] 清理与恢复", "清理与恢复", "未发现需要处理的残留或恢复目录"} {
+	for _, want := range []string{"升级维护", "[3] 清理与恢复", "清理与恢复", "未发现需要处理的残留或恢复目录"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("menu output missing %q: %s", want, out.String())
 		}

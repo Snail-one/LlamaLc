@@ -87,7 +87,7 @@ func (app *Application) printMainMenu() {
 功能目录
   [1] 启动                  API / 多模型 Router / CLI
   [2] 配置                  Router 配置 / API key
-  [3] 维护与管理            更新 / 清理恢复
+  [3] 升级维护              更新 / 清理恢复
   [q] 退出
 
 选择目录后再选择具体操作；子菜单输入 0 返回主菜单。
@@ -383,7 +383,7 @@ func (m *menu) readMainChoice() (int, error) {
 				{label: "重置 API key", action: 9},
 			}
 		case 3:
-			title = "维护与管理"
+			title = "升级维护"
 			options = []menuOption{
 				{label: "更新 llama.cpp", action: 7},
 				{label: "更新启动器", action: 8},

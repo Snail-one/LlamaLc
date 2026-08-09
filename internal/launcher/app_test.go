@@ -89,7 +89,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"运行状态", "功能目录", "[1] 启动", "[2] 配置", "维护与管理",
+		"运行状态", "功能目录", "[1] 启动", "[2] 配置", "升级维护",
 		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复",
 		"子菜单输入 0 返回主菜单",
 		"将联网检查并更新启动器，是否继续",
@@ -133,7 +133,7 @@ func TestMainMenuGroupsRelatedOperationsIntoSubmenus(t *testing.T) {
 	}{
 		{category: "1", want: []string{"启动", "[1] 启动单模型 API", "[2] 启动 Embedding API", "[3] 启动 Rerank API", "[4] 启动多模型 Router", "[5] 启动 CLI 聊天"}},
 		{category: "2", want: []string{"配置", "[1] 生成 Router 配置", "[2] 重置 API key"}},
-		{category: "3", want: []string{"维护与管理", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复"}},
+		{category: "3", want: []string{"升级维护", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复"}},
 	}
 	for _, test := range tests {
 		t.Run(test.category, func(t *testing.T) {
