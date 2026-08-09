@@ -78,14 +78,10 @@ jobs:
               tar -C "${package}" -czf "${archive}" llama.cpp
               test "$(tar -tzf "${archive}" | grep -v '/$' | sort)" = "$(printf '%s\n' 'llama.cpp/bin/llama-launcher' 'llama.cpp/bin/llamaup' | sort)"
             fi
-            # v0.0.6 and earlier resolve the version-in-the-middle name. Keep
-            # an identical compatibility asset so those clients can cross the
-            # naming migration; current clients always prefer the new name.
-            cp "${archive}" "dist/llama-launcher-${VERSION}-${goos}-${goarch}.${archive_ext}"
             rm -rf "${package}"
           done
           (cd dist && sha256sum llama-launcher-* > SHA256SUMS.txt)
-          test "$(wc -l < dist/SHA256SUMS.txt)" -eq 8
+          test "$(wc -l < dist/SHA256SUMS.txt)" -eq 4
 
       - name: Publish GitHub Release
         env:

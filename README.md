@@ -334,7 +334,7 @@ GET http://127.0.0.1:29856/models
 
 ## 自动发版
 
-推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。Archive 固定命名为 `llama-launcher-<os>-<arch>-<version>.zip|tar.gz`，例如 `llama-launcher-windows-amd64-v1.0.0.zip`；每个 archive 必须且只能包含 `llama.cpp/bin/llama-launcher[.exe]` 与 `llama.cpp/bin/llamaup[.exe]`。为保证 v0.0.6 及更早版本可以跨过本次命名迁移，Release 还会附带内容相同的旧名称兼容资产；当前启动器始终优先选择版本号位于末尾的新名称。`SHA256SUMS.txt` 覆盖全部 archive，工作流会校验 archive 结构和两个二进制中的嵌入版本后才发布。
+推送形如 `v1.0.0` 的 Git tag 会触发 GitHub Actions：先运行测试和 `go vet`，再交叉构建 Windows/Linux 的 amd64、arm64 四个平台。Archive 固定命名为 `llama-launcher-<os>-<arch>-<version>.zip|tar.gz`，例如 `llama-launcher-windows-amd64-v1.0.0.zip`；每个 archive 必须且只能包含 `llama.cpp/bin/llama-launcher[.exe]` 与 `llama.cpp/bin/llamaup[.exe]`。旧的 `llama-launcher-<version>-<os>-<arch>` 命名不再发布或识别，旧版本必须手动安装采用新命名的版本。`SHA256SUMS.txt` 覆盖四个平台 archive，工作流会校验 archive 结构和两个二进制中的嵌入版本后才发布。
 
 ```sh
 git tag v1.0.0

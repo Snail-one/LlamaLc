@@ -91,20 +91,19 @@ func TestLauncherAssetNamePlacesVersionLast(t *testing.T) {
 	}
 }
 
-func TestLauncherReleaseAssetsPrefersNewNameAndAcceptsLegacyName(t *testing.T) {
+func TestLauncherReleaseAssetsRequiresVersionLastName(t *testing.T) {
 	const tag = "v1.2.3"
 	canonical := testAsset(launcherAssetName(tag, "linux", "amd64"))
-	legacy := testAsset(legacyLauncherAssetName(tag, "linux", "amd64"))
+	legacy := testAsset("llama-launcher-v1.2.3-linux-amd64.tar.gz")
 	sums := testAsset("SHA256SUMS.txt")
 
-	archive, _, err := launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{legacy, canonical, sums}}, "linux", "amd64")
+	archive, _, err := launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{canonical, sums}}, "linux", "amd64")
 	if err != nil || archive.Name != canonical.Name {
-		t.Fatalf("canonical asset was not preferred: archive=%q err=%v", archive.Name, err)
+		t.Fatalf("canonical asset was not resolved: archive=%q err=%v", archive.Name, err)
 	}
 
-	archive, _, err = launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{legacy, sums}}, "linux", "amd64")
-	if err != nil || archive.Name != legacy.Name {
-		t.Fatalf("legacy asset was not accepted: archive=%q err=%v", archive.Name, err)
+	if _, _, err := launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{legacy, sums}}, "linux", "amd64"); err == nil {
+		t.Fatal("legacy version-in-the-middle asset name was accepted")
 	}
 }
 
