@@ -78,10 +78,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误: 无法应用更新:", err)
 		return 1
 	}
-	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdout, stderr)
+	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdin, stdout, stderr)
 }
 
-func finishUpdate(root, goos, releaseVersion string, stdout, stderr io.Writer) int {
+func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if goos == "windows" {
 		fmt.Fprintf(stdout, `
 更新完成
@@ -93,6 +93,10 @@ func finishUpdate(root, goos, releaseVersion string, stdout, stderr io.Writer) i
 		if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 launcher:", err)
 			fmt.Fprintln(stderr, "请手动启动 bin\\llama-launcher.exe。")
+			if stdin != nil {
+				fmt.Fprint(stderr, "\n按 Enter 关闭...")
+				_, _ = bufio.NewReader(stdin).ReadString('\n')
+			}
 			return 1
 		}
 		return 0

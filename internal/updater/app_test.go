@@ -22,7 +22,7 @@ func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	root := filepath.Join(t.TempDir(), "llama.cpp")
-	if code := finishUpdate(root, "windows", "v1.2.3", stdout, stderr); code != 0 {
+	if code := finishUpdate(root, "windows", "v1.2.3", nil, stdout, stderr); code != 0 {
 		t.Fatalf("finish code=%d stderr=%s", code, stderr)
 	}
 	if startedRoot != root {
@@ -49,10 +49,10 @@ func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
 	}
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := finishUpdate(t.TempDir(), "windows", "v1.2.3", stdout, stderr); code != 1 {
+	if code := finishUpdate(t.TempDir(), "windows", "v1.2.3", bytes.NewBufferString("\n"), stdout, stderr); code != 1 {
 		t.Fatalf("finish code=%d, want 1", code)
 	}
-	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llama-launcher.exe"} {
+	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llama-launcher.exe", "按 Enter 关闭"} {
 		if !bytes.Contains(stderr.Bytes(), []byte(want)) {
 			t.Fatalf("failure output missing %q: %s", want, stderr)
 		}
