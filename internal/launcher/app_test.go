@@ -89,8 +89,8 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"运行状态", "功能目录", "API 服务", "Router 与本地工具", "维护与管理",
-		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 重置 API key", "[4] 清理与恢复",
+		"运行状态", "功能目录", "[1] 启动", "[2] 配置", "维护与管理",
+		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复",
 		"子菜单输入 0 返回主菜单",
 		"将联网检查并更新启动器，是否继续",
 	} {
@@ -119,7 +119,7 @@ func TestMenuShowsOperationAndParameterSections(t *testing.T) {
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
-	for _, want := range []string{"API 服务\n" + menuRule, "启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[0] 返回主菜单", "[q] 返回主菜单"} {
+	for _, want := range []string{"启动\n" + menuRule, "启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[0] 返回主菜单", "[q] 返回主菜单"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
@@ -131,9 +131,9 @@ func TestMainMenuGroupsRelatedOperationsIntoSubmenus(t *testing.T) {
 		category string
 		want     []string
 	}{
-		{category: "1", want: []string{"API 服务", "[1] 启动单模型 API", "[2] 启动 Embedding API", "[3] 启动 Rerank API"}},
-		{category: "2", want: []string{"Router 与本地工具", "[1] 生成 Router 配置", "[2] 启动多模型 Router", "[3] 启动 CLI 聊天"}},
-		{category: "3", want: []string{"维护与管理", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 重置 API key", "[4] 清理与恢复"}},
+		{category: "1", want: []string{"启动", "[1] 启动单模型 API", "[2] 启动 Embedding API", "[3] 启动 Rerank API", "[4] 启动多模型 Router", "[5] 启动 CLI 聊天"}},
+		{category: "2", want: []string{"配置", "[1] 生成 Router 配置", "[2] 重置 API key"}},
+		{category: "3", want: []string{"维护与管理", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复"}},
 	}
 	for _, test := range tests {
 		t.Run(test.category, func(t *testing.T) {
@@ -458,7 +458,7 @@ func TestMenuResetsAPIKeyOnlyAfterConfirmation(t *testing.T) {
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
 		Root: root, Config: DefaultConfig(), Paths: ResolvedPaths{APIKeyFile: keyPath},
-		Stdin: menuInput("3", "3", "y", "", "q"), Stdout: out, Stderr: errOut,
+		Stdin: menuInput("2", "2", "y", "", "q"), Stdout: out, Stderr: errOut,
 	}
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
@@ -511,7 +511,7 @@ func TestZeroReturnsFromNavigationMenus(t *testing.T) {
 	}{
 		{name: "function submenu", input: menuInput("1", "0", "q")},
 		{name: "model selection", input: menuInput("1", "1", "0", "q")},
-		{name: "cleanup menu", input: menuInput("3", "4", "0", "q")},
+		{name: "cleanup menu", input: menuInput("3", "3", "0", "q")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

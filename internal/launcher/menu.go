@@ -85,9 +85,9 @@ func (app *Application) printMainMenu() {
   根目录:      %s
 
 功能目录
-  [1] API 服务              单模型 / Embedding / Rerank
-  [2] Router 与本地工具     Router 配置 / 多模型 / CLI
-  [3] 维护与管理            更新 / API key / 清理恢复
+  [1] 启动                  API / 多模型 Router / CLI
+  [2] 配置                  Router 配置 / API key
+  [3] 维护与管理            更新 / 清理恢复
   [q] 退出
 
 选择目录后再选择具体操作；子菜单输入 0 返回主菜单。
@@ -360,7 +360,7 @@ func (m *menu) readMainChoice() (int, error) {
 		}
 		category, parseErr := strconv.Atoi(line)
 		if parseErr != nil || category < 1 || category > 3 {
-			fmt.Fprintln(m.app.Stderr, "请输入 1 到 3 或 q；直接按 Enter 进入 API 服务。")
+			fmt.Fprintln(m.app.Stderr, "请输入 1 到 3 或 q；直接按 Enter 进入启动菜单。")
 			continue
 		}
 
@@ -368,25 +368,25 @@ func (m *menu) readMainChoice() (int, error) {
 		var options []menuOption
 		switch category {
 		case 1:
-			title = "API 服务"
+			title = "启动"
 			options = []menuOption{
 				{label: "启动单模型 API", action: 1},
 				{label: "启动 Embedding API", action: 2},
 				{label: "启动 Rerank API", action: 3},
-			}
-		case 2:
-			title = "Router 与本地工具"
-			options = []menuOption{
-				{label: "生成 Router 配置", action: 4},
 				{label: "启动多模型 Router", action: 5},
 				{label: "启动 CLI 聊天", action: 6},
+			}
+		case 2:
+			title = "配置"
+			options = []menuOption{
+				{label: "生成 Router 配置", action: 4},
+				{label: "重置 API key", action: 9},
 			}
 		case 3:
 			title = "维护与管理"
 			options = []menuOption{
 				{label: "更新 llama.cpp", action: 7},
 				{label: "更新启动器", action: 8},
-				{label: "重置 API key", action: 9},
 				{label: "清理与恢复", action: 10},
 			}
 		}
