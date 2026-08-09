@@ -132,7 +132,7 @@ func TestMainMenuGroupsRelatedOperationsIntoSubmenus(t *testing.T) {
 		want     []string
 	}{
 		{category: "1", want: []string{"启动", "[1] 启动单模型 API", "[2] 启动 Embedding API", "[3] 启动 Rerank API", "[4] 启动多模型 Router", "[5] 启动 CLI 聊天"}},
-		{category: "2", want: []string{"配置", "[1] 生成 Router 配置", "[2] 重置 API key"}},
+		{category: "2", want: []string{"配置", "[1] 生成 Router 配置", "[2] 重置 API key", "[3] 显示 API key"}},
 		{category: "3", want: []string{"升级维护", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 清理与恢复"}},
 	}
 	for _, test := range tests {
@@ -496,6 +496,51 @@ func TestMenuResetsAPIKeyOnlyAfterConfirmation(t *testing.T) {
 	if !strings.Contains(out.String(), "旧 key 将立即失效") || !strings.Contains(out.String(), "已重置") {
 		t.Fatalf("menu reset output missing confirmation/result: %q", out.String())
 	}
+}
+
+func TestMenuShowsAPIKeyOnlyAfterConfirmation(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, ConfigDirectoryName, DefaultAPIKeyName)
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("s", MinAPIKeyLength)
+	if err := WriteAPIKeyFile(root, keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("cancel", func(t *testing.T) {
+		out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+		app := &Application{
+			Root: root, Config: DefaultConfig(), Paths: ResolvedPaths{APIKeyFile: keyPath},
+			Stdin: menuInput("2", "3", "n", "", "q"), Stdout: out, Stderr: errOut,
+		}
+		if code := app.RunMenu(); code != 0 {
+			t.Fatalf("menu returned %d: %s", code, errOut.String())
+		}
+		if strings.Contains(out.String(), key) {
+			t.Fatalf("API key displayed after cancellation: %q", out.String())
+		}
+		if !strings.Contains(out.String(), "已取消，未显示 API key") {
+			t.Fatalf("menu cancellation result missing: %q", out.String())
+		}
+	})
+
+	t.Run("confirm", func(t *testing.T) {
+		out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+		app := &Application{
+			Root: root, Config: DefaultConfig(), Paths: ResolvedPaths{APIKeyFile: keyPath},
+			Stdin: menuInput("2", "3", "y", "", "q"), Stdout: out, Stderr: errOut,
+		}
+		if code := app.RunMenu(); code != 0 {
+			t.Fatalf("menu returned %d: %s", code, errOut.String())
+		}
+		for _, want := range []string{"终端未共享或录屏", "API key（请勿共享）", key, "API key 文件: " + keyPath} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("menu output missing %q: %q", want, out.String())
+			}
+		}
+	})
 }
 
 func TestQReturnsFromInteractivePrompts(t *testing.T) {

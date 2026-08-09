@@ -34,6 +34,7 @@ const (
 	actionUpdateLlama
 	actionUpdateLauncher
 	actionResetAPIKey
+	actionShowAPIKey
 	actionCleanup
 )
 
@@ -65,6 +66,7 @@ var menuCategories = []menuCategory{
 		options: []menuOption{
 			{label: "生成 Router 配置", action: actionRouterConfig},
 			{label: "重置 API key", action: actionResetAPIKey},
+			{label: "显示 API key", action: actionShowAPIKey},
 		},
 	},
 	{
@@ -398,6 +400,8 @@ func (m *menu) runChoice(choice menuAction) error {
 		return m.updateComponent(componentLauncher)
 	case actionResetAPIKey:
 		return m.resetAPIKey()
+	case actionShowAPIKey:
+		return m.showAPIKey()
 	case actionCleanup:
 		return m.runCleanupMenu()
 	}
@@ -666,6 +670,31 @@ func (m *menu) resetAPIKey() error {
 	if err := resetAPIKey(m.app.Root, m.app.Paths.APIKeyFile, m.app.Stdout); err != nil {
 		return err
 	}
+	return m.pause()
+}
+
+func (m *menu) showAPIKey() error {
+	confirmed, err := m.readYesNo("API key 将以明文显示，请确认终端未共享或录屏，是否继续", false)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		fmt.Fprintln(m.app.Stdout, "已取消，未显示 API key。")
+		return m.pause()
+	}
+
+	key, exists, err := ReadAPIKeyFile(m.app.Root, m.app.Paths.APIKeyFile)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("API key 文件不存在")
+	}
+
+	fmt.Fprintln(m.app.Stdout, "\nAPI key（请勿共享）")
+	fmt.Fprintln(m.app.Stdout, menuRule)
+	fmt.Fprintln(m.app.Stdout, key)
+	fmt.Fprintln(m.app.Stdout, "\nAPI key 文件:", safeTerminalText(m.app.Paths.APIKeyFile))
 	return m.pause()
 }
 

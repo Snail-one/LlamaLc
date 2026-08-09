@@ -177,10 +177,10 @@ CLI 写入默认要求终端确认；stdin 不是交互终端时必须提供 `--
 三个功能目录包含以下操作：
 
 - `[1] 启动`：启动单模型、Embedding、Rerank API、多模型 Router 或 CLI 聊天。
-- `[2] 配置`：生成 Router 配置或重置 API key。
+- `[2] 配置`：生成 Router 配置、重置或显示 API key。
 - `[3] 升级维护`：更新 llama.cpp、更新启动器，以及清理与恢复。该子菜单不提供默认选项，必须输入明确编号；选择更新项后会直接检查并执行，不再重复确认。
 
-首次正常启动会自动生成 128 位 URL-safe API key 并写入私有的 `config/launcher.api-key`。后续启动直接使用该文件，不再询问是否重置。需要轮换密钥时依次选择 `[2] 配置`、`[2] 重置 API key`，确认后会原子写入新的随机 key，旧 key 立即失效。版本和帮助命令不读取或修改 key。
+首次正常启动会自动生成 128 位 URL-safe API key 并写入私有的 `config/launcher.api-key`。后续启动直接使用该文件，不再询问是否重置。需要轮换密钥时依次选择 `[2] 配置`、`[2] 重置 API key`，确认后会原子写入新的随机 key，旧 key 立即失效。需要查看当前密钥时选择 `[2] 配置`、`[3] 显示 API key`；确认终端未共享或录屏后，启动器才会显示完整 key。版本和帮助命令不读取或修改 key。
 
 依次选择 `[3] 升级维护`、`[3] 清理与恢复`，启动器会扫描配置原子写入残留、启动器与运行时更新暂存、已登记待清理运行时、未登记运行时目录以及 `data/llama.cpp-recovery[-N]` 恢复备份，并显示类型、大小、产生原因和完整路径。严格验证过命名、文件类型或所有权标记且至少 24 小时没有修改的项目可批量安全清理；近期临时项会标记为“可能正在使用”并拒绝删除，避免多个 launcher 同时运行时互相破坏。Windows 更新交接使用的 `.llamaup-run-*` 运行副本是例外：新版 launcher 会立即尝试删除，若进程仍占用则保留并在后续启动重试。恢复备份、无标记暂存和未登记目录必须逐个选择，可先查看内容或使用系统文件管理器打开，永久删除前还会再次确认。目标在扫描后被替换、包含链接或特殊文件时会拒绝删除；已登记待清理运行时删除成功后会同步移出 `pending_cleanup`。
 
@@ -319,7 +319,7 @@ GET http://127.0.0.1:29856/models
 ## 安全说明
 
 - `config/launcher.json`、`config/launcher.api-key`、手动 Router preset 和自动 Router preset 都固定在 `config/` 中；符号链接、junction 和重解析点会被拒绝，避免写入根目录外文件。
-- 只有 `config/launcher.api-key` 包含明文 API key；`launcher.json` 不再保存密钥。Unix 上会把 `config/` 强制修正为 `0700`、配置与 key 文件修正为 `0600`；Windows 上会设置受保护 DACL，仅授予当前用户和 LocalSystem 完全控制。请勿提交或共享 key 文件。
+- 只有 `config/launcher.api-key` 持久化保存明文 API key；`launcher.json` 不再保存密钥。菜单中的“显示 API key”会在明确确认后临时输出完整密钥，请避免共享终端或录屏。Unix 上会把 `config/` 强制修正为 `0700`、配置与 key 文件修正为 `0600`；Windows 上会设置受保护 DACL，仅授予当前用户和 LocalSystem 完全控制。请勿提交或共享 key 文件。
 - 配置与 Router preset 先写入同目录临时文件并同步，再替换目标文件。覆盖失败不会先清空原文件；不带 `--force` 时仍拒绝覆盖手动配置。
 - Router 会拒绝包含控制字符、换行或非法 section 分隔符的模型文件名和路径，防止 preset 注入。
 - 启动器使用 `--api-key-file` 传递托管密钥，密钥不会出现在操作系统进程列表中；用户自行转发的 `--api-key` 仍会在命令预览中脱敏。
