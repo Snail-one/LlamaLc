@@ -1120,13 +1120,19 @@ func TestStandaloneUpdaterReplacesFixedLauncherTarget(t *testing.T) {
 		}, nil
 	})}}
 	probe := &fakeInstallationProbe{output: "Version:   " + tag + "\nCommit: test\n"}
+	stdout := &bytes.Buffer{}
 	manager := &UpdateManager{
 		Root: root, GOOS: "linux", GOARCH: "amd64", Client: client,
-		Probe: probe, LauncherProbe: probe, Stdout: io.Discard, Stderr: io.Discard,
+		Probe: probe, LauncherProbe: probe, Stdout: stdout, Stderr: io.Discard,
 	}
 
 	if err := manager.UpdateLauncher(context.Background(), release, false, false); !errors.Is(err, errUpdaterHandoff) {
 		t.Fatalf("launcher update did not require a successful restart: %v", err)
+	}
+	for _, want := range []string{"更新完成", "启动器: " + tag, "更新器: " + tag, "已完成原子替换"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("launcher update summary missing %q: %s", want, stdout)
+		}
 	}
 	if content, err := os.ReadFile(launcherPath); err != nil || !bytes.Equal(content, newLauncher) {
 		t.Fatalf("launcher target content=%q err=%v", content, err)

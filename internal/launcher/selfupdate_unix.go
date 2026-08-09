@@ -30,7 +30,13 @@ func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launche
 	if err := syncDirectory(bin); err != nil {
 		return err
 	}
-	fmt.Fprintf(manager.Stdout, "启动器与更新器已更新到 %s；请重新运行命令。\n", release.TagName)
+	fmt.Fprintf(manager.Stdout, `
+更新完成
+  启动器: %s
+  更新器: %s
+  状态: 已完成原子替换
+  下一步: 退出当前程序并重新启动
+`, release.TagName, release.TagName)
 	// The executable on disk is new, but this process still contains the old
 	// embedded version and code. Exit through the same successful restart path
 	// used by Windows instead of returning to a stale interactive menu.

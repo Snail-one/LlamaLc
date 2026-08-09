@@ -66,7 +66,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误: 无法应用更新:", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "启动器与更新器已更新到 %s；请重新运行命令。\n", *releaseVersion)
+	fmt.Fprintf(stdout, `
+更新完成
+  启动器: %s
+  更新器: %s
+  状态: 文件替换成功
+请重新启动 llama-launcher。
+`, *releaseVersion, *releaseVersion)
 	return 0
 }
 

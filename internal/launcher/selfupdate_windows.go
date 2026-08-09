@@ -4,6 +4,7 @@ package launcher
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,13 @@ func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launche
 		return err
 	}
 	handoffStarted = true
+	fmt.Fprintf(manager.Stdout, `
+更新文件准备完成
+  目标版本: %s
+  启动器: 已下载并验证
+  更新器: 已下载并验证
+  下一步: 退出当前程序后自动完成替换
+`, release.TagName)
 	return errUpdaterHandoff
 }
 

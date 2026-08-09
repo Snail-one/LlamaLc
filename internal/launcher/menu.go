@@ -97,6 +97,7 @@ func (app *Application) RunMenu() int {
 			return 0
 		}
 		if errors.Is(err, errUpdaterHandoff) {
+			waitForLauncherUpdateExit(m.reader, app.Stdout)
 			return 0
 		}
 		if err != nil {
@@ -110,6 +111,7 @@ func (app *Application) RunMenu() int {
 				return 0
 			}
 			if errors.Is(err, errUpdaterHandoff) {
+				waitForLauncherUpdateExit(m.reader, app.Stdout)
 				return 0
 			}
 			if errors.Is(err, errMenuBack) {
@@ -121,6 +123,11 @@ func (app *Application) RunMenu() int {
 		}
 		clearBeforeMenu = true
 	}
+}
+
+func waitForLauncherUpdateExit(reader *bufio.Reader, stdout io.Writer) {
+	fmt.Fprint(stdout, "\n按 Enter 退出当前程序；重新启动后将使用新版本...")
+	_, _ = reader.ReadString('\n')
 }
 
 func (app *Application) printMainMenu() {

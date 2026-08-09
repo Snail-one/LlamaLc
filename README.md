@@ -117,7 +117,7 @@ llama.cpp/
 
 除无副作用的版本查询外，启动器会先解析自身真实路径（包括符号链接），检查直接父目录必须名为 `bin`，且根目录必须名为 `llama.cpp`。随后只读取 `config/update-state.json` 指向的 `data/llama.cpp/<tag>-<backend>/`，并执行其中的 server `--version` 探测。绝对路径、越界路径、符号链接、重解析点及损坏状态都会被拒绝。
 
-缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。修复安装时，无法由有效状态文件证明归属的旧 `data/llama.cpp` 不会被自动删除，而会保留为 `data/llama.cpp-recovery[-N]` 恢复备份。安装和检查更新均由当前 launcher 直接完成，不会运行 llamaup。launcher 更新 archive 固定同时包含新版 launcher 和新版 llamaup，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Linux 原子替换两个程序后会退出旧进程，重新启动时显示新版本。Windows 会把当前 `bin/llamaup.exe` 复制为 `bin/.llamaup-run-*.exe`；临时副本等待 launcher 退出，先替换正式 llamaup，再替换 launcher，随后直接退出。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。普通启动不会联网，也不会自动检查更新。
+缺失或损坏运行时时，无参数启动进入维护菜单，可安装 llama.cpp、更新启动器或退出；服务子命令会明确提示先执行 `install`。修复安装时，无法由有效状态文件证明归属的旧 `data/llama.cpp` 不会被自动删除，而会保留为 `data/llama.cpp-recovery[-N]` 恢复备份。安装和检查更新均由当前 launcher 直接完成，不会运行 llamaup。launcher 更新 archive 固定同时包含新版 launcher 和新版 llamaup，并在完成双重 SHA-256 校验、严格结构检查及两个程序的版本探测后开始交接。Linux 原子替换两个程序后显示组件版本和完成状态，并等待用户按 Enter 退出旧进程。Windows 会先显示目标版本及下载、校验结果，等待用户按 Enter 后退出当前 launcher；随后 `bin/.llamaup-run-*.exe` 等待父进程结束，先替换正式 llamaup，再替换 launcher，并输出最终完成摘要。新版 launcher 下次启动清理临时副本；如果文件仍被占用则警告并在后续启动重试。普通启动不会联网，也不会自动检查更新。
 
 ## 安装与手动更新
 

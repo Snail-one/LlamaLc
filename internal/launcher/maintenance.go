@@ -64,6 +64,7 @@ func runMaintenanceMenu(manager *UpdateManager, stdin io.Reader) maintenanceMenu
 		case "2":
 			code, commandErr := runManagementCommand(context.Background(), manager, "update", []string{"--component", "launcher", "--yes"}, reader, false)
 			if errors.Is(commandErr, errUpdaterHandoff) {
+				waitForLauncherUpdateExit(reader, manager.Stdout)
 				return maintenanceMenuResult{code: code, input: reader}
 			}
 			if commandErr != nil {

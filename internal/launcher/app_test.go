@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -167,6 +168,15 @@ func TestUpgradeMenuRequiresExplicitSelection(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "更新管理器未初始化") {
 		t.Fatalf("blank upgrade selection unexpectedly started an update: %s", stderr)
+	}
+}
+
+func TestLauncherUpdateExitWaitsForAcknowledgement(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\n"))
+	stdout := &bytes.Buffer{}
+	waitForLauncherUpdateExit(reader, stdout)
+	if !strings.Contains(stdout.String(), "按 Enter 退出当前程序") || !strings.Contains(stdout.String(), "重新启动后将使用新版本") {
+		t.Fatalf("launcher update exit notice missing: %q", stdout.String())
 	}
 }
 
