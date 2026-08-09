@@ -79,7 +79,7 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 	app := &Application{
 		Root:     filepath.Join(t.TempDir(), "llama.cpp"),
 		Config:   DefaultConfig(),
-		Stdin:    menuInput("8", "n", "", "q"),
+		Stdin:    menuInput("3", "2", "n", "", "q"),
 		Stdout:   stdout,
 		Stderr:   stderr,
 		Executor: &fakeExecutor{},
@@ -89,9 +89,9 @@ func TestMenuSeparatesLlamaAndLauncherUpdates(t *testing.T) {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"运行状态", "API 服务", "Router 与本地工具", "维护", "快捷操作",
-		"[7] 更新 llama.cpp", "[8] 更新启动器", "[9] 重置 API key",
-		"[d] 清理与恢复", "直接按 Enter 默认选择 [1]",
+		"运行状态", "功能目录", "API 服务", "Router 与本地工具", "维护与管理",
+		"[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 重置 API key", "[4] 清理与恢复",
+		"子菜单输入 0 返回主菜单",
 		"将联网检查并更新启动器，是否继续",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -113,16 +113,44 @@ func TestMenuShowsOperationAndParameterSections(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
 		Root: root, Config: DefaultConfig(), Paths: paths,
-		Stdin: menuInput("1", "q", "q"), Stdout: stdout, Stderr: stderr,
+		Stdin: menuInput("1", "1", "q", "q"), Stdout: stdout, Stderr: stderr,
 		Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, stderr)
 	}
-	for _, want := range []string{"启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[q] 返回主菜单"} {
+	for _, want := range []string{"API 服务\n" + menuRule, "启动单模型 API\n" + menuRule, "选择模型\n" + menuRule, "[0] 返回主菜单", "[q] 返回主菜单"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("menu output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestMainMenuGroupsRelatedOperationsIntoSubmenus(t *testing.T) {
+	tests := []struct {
+		category string
+		want     []string
+	}{
+		{category: "1", want: []string{"API 服务", "[1] 启动单模型 API", "[2] 启动 Embedding API", "[3] 启动 Rerank API"}},
+		{category: "2", want: []string{"Router 与本地工具", "[1] 生成 Router 配置", "[2] 启动多模型 Router", "[3] 启动 CLI 聊天"}},
+		{category: "3", want: []string{"维护与管理", "[1] 更新 llama.cpp", "[2] 更新启动器", "[3] 重置 API key", "[4] 清理与恢复"}},
+	}
+	for _, test := range tests {
+		t.Run(test.category, func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			app := &Application{
+				Root: t.TempDir(), Config: DefaultConfig(),
+				Stdin: menuInput(test.category, "q", "q"), Stdout: stdout, Stderr: stderr,
+			}
+			if code := app.RunMenu(); code != 0 {
+				t.Fatalf("menu returned %d: %s", code, stderr)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("submenu output missing %q:\n%s", want, stdout)
+				}
+			}
+		})
 	}
 }
 
@@ -243,7 +271,7 @@ func TestMenuCancellationDoesNotStartProcess(t *testing.T) {
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
 	in := menuInput(
-		"1", "1", // mode and model
+		"1", "1", "1", // category, mode, and model
 		"",                         // other mmproj
 		"", "", "", "", "", "", "", // runtime defaults
 		"", "", "", // network defaults, including disabled UI
@@ -275,7 +303,7 @@ func TestEmbeddingMenuUsesDefaultsAndForwardsCustomArguments(t *testing.T) {
 	touchFile(t, filepath.Join(root, "llama-server.exe"))
 	touchFile(t, filepath.Join(root, "embeddings", "embed.gguf"))
 	in := menuInput(
-		"2", "1", // mode and model
+		"1", "2", "1", // category, mode, and model
 		"", "", "", "", "", "", "", // runtime defaults
 		"", "", // pooling and normalization defaults
 		"", "", "", // network defaults, including disabled UI
@@ -430,7 +458,7 @@ func TestMenuResetsAPIKeyOnlyAfterConfirmation(t *testing.T) {
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
 		Root: root, Config: DefaultConfig(), Paths: ResolvedPaths{APIKeyFile: keyPath},
-		Stdin: menuInput("9", "y", "", "q"), Stdout: out, Stderr: errOut,
+		Stdin: menuInput("3", "3", "y", "", "q"), Stdout: out, Stderr: errOut,
 	}
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
@@ -455,8 +483,9 @@ func TestQReturnsFromInteractivePrompts(t *testing.T) {
 		input *bytes.Buffer
 	}{
 		{name: "main menu", input: menuInput("Q")},
-		{name: "model selection", input: menuInput("1", "q", "q")},
-		{name: "parameter prompt", input: menuInput("1", "1", "", "q", "q")},
+		{name: "submenu", input: menuInput("1", "q", "q")},
+		{name: "model selection", input: menuInput("1", "1", "q", "q")},
+		{name: "parameter prompt", input: menuInput("1", "1", "1", "", "q", "q")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -465,6 +494,32 @@ func TestQReturnsFromInteractivePrompts(t *testing.T) {
 			code := runTestMain(nil, test.input, out, errOut, executor, &fakeInstallationProbe{})
 			if code != 0 || len(executor.commands) != 0 {
 				t.Fatalf("q did not return cleanly: code=%d commands=%#v stderr=%q", code, executor.commands, errOut.String())
+			}
+		})
+	}
+}
+
+func TestZeroReturnsFromNavigationMenus(t *testing.T) {
+	root := t.TempDir()
+	mockExecutableInBin(t, root)
+	touchFile(t, filepath.Join(root, "llama-server.exe"))
+	touchFile(t, filepath.Join(root, "models", "chat.gguf"))
+
+	tests := []struct {
+		name  string
+		input *bytes.Buffer
+	}{
+		{name: "function submenu", input: menuInput("1", "0", "q")},
+		{name: "model selection", input: menuInput("1", "1", "0", "q")},
+		{name: "cleanup menu", input: menuInput("3", "4", "0", "q")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+			executor := &fakeExecutor{}
+			code := runTestMain(nil, test.input, out, errOut, executor, &fakeInstallationProbe{})
+			if code != 0 || len(executor.commands) != 0 {
+				t.Fatalf("0 did not return cleanly: code=%d commands=%#v stderr=%q", code, executor.commands, errOut.String())
 			}
 		})
 	}

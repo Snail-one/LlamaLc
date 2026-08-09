@@ -34,13 +34,13 @@ func TestMainMenuUsesDForCleanupAndRecovery(t *testing.T) {
 	root := t.TempDir()
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
-		Root: root, Config: DefaultConfig(), Stdin: menuInput("d", "q", "q"),
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "4", "q", "q"),
 		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
 		t.Fatalf("menu returned %d: %s", code, errOut.String())
 	}
-	for _, want := range []string{"[d] 清理与恢复", "清理与恢复", "未发现需要处理的残留或恢复目录"} {
+	for _, want := range []string{"维护与管理", "[4] 清理与恢复", "清理与恢复", "未发现需要处理的残留或恢复目录"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("menu output missing %q: %s", want, out.String())
 		}
@@ -135,7 +135,7 @@ func TestCleanupMenuDeletesReviewItemOnlyAfterConfirmation(t *testing.T) {
 	}
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
-		Root: root, Config: DefaultConfig(), Stdin: menuInput("d", "1", "d", "y", "q", "q"),
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "4", "1", "d", "y", "q", "q"),
 		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
@@ -160,7 +160,7 @@ func TestCleanupMenuCancelPreservesReviewItem(t *testing.T) {
 	touchFile(t, filepath.Join(target, "keep.txt"))
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
-		Root: root, Config: DefaultConfig(), Stdin: menuInput("d", "1", "d", "n", "q", "q"),
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "4", "1", "d", "n", "q", "q"),
 		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
@@ -189,7 +189,7 @@ func TestCleanupMenuCanOpenSelectedDirectory(t *testing.T) {
 	t.Cleanup(func() { launchCleanupPath = original })
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	app := &Application{
-		Root: root, Config: DefaultConfig(), Stdin: menuInput("d", "1", "o", "q", "q"),
+		Root: root, Config: DefaultConfig(), Stdin: menuInput("3", "4", "1", "o", "q", "q"),
 		Stdout: out, Stderr: errOut, Executor: &fakeExecutor{},
 	}
 	if code := app.RunMenu(); code != 0 {
