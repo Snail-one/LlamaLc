@@ -18,6 +18,8 @@ const (
 	stagedUpdaterPrefix  = ".llamaup-new-"
 )
 
+var launchUpdatedLauncher = startUpdatedLauncher
+
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version" || args[0] == "version") {
 		fmt.Fprintln(stdout, buildversion.String())
@@ -66,13 +68,33 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误: 无法应用更新:", err)
 		return 1
 	}
+	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdout, stderr)
+}
+
+func finishUpdate(root, goos, releaseVersion string, stdout, stderr io.Writer) int {
+	if goos == "windows" {
+		fmt.Fprintf(stdout, `
+更新完成
+  启动器: %s
+  更新器: %s
+  状态: 文件替换成功
+  下一步: 正在自动启动新版本
+`, releaseVersion, releaseVersion)
+		if err := launchUpdatedLauncher(root, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 launcher:", err)
+			fmt.Fprintln(stderr, "请手动启动 bin\\llama-launcher.exe。")
+			return 1
+		}
+		return 0
+	}
+
 	fmt.Fprintf(stdout, `
 更新完成
   启动器: %s
   更新器: %s
   状态: 文件替换成功
 请重新启动 llama-launcher。
-`, *releaseVersion, *releaseVersion)
+`, releaseVersion, releaseVersion)
 	return 0
 }
 

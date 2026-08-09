@@ -2,10 +2,57 @@ package updater
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
+	original := launchUpdatedLauncher
+	t.Cleanup(func() { launchUpdatedLauncher = original })
+	var startedRoot string
+	launchUpdatedLauncher = func(root string, _, _ io.Writer) error {
+		startedRoot = root
+		return nil
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	root := filepath.Join(t.TempDir(), "llama.cpp")
+	if code := finishUpdate(root, "windows", "v1.2.3", stdout, stderr); code != 0 {
+		t.Fatalf("finish code=%d stderr=%s", code, stderr)
+	}
+	if startedRoot != root {
+		t.Fatalf("started root=%q, want %q", startedRoot, root)
+	}
+	for _, want := range []string{"更新完成", "启动器: v1.2.3", "文件替换成功", "正在自动启动新版本"} {
+		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
+			t.Fatalf("completion output missing %q: %s", want, stdout)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+}
+
+func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
+	original := launchUpdatedLauncher
+	t.Cleanup(func() { launchUpdatedLauncher = original })
+	launchUpdatedLauncher = func(string, io.Writer, io.Writer) error {
+		return errors.New("start failed")
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := finishUpdate(t.TempDir(), "windows", "v1.2.3", stdout, stderr); code != 1 {
+		t.Fatalf("finish code=%d, want 1", code)
+	}
+	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llama-launcher.exe"} {
+		if !bytes.Contains(stderr.Bytes(), []byte(want)) {
+			t.Fatalf("failure output missing %q: %s", want, stderr)
+		}
+	}
+}
 
 func TestVersionDoesNotRequireDeploymentLayout(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}

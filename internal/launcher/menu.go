@@ -128,7 +128,7 @@ func (app *Application) RunMenu() int {
 }
 
 func waitForLauncherUpdateExit(reader *bufio.Reader, stdout io.Writer) {
-	fmt.Fprint(stdout, "\n按 Enter 退出当前程序；重新启动后将使用新版本...")
+	fmt.Fprint(stdout, "\n按 Enter 退出当前程序；更新完成后将自动启动新版本...")
 	_, _ = reader.ReadString('\n')
 }
 

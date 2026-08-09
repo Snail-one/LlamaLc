@@ -175,7 +175,7 @@ func TestLauncherUpdateExitWaitsForAcknowledgement(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("\n"))
 	stdout := &bytes.Buffer{}
 	waitForLauncherUpdateExit(reader, stdout)
-	if !strings.Contains(stdout.String(), "按 Enter 退出当前程序") || !strings.Contains(stdout.String(), "重新启动后将使用新版本") {
+	if !strings.Contains(stdout.String(), "按 Enter 退出当前程序") || !strings.Contains(stdout.String(), "更新完成后将自动启动新版本") {
 		t.Fatalf("launcher update exit notice missing: %q", stdout.String())
 	}
 }

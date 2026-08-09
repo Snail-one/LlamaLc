@@ -11,9 +11,12 @@ import (
 	"strconv"
 )
 
-func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, updaterTarget string, release GitHubRelease) error {
+func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launcherSource, updaterSource, launcherTarget, _ string, release GitHubRelease) error {
 	bin := filepath.Dir(launcherTarget)
-	runningUpdater, err := stageUpdateExecutable(updaterTarget, bin, runningUpdaterTempPrefix+"*.exe")
+	// Run a separate copy of the verified new updater so features in this
+	// release, including automatic restart, take effect during this update.
+	// A second copy remains available as the source for replacing llamaup.exe.
+	runningUpdater, err := stageUpdateExecutable(updaterSource, bin, runningUpdaterTempPrefix+"*.exe")
 	if err != nil {
 		return err
 	}
@@ -54,7 +57,7 @@ func (manager *UpdateManager) installLauncherBinaries(_ context.Context, launche
   目标版本: %s
   启动器: 已下载并验证
   更新器: 已下载并验证
-  下一步: 退出当前程序后自动完成替换
+  下一步: 退出当前程序后自动完成替换并启动新版本
 `, release.TagName)
 	return errUpdaterHandoff
 }
