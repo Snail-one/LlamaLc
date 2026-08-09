@@ -82,6 +82,32 @@ func TestVersionComparisons(t *testing.T) {
 	}
 }
 
+func TestLauncherAssetNamePlacesVersionLast(t *testing.T) {
+	if got, want := launcherAssetName("v1.2.3", "linux", "amd64"), "llama-launcher-linux-amd64-v1.2.3.tar.gz"; got != want {
+		t.Fatalf("Linux launcher asset name = %q, want %q", got, want)
+	}
+	if got, want := launcherAssetName("v1.2.3", "windows", "arm64"), "llama-launcher-windows-arm64-v1.2.3.zip"; got != want {
+		t.Fatalf("Windows launcher asset name = %q, want %q", got, want)
+	}
+}
+
+func TestLauncherReleaseAssetsPrefersNewNameAndAcceptsLegacyName(t *testing.T) {
+	const tag = "v1.2.3"
+	canonical := testAsset(launcherAssetName(tag, "linux", "amd64"))
+	legacy := testAsset(legacyLauncherAssetName(tag, "linux", "amd64"))
+	sums := testAsset("SHA256SUMS.txt")
+
+	archive, _, err := launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{legacy, canonical, sums}}, "linux", "amd64")
+	if err != nil || archive.Name != canonical.Name {
+		t.Fatalf("canonical asset was not preferred: archive=%q err=%v", archive.Name, err)
+	}
+
+	archive, _, err = launcherReleaseAssets(GitHubRelease{TagName: tag, Assets: []GitHubAsset{legacy, sums}}, "linux", "amd64")
+	if err != nil || archive.Name != legacy.Name {
+		t.Fatalf("legacy asset was not accepted: archive=%q err=%v", archive.Name, err)
+	}
+}
+
 func TestUpdateStateRejectsEscapesAndSymlinkRuntime(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
@@ -351,7 +377,7 @@ func TestGitHubReleaseLatestTagTokenAndRateLimit(t *testing.T) {
 }
 
 func TestParseSHA256SUMSAcceptsCurrentDirectoryPrefix(t *testing.T) {
-	name := "llama-launcher-v0.0.2-windows-amd64.zip"
+	name := "llama-launcher-windows-amd64-v0.0.2.zip"
 	data := []byte(testDigest + "  ./" + name + "\n")
 	checksums, err := parseSHA256SUMS(data)
 	if err != nil || checksums[name] != testDigest {

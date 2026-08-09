@@ -42,22 +42,40 @@ func launcherAssetName(tag, goos, goarch string) string {
 	if goos == "windows" {
 		ext = ".zip"
 	}
+	return fmt.Sprintf("llama-launcher-%s-%s-%s%s", goos, goarch, tag, ext)
+}
+
+// legacyLauncherAssetName is kept for releases published before the version
+// moved to the end of the archive name. New releases use launcherAssetName,
+// while accepting the legacy layout keeps manually repackaged or mirrored old
+// releases usable.
+func legacyLauncherAssetName(tag, goos, goarch string) string {
+	ext := ".tar.gz"
+	if goos == "windows" {
+		ext = ".zip"
+	}
 	return fmt.Sprintf("llama-launcher-%s-%s-%s%s", tag, goos, goarch, ext)
 }
 
 func launcherReleaseAssets(release GitHubRelease, goos, goarch string) (GitHubAsset, GitHubAsset, error) {
 	want := launcherAssetName(release.TagName, goos, goarch)
-	var archive, sums GitHubAsset
+	legacy := legacyLauncherAssetName(release.TagName, goos, goarch)
+	var archive, legacyArchive, sums GitHubAsset
 	for _, asset := range release.Assets {
-		switch asset.Name {
-		case want:
+		switch {
+		case asset.Name == want:
 			archive = asset
-		case "SHA256SUMS.txt":
+		case asset.Name == legacy:
+			legacyArchive = asset
+		case asset.Name == "SHA256SUMS.txt":
 			sums = asset
 		}
 	}
+	if archive.Name == "" {
+		archive = legacyArchive
+	}
 	if archive.Name == "" || sums.Name == "" {
-		return GitHubAsset{}, GitHubAsset{}, fmt.Errorf("启动器 Release %s 缺少 %s 或 SHA256SUMS.txt", release.TagName, want)
+		return GitHubAsset{}, GitHubAsset{}, fmt.Errorf("启动器 Release %s 缺少 %s（兼容旧名称 %s）或 SHA256SUMS.txt", release.TagName, want, legacy)
 	}
 	if _, err := digestHex(archive.Digest); err != nil {
 		return GitHubAsset{}, GitHubAsset{}, fmt.Errorf("启动器资产缺少 API SHA-256 digest")
