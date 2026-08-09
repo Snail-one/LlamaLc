@@ -21,6 +21,7 @@ type Application struct {
 	LlamaVersion string
 	LlamaTag     string
 	LlamaBackend string
+	UpdateNotice string
 	Stdin        io.Reader
 	Stdout       io.Writer
 	Stderr       io.Writer
@@ -164,7 +165,8 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 	app := &Application{
 		Root: root, Config: config, Paths: paths,
 		LlamaVersion: detectedVersion, LlamaTag: llamaTag, LlamaBackend: llamaBackend,
-		Stdin: stdin, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
+		UpdateNotice: consumeUpdateNotice(),
+		Stdin:        stdin, Stdout: stdout, Stderr: stderr, Executor: executor, Updater: manager,
 	}
 	if len(remaining) == 0 {
 		return app.RunMenu()
@@ -178,6 +180,17 @@ func mainWithProbe(args []string, stdin io.Reader, stdout, stderr io.Writer, exe
 		return 1
 	}
 	return code
+}
+
+const updatedVersionEnvironment = "LLAMALC_UPDATED_VERSION"
+
+func consumeUpdateNotice() string {
+	version := strings.TrimSpace(os.Getenv(updatedVersionEnvironment))
+	_ = os.Unsetenv(updatedVersionEnvironment)
+	if version == "" || !strings.EqualFold(version, buildversion.Version) {
+		return ""
+	}
+	return buildversion.Version
 }
 
 func runningGoTestBinary() bool {

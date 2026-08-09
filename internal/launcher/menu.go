@@ -137,7 +137,15 @@ func (app *Application) printMainMenu() {
 ============================================================
  llama.cpp Go 启动器
 ============================================================
-
+`)
+	if app.UpdateNotice != "" {
+		fmt.Fprintf(app.Stdout, `
+更新结果
+  启动器: %s
+  状态: 更新成功，已自动重新启动
+`, safeTerminalText(app.UpdateNotice))
+	}
+	fmt.Fprintf(app.Stdout, `
 运行状态
   启动器版本: %s
   llama.cpp:   %s

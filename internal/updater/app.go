@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,12 +21,21 @@ const (
 
 var launchUpdatedLauncher = startUpdatedLauncher
 
-func Main(args []string, stdout, stderr io.Writer) int {
+func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version" || args[0] == "version") {
 		fmt.Fprintln(stdout, buildversion.String())
 		return 0
 	}
-	if len(args) == 0 || args[0] != "apply-update" {
+	if len(args) == 0 {
+		fmt.Fprintln(stdout, `llamaup 是 llama-launcher 的内部更新组件，不能单独执行更新。
+请启动 llama-launcher.exe，然后选择 [3] 升级维护 -> [2] 更新启动器。`)
+		if runtime.GOOS == "windows" && stdin != nil {
+			fmt.Fprint(stdout, "\n按 Enter 关闭...")
+			_, _ = bufio.NewReader(stdin).ReadString('\n')
+		}
+		return 2
+	}
+	if args[0] != "apply-update" {
 		printUsage(stderr)
 		return 2
 	}
@@ -80,7 +90,7 @@ func finishUpdate(root, goos, releaseVersion string, stdout, stderr io.Writer) i
   状态: 文件替换成功
   下一步: 正在自动启动新版本
 `, releaseVersion, releaseVersion)
-		if err := launchUpdatedLauncher(root, stdout, stderr); err != nil {
+		if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 launcher:", err)
 			fmt.Fprintln(stderr, "请手动启动 bin\\llama-launcher.exe。")
 			return 1

@@ -180,6 +180,22 @@ func TestLauncherUpdateExitWaitsForAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestMainMenuShowsAutomaticRestartResult(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := &Application{
+		Root: t.TempDir(), Config: DefaultConfig(), UpdateNotice: "v1.2.3",
+		Stdin: menuInput("q"), Stdout: stdout, Stderr: stderr,
+	}
+	if code := app.RunMenu(); code != 0 {
+		t.Fatalf("menu returned %d: %s", code, stderr)
+	}
+	for _, want := range []string{"更新结果", "启动器: v1.2.3", "更新成功，已自动重新启动"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("restart result missing %q: %s", want, stdout)
+		}
+	}
+}
+
 func TestRefreshManagedRuntimeUpdatesHomepageState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "llama.cpp")
 	runtimeDir := filepath.Join(root, "data", "llama.cpp", "b10328-cuda-13.3")

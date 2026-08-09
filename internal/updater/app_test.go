@@ -13,8 +13,10 @@ func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
 	original := launchUpdatedLauncher
 	t.Cleanup(func() { launchUpdatedLauncher = original })
 	var startedRoot string
-	launchUpdatedLauncher = func(root string, _, _ io.Writer) error {
+	var startedVersion string
+	launchUpdatedLauncher = func(root, version string, _, _ io.Writer) error {
 		startedRoot = root
+		startedVersion = version
 		return nil
 	}
 
@@ -25,6 +27,9 @@ func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
 	}
 	if startedRoot != root {
 		t.Fatalf("started root=%q, want %q", startedRoot, root)
+	}
+	if startedVersion != "v1.2.3" {
+		t.Fatalf("started version=%q, want v1.2.3", startedVersion)
 	}
 	for _, want := range []string{"更新完成", "启动器: v1.2.3", "文件替换成功", "正在自动启动新版本"} {
 		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
@@ -39,7 +44,7 @@ func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
 func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
 	original := launchUpdatedLauncher
 	t.Cleanup(func() { launchUpdatedLauncher = original })
-	launchUpdatedLauncher = func(string, io.Writer, io.Writer) error {
+	launchUpdatedLauncher = func(string, string, io.Writer, io.Writer) error {
 		return errors.New("start failed")
 	}
 
@@ -56,11 +61,26 @@ func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
 
 func TestVersionDoesNotRequireDeploymentLayout(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := Main([]string{"--version"}, stdout, stderr); code != 0 {
+	if code := Main([]string{"--version"}, nil, stdout, stderr); code != 0 {
 		t.Fatalf("version code=%d stderr=%s", code, stderr)
 	}
 	if stdout.Len() == 0 || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestDirectInvocationExplainsLauncherMenuEntry(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Main(nil, bytes.NewBufferString("\n"), stdout, stderr); code != 2 {
+		t.Fatalf("direct invocation code=%d, want 2", code)
+	}
+	for _, want := range []string{"内部更新组件", "llama-launcher.exe", "[3] 升级维护 -> [2] 更新启动器"} {
+		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
+			t.Fatalf("direct invocation output missing %q: %s", want, stdout)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr)
 	}
 }
 
