@@ -99,7 +99,38 @@ func NewClient(proxy string) *Client {
 	return &Client{HTTP: client, DirectHTTP: &http.Client{Transport: directTransport, CheckRedirect: redirect}, ProxyResolver: resolver, Proxy: strings.TrimSpace(proxy), Token: strings.TrimSpace(os.Getenv("LLAMALC_GITHUB_TOKEN"))}
 }
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	return c.doWithFallback(req, nil, nil)
+	if c.DirectHTTP == nil {
+		return c.HTTP.Do(req)
+	}
+	directResponse, directErr := c.DirectHTTP.Do(req)
+	if directErr == nil && directResponse != nil && directResponse.StatusCode >= 200 && directResponse.StatusCode < 300 {
+		return directResponse, nil
+	}
+	if req.Context().Err() != nil || c.HTTP == nil {
+		return directResponse, directErr
+	}
+	usesProxy := false
+	if c.ProxyResolver != nil {
+		proxy, proxyErr := c.ProxyResolver(req)
+		usesProxy = proxyErr != nil || proxy != nil
+	}
+	if !usesProxy {
+		return directResponse, directErr
+	}
+	directReason := "异常响应"
+	if directErr != nil {
+		directReason = directErr.Error()
+	} else if directResponse != nil {
+		directReason = directResponse.Status
+	}
+	if directResponse != nil {
+		_ = directResponse.Body.Close()
+	}
+	proxyResponse, proxyErr := c.HTTP.Do(req.Clone(req.Context()))
+	if proxyErr != nil {
+		return nil, fmt.Errorf("GitHub API 直连失败（%s），代理重试也失败: %w", directReason, proxyErr)
+	}
+	return proxyResponse, nil
 }
 
 func (c *Client) doWithFallback(req, fallbackReq *http.Request, reportFallback func(string)) (*http.Response, error) {

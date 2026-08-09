@@ -172,6 +172,30 @@ func TestReleaseResponseRejectsTrailingJSONAndOversize(t *testing.T) {
 	}
 }
 
+func TestReleaseAPIPrefersDirectConnection(t *testing.T) {
+	proxy, _ := url.Parse("http://127.0.0.1:7890")
+	directCalls, proxyCalls := 0, 0
+	client := &Client{
+		DirectHTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			directCalls++
+			body := `{"tag_name":"v1.2.3","assets":[]}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		})},
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			proxyCalls++
+			return nil, errors.New("proxy should not be used")
+		})},
+		ProxyResolver: func(*http.Request) (*url.URL, error) { return proxy, nil },
+	}
+	release, err := client.Latest(context.Background(), "owner/repo")
+	if err != nil || release.Tag != "v1.2.3" {
+		t.Fatalf("release=%+v err=%v", release, err)
+	}
+	if directCalls != 1 || proxyCalls != 0 {
+		t.Fatalf("direct=%d proxy=%d", directCalls, proxyCalls)
+	}
+}
+
 func TestExtractRejectsDuplicatePathsAndSharedEntryOverflow(t *testing.T) {
 	makeZip := func(path string, names ...string) {
 		file, err := os.Create(path)
