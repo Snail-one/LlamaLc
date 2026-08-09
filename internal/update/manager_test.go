@@ -280,3 +280,21 @@ func TestLauncherProbeRequiresExactVersionField(t *testing.T) {
 		t.Fatal("accepted tag outside Version field")
 	}
 }
+
+func TestLlamaVersionOutputMatchesReleaseTag(t *testing.T) {
+	for _, test := range []struct {
+		output string
+		tag    string
+		want   bool
+	}{
+		{"version: 10333 (abcdef)", "b10333", true},
+		{"Version: 010333 (abcdef)", "b10333", true},
+		{"version: 10334 (abcdef)", "b10333", false},
+		{"llama.cpp b10333", "b10333", true},
+		{"llama.cpp b103330", "b10333", false},
+	} {
+		if got := matchesLlamaTag(test.output, test.tag); got != test.want {
+			t.Errorf("matchesLlamaTag(%q, %q)=%v, want %v", test.output, test.tag, got, test.want)
+		}
+	}
+}

@@ -278,7 +278,7 @@ func (m *Manager) UpdateLlamaWithOptions(ctx context.Context, options LlamaOptio
 	if probeErr != nil {
 		return State{}, probeErr
 	}
-	if !strings.Contains(strings.ToLower(detectedVersion), strings.ToLower(r.Tag)) {
+	if !matchesLlamaTag(detectedVersion, r.Tag) {
 		return State{}, fmt.Errorf("新运行时版本签名与目标 tag %s 不匹配: %s", r.Tag, detectedVersion)
 	}
 	target := filepath.Join(m.Layout.LlamaRuntimeDir, selected.ID, r.Tag)
@@ -348,6 +348,41 @@ func (m *Manager) UpdateLlamaWithOptions(ctx context.Context, options LlamaOptio
 		return State{}, fmt.Errorf("运行时已切换，但无法保存清理状态: %w", err)
 	}
 	return current, nil
+}
+
+func matchesLlamaTag(versionOutput, tag string) bool {
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	if _, err := CompareLlamaTag(tag, tag); err != nil {
+		return false
+	}
+	lower := strings.ToLower(versionOutput)
+	if index := strings.Index(lower, "version:"); index >= 0 {
+		value := strings.TrimSpace(lower[index+len("version:"):])
+		end := 0
+		for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+			end++
+		}
+		if end > 0 {
+			comparison, err := CompareLlamaTag("b"+value[:end], tag)
+			return err == nil && comparison == 0
+		}
+	}
+	for index := 0; index+len(tag) <= len(lower); index++ {
+		if lower[index:index+len(tag)] != tag {
+			continue
+		}
+		beforeOK := index == 0 || !isASCIIAlphaNumeric(lower[index-1])
+		after := index + len(tag)
+		afterOK := after == len(lower) || !isASCIIAlphaNumeric(lower[after])
+		if beforeOK && afterOK {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= '0' && value <= '9'
 }
 
 type recoveryTransaction struct {

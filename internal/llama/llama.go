@@ -106,13 +106,31 @@ func ProbeVersion(ctx context.Context, executable string) (string, error) {
 	if line == "" {
 		return "", errors.New("llama.cpp --version 没有输出")
 	}
-	if !strings.Contains(strings.ToLower(line), "llama") {
+	return versionSummary(line)
+}
+
+func versionSummary(output string) (string, error) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(output), "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	officialSignature := strings.Contains(lower, "version:") && strings.Contains(lower, "built with")
+	llamaSignature := strings.Contains(lower, "llama")
+	if !officialSignature && !llamaSignature {
 		return "", errors.New("llama.cpp --version 输出缺少可识别签名")
 	}
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = line[:i]
+	if officialSignature {
+		for _, line := range strings.Split(normalized, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(strings.ToLower(line), "version:") {
+				return line, nil
+			}
+		}
 	}
-	return line, nil
+	for _, line := range strings.Split(normalized, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line, nil
+		}
+	}
+	return "", errors.New("llama.cpp --version 没有输出")
 }
 
 type cappedBuffer struct {

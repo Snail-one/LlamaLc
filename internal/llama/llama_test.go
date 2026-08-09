@@ -55,3 +55,17 @@ func TestVersionProbeOutputCap(t *testing.T) {
 		t.Fatal("accepted oversized version output")
 	}
 }
+
+func TestVersionSummaryAcceptsOfficialLlamaOutput(t *testing.T) {
+	output := "version: 10333 (abcdef)\r\nbuilt with MSVC 19.44 for x86_64-pc-windows-msvc\r\n"
+	summary, err := versionSummary(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != "version: 10333 (abcdef)" {
+		t.Fatalf("summary=%q", summary)
+	}
+	if _, err := versionSummary("version: 10333"); err == nil {
+		t.Fatal("accepted output without compiler signature")
+	}
+}
