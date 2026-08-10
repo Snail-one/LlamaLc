@@ -195,6 +195,7 @@ func TestMaintenanceModeInstallsThenEntersMainMenu(t *testing.T) {
 		Reader: input, Out: &out, Err: &bytes.Buffer{}, Root: "/LlamaLc", ClassicInteraction: true,
 		BackendOptions:      func() (string, []string, string, error) { return "b123", []string{"cpu"}, "", nil },
 		Run:                 func(args []string) int { command = append([]string(nil), args...); return 0 },
+		AfterLlamaInstall:   func() error { out.WriteString("实际探测文件: /runtime/llama-server\n"); return nil },
 		RefreshLlamaVersion: func() string { return "b123 / cpu" },
 	}
 	if code := a.RunMenu(); code != 0 {
@@ -203,10 +204,13 @@ func TestMaintenanceModeInstallsThenEntersMainMenu(t *testing.T) {
 	if got := strings.Join(command, " "); got != "update llama --backend cpu --reinstall" {
 		t.Fatalf("command=%q", got)
 	}
-	for _, want := range []string{"LlamaLc 维护模式", "[1] 安装 llama.cpp", "安装完成，正在进入主菜单", "b123 / cpu"} {
+	for _, want := range []string{"LlamaLc 维护模式", "[1] 安装 llama.cpp", "安装完成，正在进入主菜单", "实际探测文件: /runtime/llama-server", "b123 / cpu"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %s", want, out.String())
 		}
+	}
+	if completed, probed := strings.Index(out.String(), "安装完成，正在进入主菜单"), strings.Index(out.String(), "实际探测文件:"); completed < 0 || probed < 0 || completed > probed {
+		t.Fatalf("runtime initialization ran before completion message: %s", out.String())
 	}
 }
 

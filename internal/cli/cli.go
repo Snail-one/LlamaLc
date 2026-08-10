@@ -579,7 +579,7 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Out, "llama.cpp %s (%s) 安装/更新成功。\n", state.LlamaTag, state.Backend)
+	fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", state.LlamaTag, state.Backend, update.RuntimePath(a.Layout, state))
 	return nil
 }
 
@@ -640,7 +640,7 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 		return err
 	}
 	if err == nil {
-		fmt.Fprintf(a.Out, "llama.cpp %s (%s) 安装/更新成功。\n", state.LlamaTag, state.Backend)
+		fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", state.LlamaTag, state.Backend, update.RuntimePath(a.Layout, state))
 	}
 	tag, err := a.Updates.StartLauncherUpdateWithOptions(ctx, launcherOptions)
 	if errors.Is(err, update.ErrAlreadyCurrent) {

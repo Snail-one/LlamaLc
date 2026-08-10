@@ -28,6 +28,7 @@ type App struct {
 	RouterPresetExists                                func() bool
 	RuntimeInstalled                                  bool
 	RefreshLlamaVersion                               func() string
+	AfterLlamaInstall                                 func() error
 	LaunchWizard                                      bool
 	ClassicInteraction                                bool
 	Defaults                                          LaunchDefaults
@@ -54,17 +55,22 @@ var categories = []category{
 func (a *App) RunMenu() int {
 	ready := false
 	if a.ClassicInteraction && !a.RuntimeInstalled {
-		installed, exit := a.maintenanceMenu(&ready)
+		installed, exit, code := a.maintenanceMenu(&ready)
 		if exit {
-			return 0
+			return code
 		}
 		if installed {
 			a.RuntimeInstalled = true
-			if a.RefreshLlamaVersion != nil {
+			fmt.Fprintln(a.Out, "llama.cpp 安装完成，正在进入主菜单……")
+			if a.AfterLlamaInstall != nil {
+				if err := a.AfterLlamaInstall(); err != nil {
+					fmt.Fprintln(a.Err, "错误: 安装完成但无法初始化运行环境:", err)
+					return 1
+				}
+			}
+			if a.LlamaVersion == "" && a.RefreshLlamaVersion != nil {
 				a.LlamaVersion = a.RefreshLlamaVersion()
 			}
-			fmt.Fprintln(a.Out, "llama.cpp 安装完成，正在进入主菜单……")
-			clearTerminal(a.Out)
 		}
 	}
 	for {
@@ -102,7 +108,7 @@ func (a *App) RunMenu() int {
 	}
 }
 
-func (a *App) maintenanceMenu(ready *bool) (installed, exit bool) {
+func (a *App) maintenanceMenu(ready *bool) (installed, exit bool, code int) {
 	for {
 		fmt.Fprintln(a.Out, "\n============================================================\n LlamaLc 维护模式\n============================================================")
 		if a.UpdateNotice != "" {
@@ -117,7 +123,7 @@ func (a *App) maintenanceMenu(ready *bool) (installed, exit bool) {
 		}
 		choice, err := a.read("请选择操作: ")
 		if errors.Is(err, io.EOF) || strings.EqualFold(choice, "q") {
-			return false, true
+			return false, true, 0
 		}
 		if err != nil {
 			fmt.Fprintln(a.Err, "错误:", err)
@@ -137,7 +143,7 @@ func (a *App) maintenanceMenu(ready *bool) (installed, exit bool) {
 				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", code)
 				continue
 			}
-			return true, false
+			return true, false, 0
 		case "2":
 			if code := a.Run([]string{"update", "launcher"}); code != 0 {
 				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", code)
@@ -145,7 +151,7 @@ func (a *App) maintenanceMenu(ready *bool) (installed, exit bool) {
 			}
 			fmt.Fprint(a.Out, "\n按 Enter 退出当前程序；更新完成后将自动启动新版本...")
 			_, _ = a.Reader.ReadString('\n')
-			return false, true
+			return false, true, 0
 		default:
 			fmt.Fprintln(a.Err, "错误: 请输入 1、2 或 q。")
 		}

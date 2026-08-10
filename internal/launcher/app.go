@@ -117,23 +117,35 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 		notice = ""
 	}
 	var menu *tui.App
+	initializeInstalledRuntime := func() error {
+		version, err := reportActiveRuntime(l, stdout)
+		if err != nil {
+			return err
+		}
+		loaded, err := initializeOperational(l, stdout)
+		if err != nil {
+			return err
+		}
+		app.Config = loaded
+		if menu != nil {
+			menu.Defaults = launchDefaults(loaded)
+			menu.LlamaVersion = version
+		}
+		return nil
+	}
 	runFromMenu := func(command []string) int {
+		firstInstall := menu != nil && !menu.RuntimeInstalled && len(command) >= 2 && command[0] == "update" && command[1] == "llama"
 		code := app.Run(command)
-		if code == 0 && len(command) >= 2 && command[0] == "update" && command[1] == "llama" {
-			loaded, err := initializeOperational(l, stdout)
-			if err != nil {
+		if code == 0 && !firstInstall && len(command) >= 2 && command[0] == "update" && command[1] == "llama" {
+			if err := initializeInstalledRuntime(); err != nil {
 				fmt.Fprintln(stderr, "错误: 安装完成但无法初始化运行目录:", err)
 				return 1
-			}
-			app.Config = loaded
-			if menu != nil {
-				menu.Defaults = launchDefaults(loaded)
 			}
 		}
 		return code
 	}
 	menu = &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: runFromMenu, Ready: signalUpdateReady,
-		LaunchWizard: true, ClassicInteraction: true, RuntimeInstalled: runtimeInstalled,
+		LaunchWizard: true, ClassicInteraction: true, RuntimeInstalled: runtimeInstalled, AfterLlamaInstall: initializeInstalledRuntime,
 		RefreshLlamaVersion: func() string {
 			state, exists, err := update.LoadState(l)
 			if err != nil || !exists || state.ActiveRuntime == "" {
@@ -206,16 +218,13 @@ func ensureManagementDirectories(l layout.Layout) error {
 
 func initializeOperational(l layout.Layout, output io.Writer) (config.Config, error) {
 	for _, directory := range l.Directories() {
-		if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
+		created, err := ensureDirectory(l.Root, directory)
+		if err != nil {
 			return config.Config{}, err
 		}
-	}
-	cfg, created, err := config.Ensure(l)
-	if err != nil {
-		return config.Config{}, err
-	}
-	if created {
-		fmt.Fprintln(output, "已生成配置:", l.ConfigFile)
+		if created && isModelDirectory(l, directory) {
+			fmt.Fprintln(output, "已创建目录:", directory)
+		}
 	}
 	key, keyCreated, err := secrets.Ensure(l)
 	if err != nil {
@@ -224,7 +233,58 @@ func initializeOperational(l layout.Layout, output io.Writer) (config.Config, er
 	if keyCreated {
 		fmt.Fprintf(output, "已自动生成 %d 位 API key 并保存到: %s\n", len(key), l.APIKeyFile)
 	}
+	fmt.Fprintln(output, "API key 文件:", l.APIKeyFile)
+	cfg, created, err := config.Ensure(l)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if created {
+		fmt.Fprintln(output, "已生成配置:", l.ConfigFile)
+	}
 	return cfg, nil
+}
+
+func ensureDirectory(root, directory string) (bool, error) {
+	_, err := os.Lstat(directory)
+	created := errors.Is(err, os.ErrNotExist)
+	if err != nil && !created {
+		return false, err
+	}
+	if err := managedfs.EnsureDir(root, directory, 0o700); err != nil {
+		return false, err
+	}
+	return created, nil
+}
+
+func isModelDirectory(l layout.Layout, directory string) bool {
+	directory = filepath.Clean(directory)
+	for _, candidate := range []string{l.GenerationModels, l.EmbeddingModels, l.RerankModels, l.MMProjModels} {
+		if directory == filepath.Clean(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func reportActiveRuntime(l layout.Layout, output io.Writer) (string, error) {
+	state, exists, err := update.LoadState(l)
+	if err != nil {
+		return "", err
+	}
+	if !exists || state.ActiveRuntime == "" {
+		return "", errors.New("安装状态中没有活动的 llama.cpp 运行时")
+	}
+	rt, err := llama.Locate(update.RuntimePath(l, state), runtime.GOOS)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintln(output, "实际探测文件:", rt.Server)
+	detected, err := llama.ProbeVersion(context.Background(), rt.Server)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintln(output, "已识别 llama.cpp:", detected)
+	return state.LlamaTag + " / " + state.Backend + " — " + detected, nil
 }
 
 func initializeForCommand(args []string, l layout.Layout, app *cli.App, output io.Writer) error {
