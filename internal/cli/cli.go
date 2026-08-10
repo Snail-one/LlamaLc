@@ -33,13 +33,39 @@ type App struct {
 	Updates     *update.Manager
 	GOOS        string
 	Interactive bool
+	// PreparedRuntime is populated by the launcher after a read-only preflight
+	// so direct CLI runs cannot create configuration before runtime validation.
+	PreparedRuntime *update.ActiveRuntime
+	RuntimeReporter func(update.ActiveRuntime)
+	commandOutcome  CommandOutcome
+}
+
+type CommandOutcome struct {
+	Code      int
+	Success   bool
+	Cancelled bool
+	Back      bool
+	Handoff   bool
 }
 
 var errSyntax = errors.New("命令语法错误")
 var errCancelled = errors.New("操作已取消")
 var ErrHandoff = errors.New("更新器交接完成")
+var errLaunchCancelledCLI = errors.New("启动已取消")
+var errBack = errors.New("返回上级菜单")
 
 func (a *App) Run(args []string) int {
+	return a.RunWithResult(args).Code
+}
+
+func (a *App) RunWithResult(args []string) CommandOutcome {
+	a.commandOutcome = CommandOutcome{}
+	a.commandOutcome.Code = a.runCode(args)
+	a.commandOutcome.Success = a.commandOutcome.Code == 0 && !a.commandOutcome.Cancelled && !a.commandOutcome.Back && !a.commandOutcome.Handoff
+	return a.commandOutcome
+}
+
+func (a *App) runCode(args []string) int {
 	if len(args) == 0 {
 		Usage(a.Out)
 		return 2
@@ -94,7 +120,16 @@ func (a *App) Run(args []string) int {
 	if err == nil {
 		return 0
 	}
-	if errors.Is(err, flag.ErrHelp) || errors.Is(err, ErrHandoff) || errors.Is(err, errCancelled) {
+	if errors.Is(err, ErrHandoff) {
+		a.commandOutcome.Handoff = true
+	}
+	if errors.Is(err, errCancelled) || errors.Is(err, errLaunchCancelledCLI) {
+		a.commandOutcome.Cancelled = true
+	}
+	if errors.Is(err, errBack) {
+		a.commandOutcome.Back = true
+	}
+	if errors.Is(err, flag.ErrHelp) || errors.Is(err, ErrHandoff) || errors.Is(err, errCancelled) || errors.Is(err, errLaunchCancelledCLI) || errors.Is(err, errBack) {
 		return 0
 	}
 	var processExit *processExitError
@@ -251,17 +286,44 @@ func (a *App) run(args []string) error {
 		return fmt.Errorf("%w: 额外 llama.cpp 参数必须放在 -- 后", errSyntax)
 	}
 
-	state, exists, err := update.LoadState(a.Layout)
-	if err != nil {
-		return err
+	var active update.ActiveRuntime
+	var err error
+	if a.PreparedRuntime != nil {
+		a.PreparedRuntime = nil
+		active, err = update.ValidateActiveRuntime(context.Background(), a.Layout, a.goos())
+		if err != nil {
+			return err
+		}
+	} else {
+		active, err = update.ValidateActiveRuntime(context.Background(), a.Layout, a.goos())
+		if err != nil {
+			if !runtimeFixtureFallback(err, a.Executor) {
+				if errors.Is(err, update.ErrRuntimeNotInstalled) {
+					return errors.New("llama.cpp 尚未安装；请运行 llamalc update llama --backend <ID>")
+				}
+				return err
+			}
+			// Older package embedders used a non-native placeholder executable
+			// together with an injected process executor. Keep that narrow test
+			// seam while all real launcher paths require a successful probe.
+			state, exists, loadErr := update.LoadState(a.Layout)
+			if loadErr != nil {
+				return loadErr
+			}
+			if !exists || state.ActiveRuntime == "" {
+				return errors.New("llama.cpp 尚未安装；请运行 llamalc update llama --backend <ID>")
+			}
+			runtime, locateErr := llama.Locate(update.RuntimePath(a.Layout, state), a.goos())
+			if locateErr != nil {
+				return locateErr
+			}
+			active = update.ActiveRuntime{State: state, Runtime: runtime}
+		}
 	}
-	if !exists || state.ActiveRuntime == "" {
-		return errors.New("llama.cpp 尚未安装；请运行 llamalc update llama --backend <ID>")
+	if a.RuntimeReporter != nil {
+		a.RuntimeReporter(active)
 	}
-	rt, err := llama.Locate(update.RuntimePath(a.Layout, state), a.goos())
-	if err != nil {
-		return err
-	}
+	rt := active.Runtime
 	o := llama.Options{
 		Preset: f.preset, Host: f.host, Port: f.port, GPULayers: strings.ToLower(strings.TrimSpace(f.gpu)),
 		ContextSize: f.contextSize, Threads: f.threads, BatchSize: f.batch, UBatchSize: f.ubatch,
@@ -345,7 +407,7 @@ func (a *App) run(args []string) error {
 		}
 		if !confirmed {
 			fmt.Fprintln(a.Out, "已取消启动。")
-			return nil
+			return errLaunchCancelledCLI
 		}
 	}
 	code, err := a.Executor.Execute(command, a.In, a.Out, a.Err)
@@ -356,6 +418,15 @@ func (a *App) run(args []string) error {
 		return &processExitError{code: code}
 	}
 	return nil
+}
+
+func runtimeFixtureFallback(err error, executor llama.Executor) bool {
+	switch executor.(type) {
+	case llama.OSExecutor, *llama.OSExecutor:
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "exec format error") || strings.Contains(message, "not a valid win32 application") || strings.Contains(message, "executable file format")
 }
 
 func (a *App) addRunFlags(set *flag.FlagSet, mode llama.Mode) *runFlags {
@@ -455,7 +526,7 @@ func (a *App) router(args []string) error {
 	if err != nil {
 		return err
 	}
-	options := models.PresetOptions{GPULayers: *gpu, ContextSize: *contextSize, Pooling: *pooling, BatchSize: *batch, UBatchSize: *ubatch, DisableMMProjAuto: !*mmprojAuto, Manual: true}
+	options := models.PresetOptions{GPULayers: *gpu, ContextSize: *contextSize, Pooling: *pooling, BatchSize: *batch, UBatchSize: *ubatch, DisableMMProjAuto: !*mmprojAuto, Manual: true, CreateOnly: !*force}
 	if err := models.WriteRouterPresetWithOptions(a.Layout, a.Layout.RouterPreset, files, projectors, options); err != nil {
 		return err
 	}
@@ -568,18 +639,39 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
-	if err := a.confirmAction("即将下载并安装或更新 llama.cpp，是否继续", *yes, true); err != nil {
-		return err
-	}
-	state, err := a.Updates.UpdateLlamaWithOptions(ctx, options)
+	plan, err := a.Updates.PrepareLlama(ctx, options)
 	if errors.Is(err, update.ErrAlreadyCurrent) {
-		fmt.Fprintf(a.Out, "llama.cpp %s 已是最新版本。\n", state.LlamaTag)
+		fmt.Fprintln(a.Out, "llama.cpp 已是当前版本。")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if plan.NeedsBackend {
+		backend, selectErr := a.chooseLlamaBackend(plan)
+		if selectErr != nil {
+			return selectErr
+		}
+		if err := a.Updates.SelectLlamaBackend(plan, backend); err != nil {
+			return err
+		}
+	}
+	a.printLlamaPlan(plan)
+	if err := a.confirmAction("执行以上 llama.cpp 安装计划，是否继续", *yes, true); err != nil {
+		return err
+	}
+	state, err := a.Updates.ApplyLlama(ctx, plan)
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", state.LlamaTag, state.Backend, update.RuntimePath(a.Layout, state))
+	active, err := update.ValidateActiveRuntime(ctx, a.Layout, a.goos())
+	if err != nil {
+		return err
+	}
+	if a.RuntimeReporter != nil {
+		a.RuntimeReporter(active)
+	}
 	return nil
 }
 
@@ -597,14 +689,19 @@ func (a *App) updateLauncher(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
-	if err := a.confirmDestructive("更新 LlamaLc 启动器并自动重启，是否继续", *yes); err != nil {
-		return err
-	}
-	tag, err := a.Updates.StartLauncherUpdateWithOptions(ctx, options)
+	plan, err := a.Updates.PrepareLauncherPlan(ctx, options)
 	if errors.Is(err, update.ErrAlreadyCurrent) {
 		fmt.Fprintln(a.Out, "启动器已是最新版本。")
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	a.printLauncherPlan(plan)
+	if err := a.confirmDestructive("执行以上启动器更新计划并自动重启，是否继续", *yes); err != nil {
+		return err
+	}
+	tag, err := a.Updates.ApplyLauncher(ctx, plan)
 	if err != nil {
 		return err
 	}
@@ -632,26 +729,120 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	// The public shared switches apply to both components.
 	llamaOptions.Reinstall, launcherOptions.Reinstall = *reinstall, *reinstall
 	llamaOptions.AllowDowngrade, launcherOptions.AllowDowngrade = *allowDowngrade, *allowDowngrade
-	if err := a.confirmDestructive("更新 llama.cpp 和 LlamaLc 启动器，是否继续", *yes); err != nil {
-		return err
+	llamaPlan, llamaErr := a.Updates.PrepareLlama(ctx, llamaOptions)
+	if llamaErr != nil && !errors.Is(llamaErr, update.ErrAlreadyCurrent) {
+		return llamaErr
 	}
-	state, err := a.Updates.UpdateLlamaWithOptions(ctx, llamaOptions)
-	if err != nil && !errors.Is(err, update.ErrAlreadyCurrent) {
-		return err
+	launcherPlan, launcherErr := a.Updates.PrepareLauncherPlan(ctx, launcherOptions)
+	if launcherErr != nil && !errors.Is(launcherErr, update.ErrAlreadyCurrent) {
+		return launcherErr
 	}
-	if err == nil {
-		fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", state.LlamaTag, state.Backend, update.RuntimePath(a.Layout, state))
+	if llamaPlan != nil && llamaPlan.NeedsBackend {
+		backend, selectErr := a.chooseLlamaBackend(llamaPlan)
+		if selectErr != nil {
+			return selectErr
+		}
+		if err := a.Updates.SelectLlamaBackend(llamaPlan, backend); err != nil {
+			return err
+		}
 	}
-	tag, err := a.Updates.StartLauncherUpdateWithOptions(ctx, launcherOptions)
-	if errors.Is(err, update.ErrAlreadyCurrent) {
-		fmt.Fprintln(a.Out, "启动器已是最新版本。")
+	if llamaPlan != nil {
+		a.printLlamaPlan(llamaPlan)
+	} else {
+		fmt.Fprintln(a.Out, "llama.cpp: 已是当前版本")
+	}
+	if launcherPlan != nil {
+		a.printLauncherPlan(launcherPlan)
+	} else {
+		fmt.Fprintln(a.Out, "启动器: 已是当前版本")
+	}
+	if llamaPlan == nil && launcherPlan == nil {
 		return nil
+	}
+	if err := a.confirmDestructive("执行以上全部更新计划，是否继续", *yes); err != nil {
+		return err
+	}
+	result, err := a.Updates.ApplyAll(ctx, &update.AllPlan{Llama: llamaPlan, Launcher: launcherPlan})
+	if result.LlamaApplied {
+		fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", result.Llama.LlamaTag, result.Llama.Backend, update.RuntimePath(a.Layout, result.Llama))
+		active, validateErr := update.ValidateActiveRuntime(ctx, a.Layout, a.goos())
+		if validateErr != nil {
+			return validateErr
+		}
+		if a.RuntimeReporter != nil {
+			a.RuntimeReporter(active)
+		}
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Out, "启动器 %s 已交给 llamaup；当前进程即将退出。\n", tag)
-	return ErrHandoff
+	if result.Handoff {
+		fmt.Fprintf(a.Out, "启动器 %s 已交给 llamaup；当前进程即将退出。\n", result.LauncherTag)
+		return ErrHandoff
+	}
+	return nil
+}
+
+func (a *App) chooseLlamaBackend(plan *update.LlamaPlan) (string, error) {
+	if !a.Interactive {
+		return "", fmt.Errorf("非交互模式必须使用 --backend；可用值: %s", strings.Join(plan.AvailableBackends, ", "))
+	}
+	fmt.Fprintf(a.Out, "\nllama.cpp Release: %s\n可用后端:\n", plan.Release.Tag)
+	for index, backend := range plan.AvailableBackends {
+		fmt.Fprintf(a.Out, "  [%d] %s\n", index+1, backend)
+	}
+	if plan.Current.Backend != "" {
+		fmt.Fprintf(a.Out, "  当前后端 %s 已不在此 Release 的可用列表中，必须重新选择。\n", plan.Current.Backend)
+	}
+	reader, ok := a.In.(*bufio.Reader)
+	if !ok {
+		reader = bufio.NewReader(a.In)
+	}
+	for {
+		fmt.Fprint(a.Out, "请选择后端编号或完整 ID（0/q 取消）: ")
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		value := strings.TrimSpace(line)
+		if value == "0" || strings.EqualFold(value, "q") {
+			return "", errBack
+		}
+		if value == "" && errors.Is(err, io.EOF) {
+			fmt.Fprintln(a.Out, "操作已取消。")
+			return "", errCancelled
+		}
+		if index, parseErr := strconv.Atoi(value); parseErr == nil {
+			if index >= 1 && index <= len(plan.AvailableBackends) {
+				return plan.AvailableBackends[index-1], nil
+			}
+		} else {
+			for _, backend := range plan.AvailableBackends {
+				if strings.EqualFold(value, backend) {
+					return backend, nil
+				}
+			}
+		}
+		fmt.Fprintln(a.Err, "错误: 后端选项无效。")
+		if errors.Is(err, io.EOF) {
+			return "", errCancelled
+		}
+	}
+}
+
+func (a *App) printLlamaPlan(plan *update.LlamaPlan) {
+	current := "未安装"
+	if plan.CurrentExists && plan.Current.LlamaTag != "" {
+		current = plan.Current.LlamaTag + " / " + plan.Current.Backend
+	}
+	fmt.Fprintf(a.Out, "\nllama.cpp 更新计划\n  当前版本: %s\n  目标版本: %s\n  后端:     %s\n  安装目录: %s\n  下载大小: %s\n", current, plan.Release.Tag, plan.Backend.ID, plan.Target, humanBytes(plan.DownloadSize))
+	if plan.NeedsRecovery {
+		fmt.Fprintf(a.Out, "  修复操作: 当前状态/运行时无效（%s）\n  恢复目录: %s\n", plan.RecoveryReason, plan.RecoveryDirectory)
+	}
+}
+
+func (a *App) printLauncherPlan(plan *update.LauncherPlan) {
+	fmt.Fprintf(a.Out, "\n启动器更新计划\n  当前版本: %s\n  目标版本: %s\n  安装目录: %s\n  下载大小: %s\n", plan.CurrentVersion, plan.Release.Tag, plan.InstallDir, humanBytes(plan.DownloadSize))
 }
 
 func (a *App) confirmDestructive(prompt string, yes bool) error {

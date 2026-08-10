@@ -22,6 +22,26 @@ type fakeSource struct {
 	files   map[string][]byte
 }
 
+type countingSource struct {
+	fakeSource
+	latestCalls   int
+	downloadCalls int
+}
+
+func (s *countingSource) Latest(ctx context.Context, repository string) (release.GitHubRelease, error) {
+	s.latestCalls++
+	return s.fakeSource.Latest(ctx, repository)
+}
+
+func (s *countingSource) Release(ctx context.Context, repository, tag string) (release.GitHubRelease, error) {
+	return s.fakeSource.Release(ctx, repository, tag)
+}
+
+func (s *countingSource) Download(ctx context.Context, asset release.Asset, path string) error {
+	s.downloadCalls++
+	return s.fakeSource.Download(ctx, asset, path)
+}
+
 func TestDamagedStateIsQuarantinedAndRepairCanRollback(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "rollback"}[fail], func(t *testing.T) {
@@ -296,5 +316,60 @@ func TestLlamaVersionOutputMatchesReleaseTag(t *testing.T) {
 		if got := matchesLlamaTag(test.output, test.tag); got != test.want {
 			t.Errorf("matchesLlamaTag(%q, %q)=%v, want %v", test.output, test.tag, got, test.want)
 		}
+	}
+}
+
+func TestLlamaPlanIsReadOnlyFreezesReleaseAndDetectsConcurrentTarget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := runtimeArchive(t, "b123")
+	asset := release.Asset{Name: "llama-b123-bin-ubuntu-x64.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64), Size: int64(len(archive))}
+	source := &countingSource{fakeSource: fakeSource{release: release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}, files: map[string][]byte{asset.Name: archive}}}
+	manager := NewManager(l, source)
+	manager.GOOS, manager.GOARCH = "linux", "amd64"
+	plan, err := manager.PrepareLlama(context.Background(), LlamaOptions{Backend: "cpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.latestCalls != 1 || source.downloadCalls != 0 {
+		t.Fatalf("prepare calls latest=%d download=%d", source.latestCalls, source.downloadCalls)
+	}
+	for _, path := range []string{l.LlamaRuntimeDir, l.RecoveryDir, l.UpdateStateFile} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("prepare wrote %s: %v", path, err)
+		}
+	}
+	if err := os.MkdirAll(plan.Target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ApplyLlama(context.Background(), plan); err == nil || !strings.Contains(err.Error(), "发生变化") {
+		t.Fatalf("concurrent target not detected: %v", err)
+	}
+	if source.downloadCalls != 0 {
+		t.Fatalf("download began after preflight changed: %d", source.downloadCalls)
+	}
+}
+
+func TestActiveRuntimeRejectsRegisteredTagMismatch(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	directory := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"llama-server", "llama-cli"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("#!/bin/sh\necho 'llama.cpp b124'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := State{Schema: StateSchema, LlamaTag: "b123", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b123"), Assets: []InstalledAsset{{Name: "runtime.tar.gz", SHA256: strings.Repeat("a", 64)}}}
+	if err := SaveState(l, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateActiveRuntime(context.Background(), l, "linux"); err == nil || !strings.Contains(err.Error(), "不匹配") {
+		t.Fatalf("mismatch accepted: %v", err)
 	}
 }

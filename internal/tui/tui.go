@@ -17,11 +17,20 @@ type ModelOption struct {
 	Size     int64
 }
 
+type CommandResult struct {
+	Code      int
+	Success   bool
+	Cancelled bool
+	Back      bool
+	Handoff   bool
+}
+
 type App struct {
 	Reader                                            *bufio.Reader
 	Out, Err                                          io.Writer
 	Root, LauncherVersion, LlamaVersion, UpdateNotice string
 	Run                                               func([]string) int
+	RunResult                                         func([]string) CommandResult
 	Ready                                             func() error
 	BackendOptions                                    func() (tag string, ids []string, current string, err error)
 	ModelOptions                                      func(kind string) (directory string, models []ModelOption, err error)
@@ -131,27 +140,41 @@ func (a *App) maintenanceMenu(ready *bool) (installed, exit bool, code int) {
 		}
 		switch choice {
 		case "1":
-			backend, back, err := a.selectBackend()
-			if err != nil {
-				fmt.Fprintln(a.Err, "错误: 无法获取可用后端:", err)
+			command := []string{"update", "llama", "--reinstall"}
+			if a.RunResult == nil {
+				backend, back, err := a.selectBackend()
+				if err != nil {
+					fmt.Fprintln(a.Err, "错误: 无法获取可用后端:", err)
+					continue
+				}
+				if back {
+					continue
+				}
+				command = []string{"update", "llama", "--backend", backend, "--reinstall"}
+			}
+			result := a.invoke(command)
+			if result.Cancelled || result.Back {
 				continue
 			}
-			if back {
-				continue
-			}
-			if code := a.Run([]string{"update", "llama", "--backend", backend, "--reinstall"}); code != 0 {
-				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", code)
+			if result.Code != 0 {
+				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", result.Code)
 				continue
 			}
 			return true, false, 0
 		case "2":
-			if code := a.Run([]string{"update", "launcher"}); code != 0 {
-				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", code)
+			result := a.invoke([]string{"update", "launcher"})
+			if result.Cancelled || result.Back {
 				continue
 			}
-			fmt.Fprint(a.Out, "\n按 Enter 退出当前程序；更新完成后将自动启动新版本...")
-			_, _ = a.Reader.ReadString('\n')
-			return false, true, 0
+			if result.Code != 0 {
+				fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", result.Code)
+				continue
+			}
+			if result.Handoff || a.RunResult == nil {
+				fmt.Fprint(a.Out, "\n按 Enter 退出当前程序；更新完成后将自动启动新版本...")
+				_, _ = a.Reader.ReadString('\n')
+				return false, true, 0
+			}
 		default:
 			fmt.Fprintln(a.Err, "错误: 请输入 1、2 或 q。")
 		}
@@ -219,7 +242,7 @@ func (a *App) submenu(c category) (exit bool) {
 			}
 			command = append(command, "--model", value)
 		}
-		if item.promptBackend {
+		if item.promptBackend && a.RunResult == nil {
 			value, back, e := a.selectBackend()
 			if e != nil {
 				fmt.Fprintln(a.Err, "错误: 无法获取可用后端:", e)
@@ -297,13 +320,17 @@ func (a *App) submenu(c category) (exit bool) {
 				return false
 			}
 		}
-		code := a.Run(command)
-		if code == 0 {
+		result := a.invoke(command)
+		code := result.Code
+		if result.Back {
+			return false
+		}
+		if result.Success || a.RunResult == nil && code == 0 && !result.Cancelled && !result.Handoff {
 			fmt.Fprintln(a.Out, "操作完成。")
-		} else {
+		} else if code != 0 {
 			fmt.Fprintf(a.Err, "操作失败（退出码 %d）。\n", code)
 		}
-		if item.handoff && code == 0 {
+		if item.handoff && (result.Handoff || a.RunResult == nil && code == 0) {
 			fmt.Fprint(a.Out, "\n按 Enter 退出当前程序；更新完成后将自动启动新版本...")
 			_, _ = a.Reader.ReadString('\n')
 			return true
@@ -321,6 +348,17 @@ func (a *App) submenu(c category) (exit bool) {
 			return false
 		}
 	}
+}
+
+func (a *App) invoke(command []string) CommandResult {
+	if a.RunResult != nil {
+		return a.RunResult(command)
+	}
+	if a.Run == nil {
+		return CommandResult{Code: 1}
+	}
+	code := a.Run(command)
+	return CommandResult{Code: code, Success: code == 0}
 }
 
 func (a *App) pause() bool {
@@ -358,10 +396,6 @@ func (a *App) selectModel(kind string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if len(options) == 0 {
-		return "", false, fmt.Errorf("目录中没有找到支持的模型: %s", directory)
-	}
-
 	title := "选择模型"
 	if kind == "generation" {
 		title = "选择对话/生成模型"
@@ -370,19 +404,30 @@ func (a *App) selectModel(kind string) (string, bool, error) {
 	fmt.Fprintln(a.Out, "------------------------------------------------------------")
 	fmt.Fprintf(a.Out, "目录: %s\n", safeText(directory))
 	fmt.Fprintln(a.Out, "  [0/q] 返回主菜单")
+	if len(options) == 0 {
+		fmt.Fprintln(a.Out, "  当前目录无模型，可输入完整路径")
+	}
 	for i, option := range options {
 		fmt.Fprintf(a.Out, "  %2d. %s  (%s)\n", i+1, safeText(option.ID), formatModelSize(option.Size))
 	}
 	for {
-		value, readErr := a.read("请选择模型编号、文件名或完整路径 [1]: ")
+		prompt := "请输入模型完整路径（0/q 返回）: "
+		if len(options) > 0 {
+			prompt = "请选择模型编号、文件名或完整路径 [1]: "
+		}
+		value, readErr := a.read(prompt)
 		if readErr != nil {
 			return "", false, readErr
 		}
 		if value == "0" || strings.EqualFold(value, "q") {
 			return "", true, nil
 		}
-		if value == "" {
+		if value == "" && len(options) > 0 {
 			return options[0].Path, false, nil
+		}
+		if value == "" {
+			fmt.Fprintln(a.Err, "错误: 当前目录没有默认模型，请输入完整路径。")
+			continue
 		}
 		if index, parseErr := strconv.Atoi(value); parseErr == nil {
 			if index >= 1 && index <= len(options) {

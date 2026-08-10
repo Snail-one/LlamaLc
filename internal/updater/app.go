@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/Snail-one/LlamaLc/internal/managedfs"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
 
@@ -50,10 +52,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	updaterSourceName := set.String("updater-source-name", "", "bin 目录中的暂存更新器文件名")
 	releaseVersion := set.String("release-version", "", "目标 Release 版本")
 	parentPID := set.Int("wait-parent-pid", 0, "退出前需要等待的 launcher PID")
+	lockToken := set.String("lock-token", "", "启动器交接锁 token")
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if set.NArg() != 0 || *launcherSourceName == "" || *updaterSourceName == "" || *releaseVersion == "" || *parentPID <= 0 {
+	if set.NArg() != 0 || *launcherSourceName == "" || *updaterSourceName == "" || *releaseVersion == "" || *parentPID <= 0 || len(*lockToken) != 16 || !lowerHex(*lockToken) {
 		printUsage(stderr)
 		return 2
 	}
@@ -74,6 +77,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
+	lockDirectory, err := validateUpdateLock(root, *lockToken)
+	if err != nil {
+		fmt.Fprintln(stderr, "错误: 启动器更新锁无效:", err)
+		return 1
+	}
+	defer os.RemoveAll(lockDirectory)
 	if err := waitForParent(*parentPID); err != nil {
 		return handoffFailure(stdin, stderr, "等待启动器退出失败", err)
 	}
@@ -128,7 +137,52 @@ func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, st
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "用法: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid>")
+	fmt.Fprintln(w, "用法: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid> --lock-token <16位hex>")
+}
+
+func validateUpdateLock(root, token string) (string, error) {
+	directory := filepath.Join(root, "runtime", ".launcher-lock-"+token)
+	if err := managedfs.Validate(root, directory, false); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("锁路径不是普通目录")
+	}
+	markerPath := filepath.Join(directory, ".llamalc-owned.json")
+	markerInfo, err := os.Lstat(markerPath)
+	if err != nil {
+		return "", err
+	}
+	if !markerInfo.Mode().IsRegular() || markerInfo.Mode()&os.ModeSymlink != 0 || markerInfo.Size() > 4096 {
+		return "", errors.New("锁所有权标记无效")
+	}
+	file, err := os.Open(markerPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	var marker struct {
+		Schema int    `json:"schema"`
+		Token  string `json:"token"`
+		Kind   string `json:"kind"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, 4097))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&marker); err != nil {
+		return "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return "", errors.New("锁所有权标记包含多余内容")
+	}
+	if marker.Schema != 1 || marker.Token != token || marker.Kind != "launcher-install-lock" {
+		return "", errors.New("锁所有权标记不匹配")
+	}
+	return directory, nil
 }
 
 func executableRoot() (string, error) {

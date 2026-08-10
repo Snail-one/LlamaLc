@@ -93,7 +93,10 @@ func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids [
 		state, exists = State{}, false
 	}
 	if exists {
-		state = m.retryPendingCleanup(state)
+		state, err = m.retryPendingCleanup(state)
+		if err != nil {
+			return "", nil, "", err
+		}
 	}
 	rel, err := m.Source.Latest(ctx, LlamaRepository)
 	if err != nil {
@@ -121,7 +124,10 @@ func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, erro
 	if err != nil {
 		return nil, err
 	}
-	s = m.retryPendingCleanup(s)
+	s, err = m.retryPendingCleanup(s)
+	if err != nil {
+		return nil, err
+	}
 	if target == "all" || target == "llama" {
 		r, err := m.Source.Latest(ctx, LlamaRepository)
 		if err != nil {
@@ -166,82 +172,72 @@ func (m *Manager) UpdateLlama(ctx context.Context, backend string, reinstall boo
 }
 
 func (m *Manager) UpdateLlamaWithOptions(ctx context.Context, options LlamaOptions) (State, error) {
-	backend, reinstall := strings.TrimSpace(options.Backend), options.Reinstall
-	current, exists, err := LoadState(m.Layout)
-	if err != nil {
-		return m.updateLlamaWithRecovery(ctx, options, err)
-	}
-	if exists {
-		current = m.retryPendingCleanup(current)
-	}
-	if !exists {
-		entries, readErr := os.ReadDir(m.Layout.LlamaRuntimeDir)
-		if readErr == nil && len(entries) > 0 {
-			return m.updateLlamaWithRecovery(ctx, options, errors.New("更新状态不存在，但运行时目录中仍有内容"))
-		}
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return State{}, readErr
-		}
-	}
-	r, err := m.release(ctx, LlamaRepository, options.Version)
+	plan, err := m.PrepareLlama(ctx, options)
 	if err != nil {
 		return State{}, err
 	}
-	if _, err = CompareLlamaTag(r.Tag, r.Tag); err != nil {
+	if plan.NeedsBackend {
+		return State{}, fmt.Errorf("首次安装或当前后端不可用，必须使用 --backend；可用值: %s", strings.Join(plan.AvailableBackends, ", "))
+	}
+	return m.ApplyLlama(ctx, plan)
+}
+
+func (m *Manager) ApplyLlama(ctx context.Context, plan *LlamaPlan) (State, error) {
+	if err := m.verifyLlamaPlan(plan); err != nil {
 		return State{}, err
 	}
-	if exists && current.LlamaTag != "" {
-		if backend == "" {
-			backend = current.Backend
+	if plan.CurrentExists && len(plan.Current.PendingCleanup) > 0 {
+		cleaned, err := m.retryPendingCleanup(plan.Current)
+		if err != nil {
+			return State{}, err
 		}
-		cmp, e := CompareLlamaTag(current.LlamaTag, r.Tag)
-		if e != nil {
-			return State{}, e
-		}
-		if cmp > 0 && !options.AllowDowngrade {
-			return State{}, fmt.Errorf("拒绝从 %s 降级到 %s", current.LlamaTag, r.Tag)
-		}
-		if cmp == 0 && strings.EqualFold(backend, current.Backend) && !reinstall {
-			return current, fmt.Errorf("%w: llama.cpp %s；使用 --reinstall 重装", ErrAlreadyCurrent, r.Tag)
-		}
+		plan.Current = cleaned
+		plan.stateSnapshot, _ = pathSnapshot(m.Layout.UpdateStateFile)
 	}
-	backends, err := release.LlamaAssets(r, m.GOOS, m.GOARCH)
-	if err != nil {
+	var recovery recoveryTransaction
+	if plan.NeedsRecovery {
+		if m.Err != nil {
+			fmt.Fprintln(m.Err, "警告: 未找到有效的受管运行时，将隔离当前状态后重新安装:", plan.RecoveryReason)
+		}
+		var err error
+		recovery, err = quarantineInvalidRuntimeTo(m.Layout, errors.New(plan.RecoveryReason), plan.RecoveryDirectory)
+		if err != nil {
+			return State{}, err
+		}
+		plan.Current, plan.CurrentExists = State{Schema: StateSchema}, false
+		plan.stateSnapshot, _ = pathSnapshot(m.Layout.UpdateStateFile)
+		plan.targetSnapshot, _ = pathSnapshot(plan.Target)
+	}
+	state, err := m.applyLlamaPlanCore(ctx, plan)
+	if err != nil && recovery.directory != "" {
+		if rollbackErr := rollbackRecovery(m.Layout, recovery); rollbackErr != nil {
+			return State{}, fmt.Errorf("重新安装失败: %w；同时无法完整恢复已隔离的运行时: %v", err, rollbackErr)
+		}
 		return State{}, err
 	}
-	selected := release.Backend{}
-	for _, o := range backends {
-		if strings.EqualFold(o.ID, backend) {
-			selected = o
-			break
-		}
+	if err == nil && recovery.directory != "" && m.Out != nil {
+		fmt.Fprintln(m.Out, "旧状态/运行时未自动删除，已保留为恢复备份:", recovery.directory)
 	}
-	if selected.ID == "" {
-		available := make([]string, len(backends))
-		for i, o := range backends {
-			available[i] = o.ID
-		}
-		if backend == "" {
-			return State{}, fmt.Errorf("首次安装必须使用 --backend；可用值: %s", strings.Join(available, ", "))
-		}
-		return State{}, fmt.Errorf("后端 %q 不可用；可用值: %s", backend, strings.Join(available, ", "))
-	}
-	var totalDownload int64
-	for _, asset := range selected.Assets {
-		if asset.Size <= 0 || asset.Size > 2<<30 || asset.Size > (4<<30)-totalDownload {
-			return State{}, errors.New("资产组合下载量超过 4 GiB 或大小无效")
-		}
-		totalDownload += asset.Size
-	}
-	if err := ensureFreeSpace(m.Layout.RuntimeDir, totalDownload*3); err != nil {
-		return State{}, err
-	}
-	if !safeComponent.MatchString(r.Tag) || !safeComponent.MatchString(selected.ID) {
-		return State{}, errors.New("Release tag 或后端 ID 不能安全用作目录名")
-	}
+	return state, err
+}
+
+func (m *Manager) ApplyLlamaUpdate(ctx context.Context, plan *LlamaPlan) (State, error) {
+	return m.ApplyLlama(ctx, plan)
+}
+
+func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (State, error) {
+	options, current, exists := plan.Options, plan.Current, plan.CurrentExists
+	r, selected := plan.Release, plan.Backend
+	reinstall := options.Reinstall
+	var err error
 	if err := managedfs.EnsureDir(m.Layout.Root, m.Layout.LlamaRuntimeDir, 0o700); err != nil {
 		return State{}, err
 	}
+	lock, err := acquireLlamaInstallLock(m.Layout, plan.Target)
+	if err != nil {
+		return State{}, err
+	}
+	defer os.RemoveAll(lock)
 	token := randomToken()
 	staging := filepath.Join(m.Layout.LlamaRuntimeDir, ".staging-"+token)
 	if err = createOwnedTempDirectory(m.Layout, staging, token, "llama-runtime-staging"); err != nil {
@@ -281,7 +277,10 @@ func (m *Manager) UpdateLlamaWithOptions(ctx context.Context, options LlamaOptio
 	if !matchesLlamaTag(detectedVersion, r.Tag) {
 		return State{}, fmt.Errorf("新运行时版本签名与目标 tag %s 不匹配: %s", r.Tag, detectedVersion)
 	}
-	target := filepath.Join(m.Layout.LlamaRuntimeDir, selected.ID, r.Tag)
+	target := plan.Target
+	if err = m.verifyLlamaPlan(plan); err != nil {
+		return State{}, err
+	}
 	if err = managedfs.Validate(m.Layout.LlamaRuntimeDir, target, true); err != nil {
 		return State{}, err
 	}
@@ -346,6 +345,9 @@ func (m *Manager) UpdateLlamaWithOptions(ctx context.Context, options LlamaOptio
 	}
 	if err = SaveState(m.Layout, current); err != nil {
 		return State{}, fmt.Errorf("运行时已切换，但无法保存清理状态: %w", err)
+	}
+	if _, err = ValidateActiveRuntime(ctx, m.Layout, m.GOOS); err != nil {
+		return State{}, fmt.Errorf("安装后活动运行时校验失败: %w", err)
 	}
 	return current, nil
 }
@@ -499,28 +501,44 @@ func removeManagedRuntime(l layout.Layout, path string) error {
 	return nil
 }
 
-func (m *Manager) retryPendingCleanup(state State) State {
+func (m *Manager) retryPendingCleanup(state State) (State, error) {
 	if len(state.PendingCleanup) == 0 {
-		return state
+		return state, nil
 	}
 	remaining := state.PendingCleanup[:0]
+	var failures []string
 	for _, relative := range state.PendingCleanup {
 		path := filepath.Join(m.Layout.Root, filepath.FromSlash(relative))
 		if err := removeManagedRuntime(m.Layout, path); err != nil {
 			remaining = append(remaining, relative)
+			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
 		}
 	}
 	state.PendingCleanup = remaining
-	_ = SaveState(m.Layout, state)
-	return state
+	if err := SaveState(m.Layout, state); err != nil {
+		return state, fmt.Errorf("保存 pending_cleanup: %w", err)
+	}
+	if len(failures) > 0 {
+		return state, errors.New("清理 pending_cleanup 失败: " + strings.Join(failures, "；"))
+	}
+	return state, nil
 }
 
 func quarantineInvalidRuntime(l layout.Layout, cause error) (recoveryTransaction, error) {
+	return quarantineInvalidRuntimeTo(l, cause, "")
+}
+
+func quarantineInvalidRuntimeTo(l layout.Layout, cause error, directory string) (recoveryTransaction, error) {
 	if err := managedfs.EnsureDir(l.Root, l.RecoveryDir, 0o700); err != nil {
 		return recoveryTransaction{}, err
 	}
-	name := "repair-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomToken()
-	directory := filepath.Join(l.RecoveryDir, name)
+	if directory == "" {
+		name := "repair-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomToken()
+		directory = filepath.Join(l.RecoveryDir, name)
+	}
+	if err := managedfs.Within(l.RecoveryDir, directory); err != nil || filepath.Clean(directory) == filepath.Clean(l.RecoveryDir) {
+		return recoveryTransaction{}, errors.New("恢复目录超出受管 recovery 路径")
+	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		return recoveryTransaction{}, err
 	}
@@ -609,35 +627,21 @@ func (m *Manager) PrepareLauncher(ctx context.Context) (tag, launcherPath, updat
 }
 
 func (m *Manager) PrepareLauncherWithOptions(ctx context.Context, options LauncherOptions) (tag, launcherPath, updaterPath, staging string, err error) {
-	r, e := m.release(ctx, LauncherRepository, options.Version)
+	plan, e := m.PrepareLauncherPlan(ctx, options)
 	if e != nil {
 		err = e
 		return
 	}
-	if _, e = CompareSemVer(r.Tag, r.Tag); e != nil {
-		err = fmt.Errorf("目标启动器版本 %q 不是发布 SemVer: %w", r.Tag, e)
-		return
-	}
-	// Development builds are intentionally allowed to move to a formal
-	// release. Formal builds still use strict SemVer ordering.
-	if strings.EqualFold(strings.TrimSpace(buildversion.Version), "dev") {
-		// Any valid formal target is newer than a local development build for
-		// update-policy purposes.
-	} else if cmp, compareErr := CompareSemVer(buildversion.Version, r.Tag); compareErr != nil {
-		err = fmt.Errorf("当前启动器版本 %q 不是发布 SemVer: %w", buildversion.Version, compareErr)
-		return
-	} else if cmp > 0 && !options.AllowDowngrade {
-		err = fmt.Errorf("拒绝从 %s 降级到 %s", buildversion.Version, r.Tag)
-		return
-	} else if cmp == 0 && !options.Reinstall {
-		err = fmt.Errorf("%w: 启动器 %s；使用 --reinstall 重装", ErrAlreadyCurrent, buildversion.Version)
-		return
-	}
-	asset, e := release.LauncherAsset(r, m.GOOS, m.GOARCH)
-	if e != nil {
+	return m.stageLauncherPlan(ctx, plan)
+}
+
+func (m *Manager) stageLauncherPlan(ctx context.Context, plan *LauncherPlan) (tag, launcherPath, updaterPath, staging string, err error) {
+	if e := m.verifyLauncherPlan(plan); e != nil {
 		err = e
 		return
 	}
+	r, asset, sumsAsset := plan.Release, plan.Asset, plan.SumsAsset
+	var e error
 	token := randomToken()
 	staging = filepath.Join(m.Layout.RuntimeDir, ".launcher-update-"+token)
 	if e = createOwnedTempDirectory(m.Layout, staging, token, "launcher-update-staging"); e != nil {
@@ -650,19 +654,6 @@ func (m *Manager) PrepareLauncherWithOptions(ctx context.Context, options Launch
 		}
 	}()
 	archive := filepath.Join(staging, asset.Name)
-	sumsAsset, e := release.SHA256SumsAsset(r)
-	if e != nil {
-		err = e
-		return
-	}
-	if asset.Size <= 0 || sumsAsset.Size <= 0 || asset.Size > 2<<30 || sumsAsset.Size > 4<<20 {
-		err = errors.New("启动器资产大小无效，或 SHA256SUMS.txt 超过 4 MiB")
-		return
-	}
-	if e = ensureFreeSpace(m.Layout.RuntimeDir, (asset.Size+sumsAsset.Size)*3); e != nil {
-		err = e
-		return
-	}
 	sumsPath := filepath.Join(staging, sumsAsset.Name)
 	if e = m.Source.Download(ctx, sumsAsset, sumsPath); e != nil {
 		err = e
@@ -728,7 +719,7 @@ func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) er
 	if len(token) != 16 || !safeHex(token) {
 		return errors.New("临时目录 token 无效")
 	}
-	prefix := map[string]string{"llama-runtime-staging": ".staging-", "launcher-update-staging": ".launcher-update-"}[kind]
+	prefix := map[string]string{"llama-runtime-staging": ".staging-", "launcher-update-staging": ".launcher-update-", "llama-install-lock": ".install-lock-", "launcher-install-lock": ".launcher-lock-"}[kind]
 	if prefix == "" || filepath.Base(directory) != prefix+token {
 		return errors.New("临时目录名称或类型无效")
 	}
@@ -749,6 +740,19 @@ func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) er
 		return err
 	}
 	return nil
+}
+
+func acquireLlamaInstallLock(l layout.Layout, target string) (string, error) {
+	digest := sha256.Sum256([]byte(filepath.Clean(target)))
+	token := hex.EncodeToString(digest[:8])
+	directory := filepath.Join(l.LlamaRuntimeDir, ".install-lock-"+token)
+	if err := createOwnedTempDirectory(l, directory, token, "llama-install-lock"); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", errors.New("另一个进程正在安装同一 llama.cpp 目标，请稍后重试")
+		}
+		return "", err
+	}
+	return directory, nil
 }
 
 func safeHex(value string) bool {
@@ -823,14 +827,40 @@ func (m *Manager) StartLauncherUpdate(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) StartLauncherUpdateWithOptions(ctx context.Context, options LauncherOptions) (string, error) {
-	if state, exists, loadErr := LoadState(m.Layout); loadErr == nil && exists {
-		_ = m.retryPendingCleanup(state)
+	plan, err := m.PrepareLauncherPlan(ctx, options)
+	if err != nil {
+		return "", err
 	}
-	tag, newLauncher, newUpdater, staging, err := m.PrepareLauncherWithOptions(ctx, options)
+	return m.ApplyLauncher(ctx, plan)
+}
+
+func (m *Manager) ApplyLauncher(ctx context.Context, plan *LauncherPlan) (string, error) {
+	if err := m.verifyLauncherPlan(plan); err != nil {
+		return "", err
+	}
+	launcherLock, launcherLockToken, err := acquireLauncherInstallLock(m.Layout)
+	if err != nil {
+		return "", err
+	}
+	lockHandedOff := false
+	defer func() {
+		if !lockHandedOff {
+			_ = os.RemoveAll(launcherLock)
+		}
+	}()
+	if state, exists, loadErr := LoadState(m.Layout); loadErr == nil && exists && len(state.PendingCleanup) > 0 {
+		if _, cleanupErr := m.retryPendingCleanup(state); cleanupErr != nil {
+			return "", cleanupErr
+		}
+	}
+	tag, newLauncher, newUpdater, staging, err := m.stageLauncherPlan(ctx, plan)
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(staging)
+	if err = m.verifyLauncherPlan(plan); err != nil {
+		return "", err
+	}
 	token := randomToken()
 	ext := ""
 	if m.GOOS == "windows" {
@@ -847,7 +877,7 @@ func (m *Manager) StartLauncherUpdateWithOptions(ctx context.Context, options La
 		_ = os.Remove(launcherStage)
 		return "", err
 	}
-	args := []string{"apply-update", "--launcher-source-name", launcherName, "--updater-source-name", updaterName, "--release-version", tag, "--wait-parent-pid", strconv.Itoa(os.Getpid())}
+	args := []string{"apply-update", "--launcher-source-name", launcherName, "--updater-source-name", updaterName, "--release-version", tag, "--wait-parent-pid", strconv.Itoa(os.Getpid()), "--lock-token", launcherLockToken}
 	runnerName := ".llamaup-run-" + token + ext
 	runner := filepath.Join(m.Layout.Bin, runnerName)
 	if err = managedfs.CopyFile(m.Layout.Root, newUpdater, runner, 0o755); err != nil {
@@ -867,5 +897,23 @@ func (m *Manager) StartLauncherUpdateWithOptions(ctx context.Context, options La
 		return "", err
 	}
 	_ = cmd.Process.Release()
+	lockHandedOff = true
 	return tag, nil
+}
+
+func (m *Manager) ApplyLauncherUpdate(ctx context.Context, plan *LauncherPlan) (string, error) {
+	return m.ApplyLauncher(ctx, plan)
+}
+
+func acquireLauncherInstallLock(l layout.Layout) (string, string, error) {
+	digest := sha256.Sum256([]byte(filepath.Clean(l.Root)))
+	token := hex.EncodeToString(digest[:8])
+	directory := filepath.Join(l.RuntimeDir, ".launcher-lock-"+token)
+	if err := createOwnedTempDirectory(l, directory, token, "launcher-install-lock"); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", "", errors.New("另一个启动器更新正在进行，请稍后重试")
+		}
+		return "", "", err
+	}
+	return directory, token, nil
 }

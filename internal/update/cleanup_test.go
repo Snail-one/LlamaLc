@@ -105,3 +105,32 @@ func TestCleanupRequiresValidOwnershipMarkerForTempDirectory(t *testing.T) {
 		t.Fatal("accepted path whose name does not match token")
 	}
 }
+
+func TestCleanupCandidatesDoesNotConsumePendingCleanup(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	active := filepath.Join(l.LlamaRuntimeDir, "cpu", "b124")
+	pending := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	for _, directory := range []string{active, pending, l.StateDir} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(pending, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := State{Schema: StateSchema, LlamaTag: "b124", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b124"), Assets: []InstalledAsset{{Name: "runtime.tar.gz", SHA256: strings.Repeat("a", 64)}}, PendingCleanup: []string{runtimeRelative("cpu", "b123")}}
+	if err := SaveState(l, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CleanupCandidates(l); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(pending, "keep")); err != nil {
+		t.Fatalf("scan deleted pending runtime: %v", err)
+	}
+	loaded, _, err := LoadState(l)
+	if err != nil || len(loaded.PendingCleanup) != 1 {
+		t.Fatalf("pending changed: %v err=%v", loaded.PendingCleanup, err)
+	}
+}

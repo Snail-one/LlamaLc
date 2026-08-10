@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -43,12 +42,6 @@ func Read(l layout.Layout) (string, error) {
 	if info.Size() > 8169 {
 		return "", errors.New("API key 文件过大")
 	}
-	if err := f.Chmod(0o600); err != nil {
-		return "", fmt.Errorf("保护 API key 权限: %w", err)
-	}
-	if err := managedfs.Protect(l.Root, l.APIKeyFile, 0o600); err != nil {
-		return "", fmt.Errorf("保护 API key ACL: %w", err)
-	}
 	b, err := io.ReadAll(io.LimitReader(f, 8170))
 	if err != nil {
 		return "", err
@@ -82,11 +75,26 @@ func Reset(l layout.Layout) (string, error) {
 func Ensure(l layout.Layout) (string, bool, error) {
 	key, err := Read(l)
 	if err == nil {
+		if err := managedfs.Protect(l.Root, l.APIKeyFile, 0o600); err != nil {
+			return "", false, err
+		}
 		return key, false, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", false, err
 	}
-	key, err = Reset(l)
-	return key, true, err
+	key, err = Generate()
+	if err != nil {
+		return "", false, err
+	}
+	if err = managedfs.AtomicCreate(l.Root, l.APIKeyFile, []byte(key+"\n"), 0o600); err == nil {
+		return key, true, nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return "", false, err
+	}
+	winner, readErr := Read(l)
+	if readErr != nil {
+		return "", false, readErr
+	}
+	return winner, false, nil
 }

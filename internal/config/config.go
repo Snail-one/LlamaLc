@@ -78,7 +78,6 @@ func Load(l layout.Layout) (Config, bool, error) {
 	if !info.Mode().IsRegular() || info.Size() > maxSize {
 		return Config{}, false, fmt.Errorf("配置文件无效或超过 %d 字节", maxSize)
 	}
-	_ = os.Chmod(l.ConfigFile, 0o600)
 	data, err := io.ReadAll(io.LimitReader(f, maxSize+1))
 	if err != nil {
 		return Config{}, false, err
@@ -211,9 +210,25 @@ func Ensure(l layout.Layout) (Config, bool, error) {
 		return Config{}, false, err
 	}
 	if missing {
-		if err := Save(l, cfg); err != nil {
-			return Config{}, false, err
+		data, marshalErr := json.MarshalIndent(cfg, "", "  ")
+		if marshalErr != nil {
+			return Config{}, false, marshalErr
 		}
+		if err := managedfs.AtomicCreate(l.Root, l.ConfigFile, append(data, '\n'), 0o600); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return Config{}, false, err
+			}
+			winner, winnerMissing, winnerErr := Load(l)
+			if winnerErr != nil {
+				return Config{}, false, winnerErr
+			}
+			if winnerMissing {
+				return Config{}, false, errors.New("配置并发创建后仍然不存在")
+			}
+			return winner, false, nil
+		}
+	} else if err := managedfs.Protect(l.Root, l.ConfigFile, 0o600); err != nil {
+		return Config{}, false, err
 	}
 	return cfg, missing, nil
 }

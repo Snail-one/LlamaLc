@@ -124,6 +124,48 @@ func TestOperationalInitializationReportsOnlyNewModelDirectories(t *testing.T) {
 	}
 }
 
+func TestOperationalInitializationPreflightHasNoBusinessSideEffects(t *testing.T) {
+	for _, damaged := range []string{"config", "key"} {
+		t.Run(damaged, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "LlamaLc")
+			l, err := layout.New(root, runtime.GOOS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if damaged == "config" {
+				if err := os.MkdirAll(l.ConfigDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(l.ConfigFile, []byte("{broken"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(l.SecretsDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(l.APIKeyFile, []byte("bad\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := initializeOperational(l, &bytes.Buffer{}); err == nil {
+				t.Fatal("damaged preflight unexpectedly succeeded")
+			}
+			for _, path := range []string{l.GenerationModels, l.EmbeddingModels, l.RerankModels, l.MMProjModels} {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("business directory created: %s (%v)", path, err)
+				}
+			}
+			if damaged == "config" {
+				if _, err := os.Lstat(l.APIKeyFile); !os.IsNotExist(err) {
+					t.Fatalf("key created after damaged config: %v", err)
+				}
+			} else if _, err := os.Lstat(l.ConfigFile); !os.IsNotExist(err) {
+				t.Fatalf("config created after damaged key: %v", err)
+			}
+		})
+	}
+}
+
 func TestReportActiveRuntimeShowsProbeFileAndVersion(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("test fixture is a Linux shell script")
@@ -160,5 +202,40 @@ func TestReportActiveRuntimeShowsProbeFileAndVersion(t *testing.T) {
 	}
 	if version != "b10333 / cpu — version: 10333 (08659901c)" {
 		t.Fatalf("version=%q", version)
+	}
+}
+
+func TestDirectRunRejectsRuntimeBeforeInitialization(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test fixture is a Linux shell script")
+	}
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, runtime.GOOS)
+	directory := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	for _, path := range []string{l.Bin, directory, l.StateDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"llama-server", "llama-cli"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("#!/bin/sh\necho 'llama.cpp b124'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := update.State{Schema: update.StateSchema, LlamaTag: "b123", Backend: "cpu", ActiveRuntime: "runtime/llama.cpp/cpu/b123", Assets: []update.InstalledAsset{{Name: "runtime.tar.gz", SHA256: strings.Repeat("a", 64)}}}
+	if err := update.SaveState(l, state); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	if code := MainWithLayout([]string{"run", "api", "--model", "/missing.gguf"}, l, strings.NewReader(""), &out, &stderr, llama.OSExecutor{}); code != 1 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "不匹配") {
+		t.Fatalf("runtime mismatch not reported: %s", stderr.String())
+	}
+	for _, path := range []string{l.ConfigFile, l.APIKeyFile, l.GenerationModels, l.EmbeddingModels, l.RerankModels, l.MMProjModels} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("created before runtime validation: %s (%v)", path, err)
+		}
 	}
 }

@@ -3,6 +3,7 @@
 package managedfs
 
 import (
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -33,6 +34,21 @@ func TestWindowsAtomicWriteReplaceAndProtectedDACL(t *testing.T) {
 	systemPresent := strings.Contains(sddl, "S-1-5-18") || strings.Contains(sddl, ";;;SY")
 	if !strings.Contains(sddl, "P") || !strings.Contains(sddl, current.Uid) || !systemPresent {
 		t.Fatalf("DACL is not protected for current user and LocalSystem: %s", sddl)
+	}
+}
+
+func TestWindowsAtomicCreateDoesNotReplace(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "config", "first")
+	if err := AtomicCreate(root, target, []byte("winner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicCreate(root, target, []byte("loser"), 0o600); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second create err=%v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "winner" {
+		t.Fatalf("data=%q err=%v", data, err)
 	}
 }
 

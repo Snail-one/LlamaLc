@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ type PresetOptions struct {
 	UBatchSize        int
 	DisableMMProjAuto bool
 	Manual            bool
+	CreateOnly        bool
 }
 
 func Directory(l layout.Layout, kind Kind) (string, error) {
@@ -329,7 +331,42 @@ func WriteRouterPresetWithOptions(l layout.Layout, path string, files, projector
 	if written == 0 {
 		return errors.New("没有可写入 Router preset 的模型")
 	}
+	if options.CreateOnly {
+		if err := managedfs.AtomicCreate(l.Root, path, []byte(b.String()), 0o600); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			if validateErr := validateExistingPreset(path); validateErr != nil {
+				return fmt.Errorf("Router preset 被并发创建且胜出文件无效: %w", validateErr)
+			}
+			return fmt.Errorf("Router preset 已被另一个进程创建，未覆盖: %w", os.ErrExist)
+		}
+		return nil
+	}
 	return managedfs.AtomicWrite(l.Root, path, []byte(b.String()), 0o600)
+}
+
+func validateExistingPreset(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 1<<20 {
+		return errors.New("必须是小于 1 MiB 的普通文件且不能是符号链接")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || len(data) > 1<<20 || !utf8.Valid(data) {
+		return errors.New("内容为空、过大或不是有效 UTF-8")
+	}
+	return nil
 }
 
 func validatePresetField(value string, section bool) error {

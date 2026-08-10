@@ -123,6 +123,46 @@ func AtomicWrite(root, path string, data []byte, perm os.FileMode) error {
 	return syncDir(dir)
 }
 
+// AtomicCreate durably publishes a new file without ever replacing an
+// existing path.  The temporary file is fully written and protected before a
+// hard link makes it visible; os.Link is an atomic create-if-absent operation
+// on the supported Linux and Windows filesystems.
+func AtomicCreate(root, path string, data []byte, perm os.FileMode) error {
+	if err := Validate(root, path, true); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := EnsureDir(root, dir, 0o700); err != nil {
+		return err
+	}
+	suffix := make([]byte, 8)
+	if _, err := io.ReadFull(rand.Reader, suffix); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf(".%s.tmp-%x", filepath.Base(path), suffix))
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = protectPath(tmp, perm); err != nil {
+		return err
+	}
+	if err = os.Link(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
 func CopyFile(root, source, destination string, perm os.FileMode) error {
 	if err := Validate(root, destination, true); err != nil {
 		return err

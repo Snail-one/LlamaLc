@@ -70,17 +70,44 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
+	housekeeping := update.StartupHousekeeping(l)
+	if len(housekeeping.Removed) > 0 {
+		fmt.Fprintf(stdout, "启动清理完成: %d 项\n", len(housekeeping.Removed))
+	}
+	for _, warning := range housekeeping.Warnings {
+		fmt.Fprintln(stderr, "警告: 启动清理未完成，下次将重试:", warning)
+	}
 	client := release.NewClient(os.Getenv("LLAMALC_GITHUB_PROXY"))
 	client.Progress = cli.NewDownloadReporter(stdout)
 	manager := update.NewManager(l, client)
 	manager.Out, manager.Err = stdout, stderr
 	app := &cli.App{Layout: l, Config: config.Default(), In: stdin, Out: stdout, Err: stderr, Executor: executor, Updates: manager, GOOS: runtime.GOOS, Interactive: inputIsTerminal(stdin)}
+	lastRuntimeReport := ""
+	reportRuntime := func(active update.ActiveRuntime) {
+		key := active.Runtime.Server + "\x00" + active.State.LlamaTag + "\x00" + active.Detected
+		if key == lastRuntimeReport {
+			return
+		}
+		fmt.Fprintln(stdout, "实际探测文件:", active.Runtime.Server)
+		fmt.Fprintln(stdout, "已识别 llama.cpp:", active.Detected)
+		lastRuntimeReport = key
+	}
+	app.RuntimeReporter = reportRuntime
 	if len(args) > 0 {
-		if err := initializeForCommand(args, l, app, stdout); err != nil {
+		if err := initializeForCommand(args, l, app, stdout, reportRuntime); err != nil {
 			fmt.Fprintln(stderr, "错误:", err)
 			return 1
 		}
 		return app.Run(args)
+	}
+	active, runtimeErr := update.ValidateActiveRuntime(context.Background(), l, runtime.GOOS)
+	runtimeInstalled := runtimeErr == nil
+	if runtimeErr != nil && !errors.Is(runtimeErr, update.ErrRuntimeNotInstalled) {
+		fmt.Fprintln(stderr, "错误:", runtimeErr)
+		return 1
+	}
+	if runtimeInstalled {
+		reportRuntime(active)
 	}
 	if err := ensureManagementDirectories(l); err != nil {
 		fmt.Fprintln(stderr, "错误:", err)
@@ -90,16 +117,8 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	app.In = reader
 	app.Interactive = true
 	llamaVersion := ""
-	runtimeInstalled := false
-	if state, exists, e := update.LoadState(l); e == nil && exists && state.ActiveRuntime != "" {
-		if rt, e := llama.Locate(update.RuntimePath(l, state), runtime.GOOS); e == nil {
-			if v, e := llama.ProbeVersion(context.Background(), rt.Server); e == nil {
-				llamaVersion = state.LlamaTag + " / " + state.Backend + " — " + v
-				runtimeInstalled = true
-			} else {
-				llamaVersion = state.LlamaTag + " / " + state.Backend
-			}
-		}
+	if runtimeInstalled {
+		llamaVersion = active.Display()
 	}
 	cfg := config.Default()
 	if runtimeInstalled {
@@ -118,10 +137,12 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	}
 	var menu *tui.App
 	initializeInstalledRuntime := func() error {
-		version, err := reportActiveRuntime(l, stdout)
+		validated, err := update.ValidateActiveRuntime(context.Background(), l, runtime.GOOS)
 		if err != nil {
 			return err
 		}
+		reportRuntime(validated)
+		version := validated.Display()
 		loaded, err := initializeOperational(l, stdout)
 		if err != nil {
 			return err
@@ -144,20 +165,27 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 		}
 		return code
 	}
+	runResultFromMenu := func(command []string) tui.CommandResult {
+		firstInstall := menu != nil && !menu.RuntimeInstalled && len(command) >= 2 && command[0] == "update" && command[1] == "llama"
+		outcome := app.RunWithResult(command)
+		if outcome.Code == 0 && !outcome.Cancelled && !firstInstall && len(command) >= 2 && command[0] == "update" && command[1] == "llama" {
+			if err := initializeInstalledRuntime(); err != nil {
+				fmt.Fprintln(stderr, "错误: 安装完成但无法初始化运行目录:", err)
+				return tui.CommandResult{Code: 1}
+			}
+		}
+		return tui.CommandResult{Code: outcome.Code, Success: outcome.Success, Cancelled: outcome.Cancelled, Back: outcome.Back, Handoff: outcome.Handoff}
+	}
 	menu = &tui.App{Reader: reader, Out: stdout, Err: stderr, Root: l.Root, LauncherVersion: buildversion.Version, LlamaVersion: llamaVersion, UpdateNotice: notice, Run: runFromMenu, Ready: signalUpdateReady,
+		RunResult:    runResultFromMenu,
 		LaunchWizard: true, ClassicInteraction: true, RuntimeInstalled: runtimeInstalled, AfterLlamaInstall: initializeInstalledRuntime,
 		RefreshLlamaVersion: func() string {
-			state, exists, err := update.LoadState(l)
-			if err != nil || !exists || state.ActiveRuntime == "" {
+			validated, err := update.ValidateActiveRuntime(context.Background(), l, runtime.GOOS)
+			if err != nil {
 				return ""
 			}
-			value := state.LlamaTag + " / " + state.Backend
-			if rt, locateErr := llama.Locate(update.RuntimePath(l, state), runtime.GOOS); locateErr == nil {
-				if detected, probeErr := llama.ProbeVersion(context.Background(), rt.Server); probeErr == nil {
-					value += " — " + detected
-				}
-			}
-			return value
+			reportRuntime(validated)
+			return validated.Display()
 		},
 		Defaults:       launchDefaults(cfg),
 		BackendOptions: func() (string, []string, string, error) { return manager.AvailableLlamaBackends(context.Background()) },
@@ -217,6 +245,17 @@ func ensureManagementDirectories(l layout.Layout) error {
 }
 
 func initializeOperational(l layout.Layout, output io.Writer) (config.Config, error) {
+	// Existing business files are validated before any missing directory or
+	// file is created. A damaged config/key therefore leaves the deployment
+	// byte-for-byte unchanged.
+	preflightConfig, configMissing, err := config.Load(l)
+	if err != nil {
+		return config.Config{}, err
+	}
+	_, keyErr := secrets.Read(l)
+	if keyErr != nil && !errors.Is(keyErr, os.ErrNotExist) {
+		return config.Config{}, keyErr
+	}
 	for _, directory := range l.Directories() {
 		created, err := ensureDirectory(l.Root, directory)
 		if err != nil {
@@ -240,6 +279,9 @@ func initializeOperational(l layout.Layout, output io.Writer) (config.Config, er
 	}
 	if created {
 		fmt.Fprintln(output, "已生成配置:", l.ConfigFile)
+	}
+	if !configMissing {
+		cfg = preflightConfig
 	}
 	return cfg, nil
 }
@@ -267,39 +309,31 @@ func isModelDirectory(l layout.Layout, directory string) bool {
 }
 
 func reportActiveRuntime(l layout.Layout, output io.Writer) (string, error) {
-	state, exists, err := update.LoadState(l)
+	active, err := update.ValidateActiveRuntime(context.Background(), l, runtime.GOOS)
 	if err != nil {
 		return "", err
 	}
-	if !exists || state.ActiveRuntime == "" {
-		return "", errors.New("安装状态中没有活动的 llama.cpp 运行时")
-	}
-	rt, err := llama.Locate(update.RuntimePath(l, state), runtime.GOOS)
-	if err != nil {
-		return "", err
-	}
-	fmt.Fprintln(output, "实际探测文件:", rt.Server)
-	detected, err := llama.ProbeVersion(context.Background(), rt.Server)
-	if err != nil {
-		return "", err
-	}
-	fmt.Fprintln(output, "已识别 llama.cpp:", detected)
-	return state.LlamaTag + " / " + state.Backend + " — " + detected, nil
+	fmt.Fprintln(output, "实际探测文件:", active.Runtime.Server)
+	fmt.Fprintln(output, "已识别 llama.cpp:", active.Detected)
+	return active.Display(), nil
 }
 
-func initializeForCommand(args []string, l layout.Layout, app *cli.App, output io.Writer) error {
+func initializeForCommand(args []string, l layout.Layout, app *cli.App, output io.Writer, report func(update.ActiveRuntime)) error {
 	switch args[0] {
 	case "update", "cleanup":
 		return ensureManagementDirectories(l)
 	case "router":
+		cfg, _, err := config.Load(l)
+		if err != nil {
+			return err
+		}
 		for _, directory := range []string{l.ConfigDir, l.RouterConfigDir, l.StateDir, l.RouterStateDir, l.GenerationModels, l.EmbeddingModels, l.RerankModels, l.MMProjModels} {
 			if err := managedfs.EnsureDir(l.Root, directory, 0o700); err != nil {
 				return err
 			}
 		}
-		cfg, _, err := config.Load(l)
 		app.Config = cfg
-		return err
+		return nil
 	case "key":
 		if err := managedfs.EnsureDir(l.Root, l.SecretsDir, 0o700); err != nil {
 			return err
@@ -310,6 +344,14 @@ func initializeForCommand(args []string, l layout.Layout, app *cli.App, output i
 		_, _, err := secrets.Ensure(l)
 		return err
 	case "run":
+		active, err := update.ValidateActiveRuntime(context.Background(), l, app.GOOS)
+		if err != nil {
+			return err
+		}
+		app.PreparedRuntime = &active
+		if report != nil {
+			report(active)
+		}
 		cfg, err := initializeOperational(l, output)
 		app.Config = cfg
 		return err

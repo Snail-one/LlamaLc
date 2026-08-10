@@ -101,6 +101,38 @@ func TestModelChoicesMatchV015MenuBehavior(t *testing.T) {
 	}
 }
 
+func TestEmptyModelDirectoryAcceptsFullPathWithoutDefault(t *testing.T) {
+	input := bufio.NewReader(strings.NewReader("1\n1\n\n/external/model.gguf\nq\nq\n"))
+	var out, stderr bytes.Buffer
+	var command []string
+	a := App{Reader: input, Out: &out, Err: &stderr, ModelOptions: func(string) (string, []ModelOption, error) {
+		return "/models/llm", nil, nil
+	}, Run: func(args []string) int { command = append([]string(nil), args...); return 0 }}
+	if code := a.RunMenu(); code != 0 {
+		t.Fatal(code)
+	}
+	if !strings.Contains(out.String(), "当前目录无模型，可输入完整路径") || !strings.Contains(stderr.String(), "没有默认模型") {
+		t.Fatalf("out=%s stderr=%s", out.String(), stderr.String())
+	}
+	if got := strings.Join(command, " "); got != "run api --model /external/model.gguf" {
+		t.Fatalf("command=%q", got)
+	}
+}
+
+func TestStructuredCancellationDoesNotReportCompleted(t *testing.T) {
+	input := bufio.NewReader(strings.NewReader("3\n1\nq\nq\n"))
+	var out bytes.Buffer
+	a := App{Reader: input, Out: &out, Err: &bytes.Buffer{}, RunResult: func([]string) CommandResult {
+		return CommandResult{Cancelled: true}
+	}}
+	if code := a.RunMenu(); code != 0 {
+		t.Fatal(code)
+	}
+	if strings.Contains(out.String(), "操作完成。") {
+		t.Fatalf("cancelled command reported success: %s", out.String())
+	}
+}
+
 func TestEachLaunchModeUsesItsModelDirectory(t *testing.T) {
 	tests := []struct {
 		choice, kind, mode string
