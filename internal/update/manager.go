@@ -20,6 +20,7 @@ import (
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"github.com/Snail-one/LlamaLc/internal/llama"
 	"github.com/Snail-one/LlamaLc/internal/managedfs"
+	"github.com/Snail-one/LlamaLc/internal/procinfo"
 	"github.com/Snail-one/LlamaLc/internal/release"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
@@ -31,7 +32,10 @@ const (
 
 var ErrAlreadyCurrent = errors.New("已是最新版本")
 
-const ownershipMarkerName = ".llamalc-owned.json"
+const (
+	ownershipMarkerName = ".llamalc-owned.json"
+	lockOwnerName       = ".llamalc-lock-owner.json"
+)
 
 type Source interface {
 	Latest(context.Context, string) (release.GitHubRelease, error)
@@ -729,6 +733,14 @@ type ownershipMarker struct {
 	Kind   string `json:"kind"`
 }
 
+type lockOwner struct {
+	Schema   int    `json:"schema"`
+	Token    string `json:"token"`
+	Kind     string `json:"kind"`
+	PID      int    `json:"pid"`
+	Identity string `json:"identity"`
+}
+
 func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) error {
 	if len(token) != 16 || !safeHex(token) {
 		return errors.New("临时目录 token 无效")
@@ -753,20 +765,116 @@ func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) er
 		_ = os.RemoveAll(directory)
 		return err
 	}
+	if kind == "llama-global-install-lock" || kind == "launcher-install-lock" {
+		if err := setOwnedLockOwner(l, directory, token, kind, os.Getpid()); err != nil {
+			_ = os.RemoveAll(directory)
+			return fmt.Errorf("记录更新锁持有进程: %w", err)
+		}
+	}
 	return nil
+}
+
+func setOwnedLockOwner(l layout.Layout, directory, token, kind string, pid int) error {
+	identity, alive, err := procinfo.Identity(pid)
+	if err != nil {
+		return fmt.Errorf("查询锁持有进程: %w", err)
+	}
+	if !alive || identity == "" {
+		return errors.New("锁持有进程已经退出")
+	}
+	owner := lockOwner{Schema: 1, Token: token, Kind: kind, PID: pid, Identity: identity}
+	data, err := json.Marshal(owner)
+	if err != nil {
+		return err
+	}
+	return managedfs.AtomicWrite(l.Root, filepath.Join(directory, lockOwnerName), append(data, '\n'), 0o600)
+}
+
+func reclaimDeadOwnedLock(l layout.Layout, directory, prefix, kind string) (reclaimed, ownerLive bool, err error) {
+	marker, valid := readOwnershipMarker(directory, prefix, kind)
+	if !valid {
+		return false, false, nil
+	}
+	owner, valid := readLockOwner(directory, marker.Token, kind)
+	if !valid {
+		return false, false, nil
+	}
+	identity, alive, err := procinfo.Identity(owner.PID)
+	if err != nil {
+		// Unknown process state cannot authorize deletion. Heartbeat age and
+		// the 24-hour housekeeping rule remain the conservative fallback.
+		return false, false, nil
+	}
+	if alive && identity == owner.Identity {
+		return false, true, nil
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, false, nil
+		}
+		return false, false, err
+	}
+	_, snapshot, err := inspectCleanupPath(directory)
+	if err != nil {
+		return false, false, err
+	}
+	if err := removeAutomaticCleanupPath(l, directory, info, snapshot); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+func readLockOwner(directory, token, kind string) (lockOwner, bool) {
+	path := filepath.Join(directory, lockOwnerName)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4096 {
+		return lockOwner{}, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return lockOwner{}, false
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Size() > 4096 || !os.SameFile(info, openedInfo) {
+		return lockOwner{}, false
+	}
+	var owner lockOwner
+	decoder := json.NewDecoder(io.LimitReader(file, 4097))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&owner) != nil {
+		return lockOwner{}, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return lockOwner{}, false
+	}
+	if owner.Schema != 1 || owner.Token != token || owner.Kind != kind || owner.PID <= 0 || owner.Identity == "" {
+		return lockOwner{}, false
+	}
+	return owner, true
 }
 
 func acquireLlamaInstallLock(l layout.Layout) (string, error) {
 	digest := sha256.Sum256([]byte(filepath.Clean(l.Root) + "\x00llama.cpp"))
 	token := hex.EncodeToString(digest[:8])
 	directory := filepath.Join(l.RuntimeDir, ".llama-lock-"+token)
-	if err := createOwnedTempDirectory(l, directory, token, "llama-global-install-lock"); err != nil {
-		if errors.Is(err, os.ErrExist) {
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := createOwnedTempDirectory(l, directory, token, "llama-global-install-lock"); err == nil {
+			return directory, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+		reclaimed, _, err := reclaimDeadOwnedLock(l, directory, ".llama-lock-", "llama-global-install-lock")
+		if err != nil {
+			return "", fmt.Errorf("回收异常退出的 llama.cpp 更新锁: %w", err)
+		}
+		if !reclaimed {
 			return "", errors.New("另一个进程正在安装或更新 llama.cpp，请稍后重试")
 		}
-		return "", err
 	}
-	return directory, nil
+	return "", errors.New("llama.cpp 更新锁状态持续变化，请重试")
 }
 
 func startOwnedLockHeartbeat(directory string) func() {
@@ -935,6 +1043,14 @@ func (m *Manager) ApplyLauncher(ctx context.Context, plan *LauncherPlan) (string
 		_ = os.Remove(runner)
 		return "", err
 	}
+	if err = setOwnedLockOwner(m.Layout, launcherLock, launcherLockToken, "launcher-install-lock", cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		_ = os.Remove(launcherStage)
+		_ = os.Remove(updaterStage)
+		_ = os.Remove(runner)
+		return "", fmt.Errorf("交接启动器更新锁: %w", err)
+	}
 	_ = cmd.Process.Release()
 	lockHandedOff = true
 	return tag, nil
@@ -948,11 +1064,19 @@ func acquireLauncherInstallLock(l layout.Layout) (string, string, error) {
 	digest := sha256.Sum256([]byte(filepath.Clean(l.Root)))
 	token := hex.EncodeToString(digest[:8])
 	directory := filepath.Join(l.RuntimeDir, ".launcher-lock-"+token)
-	if err := createOwnedTempDirectory(l, directory, token, "launcher-install-lock"); err != nil {
-		if errors.Is(err, os.ErrExist) {
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := createOwnedTempDirectory(l, directory, token, "launcher-install-lock"); err == nil {
+			return directory, token, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", "", err
+		}
+		reclaimed, _, err := reclaimDeadOwnedLock(l, directory, ".launcher-lock-", "launcher-install-lock")
+		if err != nil {
+			return "", "", fmt.Errorf("回收异常退出的启动器更新锁: %w", err)
+		}
+		if !reclaimed {
 			return "", "", errors.New("另一个启动器更新正在进行，请稍后重试")
 		}
-		return "", "", err
 	}
-	return directory, token, nil
+	return "", "", errors.New("启动器更新锁状态持续变化，请重试")
 }

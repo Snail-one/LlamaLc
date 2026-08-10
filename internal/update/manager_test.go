@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -372,6 +373,46 @@ func TestLlamaInstallLockIsGlobalAndOutsideReplaceableRuntime(t *testing.T) {
 	}
 	if _, err := os.Stat(lock); err != nil {
 		t.Fatalf("first lock changed after contention: %v", err)
+	}
+}
+
+func TestLlamaInstallLockImmediatelyReclaimsDeadOrReusedOwner(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		ownerPID int
+	}{
+		{name: "dead", ownerPID: 2_147_483_647},
+		{name: "pid-reused", ownerPID: os.Getpid()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "LlamaLc")
+			l, _ := layout.New(root, "linux")
+			if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			first, err := acquireLlamaInstallLock(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker, valid := readOwnershipMarker(first, ".llama-lock-", "llama-global-install-lock")
+			if !valid {
+				t.Fatal("first lock marker invalid")
+			}
+			owner := lockOwner{Schema: 1, Token: marker.Token, Kind: marker.Kind, PID: test.ownerPID, Identity: "definitely-not-the-owner"}
+			data, _ := json.Marshal(owner)
+			if err := os.WriteFile(filepath.Join(first, lockOwnerName), append(data, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			second, err := acquireLlamaInstallLock(l)
+			if err != nil {
+				t.Fatalf("stale lock was not reclaimed: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(second) })
+			newOwner, valid := readLockOwner(second, marker.Token, marker.Kind)
+			if !valid || newOwner.PID != os.Getpid() || newOwner.Identity == owner.Identity {
+				t.Fatalf("new owner=%+v valid=%v", newOwner, valid)
+			}
+		})
 	}
 }
 

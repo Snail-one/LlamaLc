@@ -16,13 +16,23 @@ import (
 	"time"
 
 	"github.com/Snail-one/LlamaLc/internal/managedfs"
+	"github.com/Snail-one/LlamaLc/internal/procinfo"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
 
 const (
 	stagedLauncherPrefix = ".llamalc-new-"
 	stagedUpdaterPrefix  = ".llamaup-new-"
+	lockOwnerName        = ".llamalc-lock-owner.json"
 )
+
+type updateLockOwner struct {
+	Schema   int    `json:"schema"`
+	Token    string `json:"token"`
+	Kind     string `json:"kind"`
+	PID      int    `json:"pid"`
+	Identity string `json:"identity"`
+}
 
 var launchUpdatedLauncher = startUpdatedLauncher
 
@@ -78,9 +88,13 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
-	lockDirectory, err := validateUpdateLock(root, *lockToken)
+	lockDirectory, err := validateUpdateLock(root, *lockToken, *parentPID)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误: 启动器更新锁无效:", err)
+		return 1
+	}
+	if err := claimUpdateLock(root, lockDirectory, *lockToken); err != nil {
+		fmt.Fprintln(stderr, "错误: 无法接管启动器更新锁:", err)
 		return 1
 	}
 	defer os.RemoveAll(lockDirectory)
@@ -106,6 +120,7 @@ func startUpdateLockHeartbeat(directory string) func() {
 			select {
 			case now := <-ticker.C:
 				_ = os.Chtimes(filepath.Join(directory, ".llamalc-owned.json"), now, now)
+				_ = os.Chtimes(filepath.Join(directory, lockOwnerName), now, now)
 				_ = os.Chtimes(directory, now, now)
 			case <-stop:
 				return
@@ -166,7 +181,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "用法: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid> --lock-token <16位hex>")
 }
 
-func validateUpdateLock(root, token string) (string, error) {
+func validateUpdateLock(root, token string, parentPID int) (string, error) {
 	directory := filepath.Join(root, "runtime", ".launcher-lock-"+token)
 	if err := managedfs.Validate(root, directory, false); err != nil {
 		return "", err
@@ -191,6 +206,10 @@ func validateUpdateLock(root, token string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
+	openedMarkerInfo, err := file.Stat()
+	if err != nil || !openedMarkerInfo.Mode().IsRegular() || openedMarkerInfo.Size() > 4096 || !os.SameFile(markerInfo, openedMarkerInfo) {
+		return "", errors.New("锁所有权标记身份发生变化")
+	}
 	var marker struct {
 		Schema int    `json:"schema"`
 		Token  string `json:"token"`
@@ -208,7 +227,73 @@ func validateUpdateLock(root, token string) (string, error) {
 	if marker.Schema != 1 || marker.Token != token || marker.Kind != "launcher-install-lock" {
 		return "", errors.New("锁所有权标记不匹配")
 	}
+	owner, exists, err := readUpdateLockOwner(directory)
+	if err != nil {
+		return "", err
+	}
+	if exists && (owner.Token != token || owner.Kind != "launcher-install-lock" || (owner.PID != parentPID && owner.PID != os.Getpid())) {
+		return "", errors.New("锁持有进程与更新交接不匹配")
+	}
+	if exists {
+		identity, alive, identityErr := procinfo.Identity(owner.PID)
+		if identityErr == nil && alive && identity != owner.Identity {
+			return "", errors.New("锁持有进程 PID 已被复用")
+		}
+	}
 	return directory, nil
+}
+
+func claimUpdateLock(root, directory, token string) error {
+	identity, alive, err := procinfo.Identity(os.Getpid())
+	if err != nil {
+		return err
+	}
+	if !alive || identity == "" {
+		return errors.New("无法确认 updater 进程身份")
+	}
+	owner := updateLockOwner{Schema: 1, Token: token, Kind: "launcher-install-lock", PID: os.Getpid(), Identity: identity}
+	data, err := json.Marshal(owner)
+	if err != nil {
+		return err
+	}
+	return managedfs.AtomicWrite(root, filepath.Join(directory, lockOwnerName), append(data, '\n'), 0o600)
+}
+
+func readUpdateLockOwner(directory string) (updateLockOwner, bool, error) {
+	path := filepath.Join(directory, lockOwnerName)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return updateLockOwner{}, false, nil
+	}
+	if err != nil {
+		return updateLockOwner{}, false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4096 {
+		return updateLockOwner{}, false, errors.New("锁持有者标记无效")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return updateLockOwner{}, false, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Size() > 4096 || !os.SameFile(info, openedInfo) {
+		return updateLockOwner{}, false, errors.New("锁持有者标记身份发生变化")
+	}
+	var owner updateLockOwner
+	decoder := json.NewDecoder(io.LimitReader(file, 4097))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&owner); err != nil {
+		return updateLockOwner{}, false, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return updateLockOwner{}, false, errors.New("锁持有者标记包含多余内容")
+	}
+	if owner.Schema != 1 || owner.PID <= 0 || owner.Identity == "" {
+		return updateLockOwner{}, false, errors.New("锁持有者标记内容无效")
+	}
+	return owner, true, nil
 }
 
 func executableRoot() (string, error) {

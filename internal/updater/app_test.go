@@ -2,12 +2,15 @@ package updater
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Snail-one/LlamaLc/internal/procinfo"
 )
 
 func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
@@ -82,6 +85,52 @@ func TestDirectInvocationExplainsLauncherMenuEntry(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+}
+
+func TestUpdaterValidatesAndClaimsLauncherLockOwner(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	token := "0123456789abcdef"
+	directory := filepath.Join(root, "runtime", ".launcher-lock-"+token)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := struct {
+		Schema int    `json:"schema"`
+		Token  string `json:"token"`
+		Kind   string `json:"kind"`
+	}{Schema: 1, Token: token, Kind: "launcher-install-lock"}
+	markerData, _ := json.Marshal(marker)
+	if err := os.WriteFile(filepath.Join(directory, ".llamalc-owned.json"), append(markerData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, alive, err := procinfo.Identity(os.Getpid())
+	if err != nil || !alive {
+		t.Fatalf("current identity=%q alive=%v err=%v", identity, alive, err)
+	}
+	owner := updateLockOwner{Schema: 1, Token: token, Kind: "launcher-install-lock", PID: os.Getpid(), Identity: identity}
+	ownerData, _ := json.Marshal(owner)
+	if err := os.WriteFile(filepath.Join(directory, lockOwnerName), append(ownerData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := validateUpdateLock(root, token, os.Getpid()); err != nil || got != directory {
+		t.Fatalf("validate directory=%q err=%v", got, err)
+	}
+	if err := claimUpdateLock(root, directory, token); err != nil {
+		t.Fatal(err)
+	}
+	claimed, exists, err := readUpdateLockOwner(directory)
+	if err != nil || !exists || claimed.PID != os.Getpid() || claimed.Identity != identity {
+		t.Fatalf("claimed=%+v exists=%v err=%v", claimed, exists, err)
+	}
+
+	owner.PID = 2_147_483_647
+	ownerData, _ = json.Marshal(owner)
+	if err := os.WriteFile(filepath.Join(directory, lockOwnerName), append(ownerData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateUpdateLock(root, token, os.Getpid()); err == nil || !strings.Contains(err.Error(), "交接不匹配") {
+		t.Fatalf("foreign owner accepted: %v", err)
 	}
 }
 

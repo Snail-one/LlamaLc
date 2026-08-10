@@ -1,6 +1,7 @@
 package update
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +211,52 @@ func TestAutomaticCleanupRejectsPathReplacementAfterSnapshot(t *testing.T) {
 	data, err = os.ReadFile(originalElsewhere)
 	if err != nil || string(data) != "original" {
 		t.Fatalf("original changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestStartupHousekeepingImmediatelyRemovesDeadLockButKeepsLiveLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dead, err := acquireLlamaInstallLock(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, valid := readOwnershipMarker(dead, ".llama-lock-", "llama-global-install-lock")
+	if !valid {
+		t.Fatal("dead lock marker invalid")
+	}
+	owner := lockOwner{Schema: 1, Token: marker.Token, Kind: marker.Kind, PID: 2_147_483_647, Identity: "missing"}
+	data, _ := json.Marshal(owner)
+	if err := os.WriteFile(filepath.Join(dead, lockOwnerName), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := StartupHousekeeping(l)
+	if len(result.Warnings) != 0 || len(result.Removed) != 1 || result.Removed[0] != dead {
+		t.Fatalf("dead lock cleanup=%+v", result)
+	}
+	if _, err := os.Lstat(dead); !os.IsNotExist(err) {
+		t.Fatalf("dead lock still exists: %v", err)
+	}
+
+	live, err := acquireLlamaInstallLock(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(live) })
+	old := time.Now().Add(-25 * time.Hour)
+	for _, path := range []string{filepath.Join(live, ownershipMarkerName), filepath.Join(live, lockOwnerName), live} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result = StartupHousekeeping(l)
+	if len(result.Removed) != 0 || len(result.Warnings) != 0 {
+		t.Fatalf("live lock was touched: %+v", result)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live lock missing: %v", err)
 	}
 }

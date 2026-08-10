@@ -252,7 +252,24 @@ func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 	}
 	removeOwnedDirectory := func(path, prefix, kind string) {
 		info, err := os.Lstat(path)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !validOwnedTempDirectory(path, prefix, kind) || !oldEnoughForAutomaticCleanup(path, info) {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !validOwnedTempDirectory(path, prefix, kind) {
+			return
+		}
+		if kind == "llama-global-install-lock" || kind == "launcher-install-lock" {
+			reclaimed, ownerLive, reclaimErr := reclaimDeadOwnedLock(l, path, prefix, kind)
+			if reclaimErr != nil {
+				result.Warnings = append(result.Warnings, fmt.Errorf("回收异常退出的更新锁 %s: %w", path, reclaimErr))
+				return
+			}
+			if reclaimed {
+				result.Removed = append(result.Removed, path)
+				return
+			}
+			if ownerLive {
+				return
+			}
+		}
+		if !oldEnoughForAutomaticCleanup(path, info) {
 			return
 		}
 		_, snapshot, err := inspectCleanupPath(path)
@@ -415,39 +432,52 @@ func validAtomicTempName(name string) bool {
 }
 
 func validOwnedTempDirectory(path, prefix, kind string) bool {
+	_, valid := readOwnershipMarker(path, prefix, kind)
+	return valid
+}
+
+func readOwnershipMarker(path, prefix, kind string) (ownershipMarker, bool) {
 	base := filepath.Base(path)
 	if base != strings.ToLower(base) {
-		return false
+		return ownershipMarker{}, false
 	}
 	name := strings.ToLower(base)
 	token := strings.TrimPrefix(name, prefix)
 	if token == name || len(token) != 16 || !safeHex(token) {
-		return false
+		return ownershipMarker{}, false
 	}
-	file, err := os.Open(filepath.Join(path, ownershipMarkerName))
+	markerPath := filepath.Join(path, ownershipMarkerName)
+	markerInfo, err := os.Lstat(markerPath)
+	if err != nil || !markerInfo.Mode().IsRegular() || markerInfo.Mode()&os.ModeSymlink != 0 || markerInfo.Size() > 4096 {
+		return ownershipMarker{}, false
+	}
+	file, err := os.Open(markerPath)
 	if err != nil {
-		return false
+		return ownershipMarker{}, false
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
-		return false
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || !os.SameFile(markerInfo, info) {
+		return ownershipMarker{}, false
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil || len(data) > 4096 {
-		return false
+		return ownershipMarker{}, false
 	}
 	var marker ownershipMarker
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&marker) != nil {
-		return false
+		return ownershipMarker{}, false
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return false
+		return ownershipMarker{}, false
 	}
-	return marker.Schema == 1 && marker.Token == token && marker.Kind == kind
+	if marker.Schema != 1 || marker.Token != token || marker.Kind != kind {
+		return ownershipMarker{}, false
+	}
+	return marker, true
 }
 
 func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
