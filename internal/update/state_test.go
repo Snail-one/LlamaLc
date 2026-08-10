@@ -3,6 +3,7 @@ package update
 import (
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,25 @@ func TestVersionComparisons(t *testing.T) {
 		if err != nil || c != tc.want {
 			t.Fatalf("%s %s: %d %v", tc.a, tc.b, c, err)
 		}
+	}
+}
+
+func TestWindowsStateRejectsCaseAliasedActivePendingRuntime(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows path alias regression")
+	}
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "windows")
+	state := State{
+		Schema:         StateSchema,
+		LlamaTag:       "b123",
+		Backend:        "CPU",
+		ActiveRuntime:  runtimeRelative("CPU", "b123"),
+		Assets:         []InstalledAsset{{Name: "a.zip", SHA256: strings.Repeat("a", 64)}},
+		PendingCleanup: []string{runtimeRelative("cpu", "b123")},
+	}
+	if err := ValidateState(l, state); err == nil {
+		t.Fatal("accepted a pending path that aliases the active runtime")
 	}
 }
 

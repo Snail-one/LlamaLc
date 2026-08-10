@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,40 @@ func TestFirstInstallUpdateAndDowngradeRefusal(t *testing.T) {
 	source.release.Assets[0].Size = int64(len(source.files[source.release.Assets[0].Name]))
 	if _, err = m.UpdateLlama(context.Background(), "", false); err == nil {
 		t.Fatal("downgrade accepted")
+	}
+}
+
+func TestFailedOldRuntimeRemovalRemainsDurablyPending(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := runtimeArchive(t, "b123")
+	asset := release.Asset{Name: "llama-b123-bin-ubuntu-x64.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64), Size: int64(len(archive))}
+	source := &fakeSource{release: release.GitHubRelease{Tag: "b123", Assets: []release.Asset{asset}}, files: map[string][]byte{asset.Name: archive}}
+	manager := NewManager(l, source)
+	manager.GOOS, manager.GOARCH = "linux", "amd64"
+	if _, err := manager.UpdateLlama(context.Background(), "cpu", false); err != nil {
+		t.Fatal(err)
+	}
+	source.release.Tag = "b124"
+	source.release.Assets[0].Name = "llama-b124-bin-ubuntu-x64.tar.gz"
+	source.files[source.release.Assets[0].Name] = runtimeArchive(t, "b124")
+	source.release.Assets[0].Size = int64(len(source.files[source.release.Assets[0].Name]))
+	originalRemove := removeCleanupTree
+	t.Cleanup(func() { removeCleanupTree = originalRemove })
+	removeCleanupTree = func(string) error { return errors.New("simulated cleanup failure") }
+	state, err := manager.UpdateLlama(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PendingCleanup) != 1 || !strings.Contains(state.PendingCleanup[0], "b123") {
+		t.Fatalf("pending=%v", state.PendingCleanup)
+	}
+	loaded, exists, err := LoadState(l)
+	if err != nil || !exists || len(loaded.PendingCleanup) != 1 || loaded.PendingCleanup[0] != state.PendingCleanup[0] {
+		t.Fatalf("durable pending=%v exists=%v err=%v", loaded.PendingCleanup, exists, err)
 	}
 }
 

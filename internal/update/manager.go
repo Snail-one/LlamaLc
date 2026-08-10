@@ -210,7 +210,7 @@ func (m *Manager) ApplyLlama(ctx context.Context, plan *LlamaPlan) (State, error
 		return State{}, err
 	}
 	if plan.CurrentExists && len(plan.Current.PendingCleanup) > 0 {
-		cleaned, err := m.retryPendingCleanup(plan.Current)
+		cleaned, err := retryPendingCleanupLocked(m.Layout, plan.Current)
 		if err != nil {
 			return State{}, err
 		}
@@ -307,7 +307,7 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 		if !reinstall {
 			return State{}, fmt.Errorf("目标运行时已存在: %s", target)
 		}
-		if !exists || filepath.Clean(current.ActiveRuntime) != filepath.Clean(runtimeRelative(selected.ID, r.Tag)) {
+		if !exists || !sameManagedPath(current.ActiveRuntime, runtimeRelative(selected.ID, r.Tag)) {
 			return State{}, fmt.Errorf("拒绝 --reinstall 覆盖未由更新状态登记的目标: %s", target)
 		}
 		backup = target + ".reinstall-" + token
@@ -322,7 +322,9 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 	}
 	if err = os.Rename(payload, target); err != nil {
 		if backup != "" {
-			_ = os.Rename(backup, target)
+			if restoreErr := os.Rename(backup, target); restoreErr != nil {
+				return State{}, fmt.Errorf("安装新运行时: %w；同时无法恢复原运行时 %s: %v", err, backup, restoreErr)
+			}
 		}
 		return State{}, err
 	}
@@ -336,30 +338,38 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 	if current.LauncherVersion == "" {
 		current.LauncherVersion = buildversion.Version
 	}
-	if err = SaveState(m.Layout, current); err != nil {
-		_ = os.RemoveAll(target)
-		if backup != "" {
-			_ = os.Rename(backup, target)
-		}
-		return State{}, fmt.Errorf("运行时已安装但状态写入失败: %w", err)
-	}
-	// Once the new state is durable, old active content is no longer needed.
-	// Delete it immediately; pending_cleanup is only a record of an actual
-	// deletion failure, never the normal update path.
+	// Persist every old path before deleting it. If the later cleanup-state
+	// write fails, the durable state still knows what must be retried.
 	var cleanupTargets []string
 	if backup != "" {
 		cleanupTargets = append(cleanupTargets, backup)
 	}
-	if previousRuntime != "" && filepath.Clean(previousRuntime) != filepath.Clean(current.ActiveRuntime) {
+	if previousRuntime != "" && !sameManagedPath(previousRuntime, current.ActiveRuntime) {
 		cleanupTargets = append(cleanupTargets, filepath.Join(m.Layout.Root, filepath.FromSlash(previousRuntime)))
 	}
 	for _, old := range cleanupTargets {
+		current.PendingCleanup = appendUnique(current.PendingCleanup, filepath.ToSlash(mustRel(m.Layout.Root, old)))
+	}
+	if err = SaveState(m.Layout, current); err != nil {
+		if managedfs.IsPublishedError(err) {
+			return current, fmt.Errorf("运行时和待清理状态已经切换，但状态目录未能确认持久化；已保留旧运行时供下次重试: %w", err)
+		}
+		if rollbackErr := rollbackInstalledRuntime(target, backup); rollbackErr != nil {
+			return State{}, fmt.Errorf("运行时状态写入失败: %w；同时回滚新运行时失败: %v", err, rollbackErr)
+		}
+		return State{}, fmt.Errorf("运行时已安装但状态写入失败: %w", err)
+	}
+	// Once the new state is durable, old active content is no longer needed.
+	// Delete it immediately and remove only successful paths from the durable
+	// pending list.
+	for _, old := range cleanupTargets {
 		if removeErr := removeManagedRuntime(m.Layout, old); removeErr != nil {
-			current.PendingCleanup = appendUnique(current.PendingCleanup, filepath.ToSlash(mustRel(m.Layout.Root, old)))
 			if m.Err != nil {
 				fmt.Fprintln(m.Err, "警告: 旧运行时暂时无法删除，已登记 pending_cleanup:", removeErr)
 			}
+			continue
 		}
+		current.PendingCleanup = removePendingCleanupPath(m.Layout, current.PendingCleanup, old)
 	}
 	if err = SaveState(m.Layout, current); err != nil {
 		return State{}, fmt.Errorf("运行时已切换，但无法保存清理状态: %w", err)
@@ -368,6 +378,32 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 		return State{}, fmt.Errorf("安装后活动运行时校验失败: %w", err)
 	}
 	return current, nil
+}
+
+func rollbackInstalledRuntime(target, backup string) error {
+	var failures []string
+	if err := os.RemoveAll(target); err != nil {
+		failures = append(failures, "移除新运行时: "+err.Error())
+	}
+	if backup != "" {
+		if err := os.Rename(backup, target); err != nil {
+			failures = append(failures, "恢复原运行时: "+err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "；"))
+	}
+	return nil
+}
+
+func removePendingCleanupPath(l layout.Layout, pending []string, absolute string) []string {
+	out := pending[:0]
+	for _, relative := range pending {
+		if !sameManagedPath(filepath.Join(l.Root, filepath.FromSlash(relative)), absolute) {
+			out = append(out, relative)
+		}
+	}
+	return out
 }
 
 func matchesLlamaTag(versionOutput, tag string) bool {
@@ -460,7 +496,7 @@ func (m *Manager) updateLlamaWithRecovery(ctx context.Context, options LlamaOpti
 
 func appendUnique(values []string, value string) []string {
 	for _, existing := range values {
-		if filepath.Clean(existing) == filepath.Clean(value) {
+		if sameManagedPath(existing, value) {
 			return values
 		}
 	}
@@ -471,7 +507,7 @@ func removeManagedRuntime(l layout.Layout, path string) error {
 	if err := managedfs.Within(l.LlamaRuntimeDir, path); err != nil {
 		return err
 	}
-	if filepath.Clean(path) == filepath.Clean(l.LlamaRuntimeDir) {
+	if sameManagedPath(path, l.LlamaRuntimeDir) {
 		return errors.New("拒绝删除运行时根目录")
 	}
 	if err := managedfs.Validate(l.Root, path, false); err != nil {
@@ -484,24 +520,20 @@ func removeManagedRuntime(l layout.Layout, path string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureCleanupTargetIsNotActive(l, path, info); err != nil {
+		return err
+	}
 	quarantine := filepath.Join(filepath.Dir(path), ".llamalc-delete-"+randomToken())
 	if err := os.Rename(path, quarantine); err != nil {
 		return err
 	}
-	restore := true
-	defer func() {
-		if restore {
-			_ = os.Rename(quarantine, path)
-		}
-	}()
 	movedInfo, err := os.Lstat(quarantine)
 	if err != nil || !os.SameFile(info, movedInfo) {
-		return errors.New("运行时文件身份在清理时发生变化")
+		return restoreQuarantinedPath(quarantine, path, errors.New("运行时文件身份在清理时发生变化"))
 	}
-	if err := os.RemoveAll(quarantine); err != nil {
-		return err
+	if err := removeCleanupTree(quarantine); err != nil {
+		return fmt.Errorf("运行时递归清理未完成，未恢复可能已部分删除的目录；残留保留在 %s: %w", quarantine, err)
 	}
-	restore = false
 	if runtime.GOOS != "windows" {
 		directory, openErr := os.Open(filepath.Dir(path))
 		if openErr != nil {
@@ -519,21 +551,72 @@ func removeManagedRuntime(l layout.Layout, path string) error {
 	return nil
 }
 
+func ensureCleanupTargetIsNotActive(l layout.Layout, path string, info os.FileInfo) error {
+	state, exists, err := LoadState(l)
+	if err != nil {
+		return fmt.Errorf("无法确认清理目标不是活动运行时: %w", err)
+	}
+	if !exists || state.ActiveRuntime == "" {
+		return nil
+	}
+	activePath := RuntimePath(l, state)
+	if sameManagedPath(path, activePath) {
+		return errors.New("拒绝删除活动运行时")
+	}
+	activeInfo, err := stableCleanupInfo(activePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("复核活动运行时身份: %w", err)
+	}
+	if os.SameFile(info, activeInfo) {
+		return errors.New("拒绝删除与活动运行时身份相同的目录")
+	}
+	return nil
+}
+
 func (m *Manager) retryPendingCleanup(state State) (State, error) {
+	if len(state.PendingCleanup) == 0 {
+		return state, nil
+	}
+	if err := managedfs.EnsureDir(m.Layout.Root, m.Layout.RuntimeDir, 0o700); err != nil {
+		return state, err
+	}
+	lock, err := acquireLlamaInstallLock(m.Layout)
+	if err != nil {
+		return state, err
+	}
+	stopHeartbeat := startOwnedLockHeartbeat(lock)
+	defer func() {
+		stopHeartbeat()
+		_ = os.RemoveAll(lock)
+	}()
+	latest, exists, err := LoadState(m.Layout)
+	if err != nil {
+		return state, err
+	}
+	if !exists {
+		return latest, nil
+	}
+	return retryPendingCleanupLocked(m.Layout, latest)
+}
+
+func retryPendingCleanupLocked(l layout.Layout, state State) (State, error) {
 	if len(state.PendingCleanup) == 0 {
 		return state, nil
 	}
 	remaining := state.PendingCleanup[:0]
 	var failures []string
 	for _, relative := range state.PendingCleanup {
-		path := filepath.Join(m.Layout.Root, filepath.FromSlash(relative))
-		if err := removeManagedRuntime(m.Layout, path); err != nil {
+		path := filepath.Join(l.Root, filepath.FromSlash(relative))
+		if err := removeManagedRuntime(l, path); err != nil {
 			remaining = append(remaining, relative)
 			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
 		}
 	}
 	state.PendingCleanup = remaining
-	if err := SaveState(m.Layout, state); err != nil {
+	if err := SaveState(l, state); err != nil {
 		return state, fmt.Errorf("保存 pending_cleanup: %w", err)
 	}
 	if len(failures) > 0 {
@@ -554,7 +637,7 @@ func quarantineInvalidRuntimeTo(l layout.Layout, cause error, directory string) 
 		name := "repair-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomToken()
 		directory = filepath.Join(l.RecoveryDir, name)
 	}
-	if err := managedfs.Within(l.RecoveryDir, directory); err != nil || filepath.Clean(directory) == filepath.Clean(l.RecoveryDir) {
+	if err := managedfs.Within(l.RecoveryDir, directory); err != nil || sameManagedPath(directory, l.RecoveryDir) {
 		return recoveryTransaction{}, errors.New("恢复目录超出受管 recovery 路径")
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {

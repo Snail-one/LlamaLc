@@ -30,6 +30,8 @@ type CleanupCandidate struct {
 
 const automaticCleanupMinAge = 24 * time.Hour
 
+var removeCleanupTree = os.RemoveAll
+
 func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 	var out []CleanupCandidate
 	appendCandidate := func(path, kind, reason string, automatic bool) {
@@ -52,6 +54,13 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 		}
 		out = append(out, candidate)
 	}
+	scanEntries := func(directory string) []os.DirEntry {
+		entries, err := os.ReadDir(directory)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			out = append(out, CleanupCandidate{Path: directory, Kind: "扫描警告", Reason: "无法读取清理目录: " + err.Error(), Warning: true})
+		}
+		return entries
+	}
 	s, _, stateErr := LoadState(l)
 	if stateErr != nil {
 		s = State{Schema: StateSchema}
@@ -64,57 +73,62 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 		path := filepath.Join(l.Root, filepath.FromSlash(relative))
 		appendCandidate(path, "已登记待清理运行时", "更新状态登记的非活动运行时或同版本重装备份", true)
 	}
-	if entries, readErr := os.ReadDir(l.Bin); readErr == nil {
-		for _, entry := range entries {
+	for _, entry := range scanEntries(l.Bin) {
+		name := entry.Name()
+		path := filepath.Join(l.Bin, entry.Name())
+		switch {
+		case validDeleteQuarantineName(name):
+			appendCandidate(path, "中断的隔离清理残留", "清理在隔离改名后中断；内容可能已部分删除，需要人工确认", false)
+		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validRunnerName(name):
+			appendCandidate(path, "updater 运行副本", "更新交接后遗留的严格命名副本", true)
+		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-new-") || validProgramTempName(name, ".llamaup-new-")):
+			appendCandidate(path, "启动器更新残留", "更新交接中断留下的暂存程序", true)
+		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-rollback-") || validProgramTempName(name, ".llamaup-rollback-")):
+			appendCandidate(path, "启动器更新恢复备份", "双文件更新回滚时保留的原程序，需要人工确认", false)
+		}
+	}
+	for _, location := range atomicTempLocations(l) {
+		for _, entry := range scanEntries(location.directory) {
 			name := entry.Name()
-			path := filepath.Join(l.Bin, entry.Name())
-			switch {
-			case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validRunnerName(name):
-				appendCandidate(path, "updater 运行副本", "更新交接后遗留的严格命名副本", true)
-			case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-new-") || validProgramTempName(name, ".llamaup-new-")):
-				appendCandidate(path, "启动器更新残留", "更新交接中断留下的暂存程序", true)
-			case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-rollback-") || validProgramTempName(name, ".llamaup-rollback-")):
-				appendCandidate(path, "启动器更新恢复备份", "双文件更新回滚时保留的原程序，需要人工确认", false)
+			if validDeleteQuarantineName(name) {
+				appendCandidate(filepath.Join(location.directory, entry.Name()), "中断的隔离清理残留", "清理在隔离改名后中断；内容可能已部分删除，需要人工确认", false)
+			} else if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validAtomicTempName(name, location.base) {
+				appendCandidate(filepath.Join(location.directory, entry.Name()), "配置写入残留", "原子写入中断留下的临时文件", true)
 			}
 		}
 	}
-	for _, directory := range []string{l.ConfigDir, l.SecretsDir, l.StateDir, l.RouterConfigDir, l.RouterStateDir} {
-		if entries, readErr := os.ReadDir(directory); readErr == nil {
-			for _, entry := range entries {
-				name := entry.Name()
-				if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validAtomicTempName(name) {
-					appendCandidate(filepath.Join(directory, entry.Name()), "配置写入残留", "原子写入中断留下的临时文件", true)
-				}
+	for _, entry := range scanEntries(l.RuntimeDir) {
+		path := filepath.Join(l.RuntimeDir, entry.Name())
+		if validDeleteQuarantineName(entry.Name()) {
+			appendCandidate(path, "中断的隔离清理残留", "清理在隔离改名后中断；内容可能已部分删除，需要人工确认", false)
+		} else if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".llama-lock-") {
+			if validOwnedTempDirectory(path, ".llama-lock-", "llama-global-install-lock") {
+				appendCandidate(path, "llama.cpp 更新锁残留", "llama.cpp 更新中断留下的全局锁", true)
+			}
+		} else if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-lock-") {
+			if validOwnedTempDirectory(path, ".launcher-lock-", "launcher-install-lock") {
+				appendCandidate(path, "启动器更新锁残留", "启动器交接中断留下的更新锁", true)
+			}
+		} else if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-update-") {
+			if validOwnedTempDirectory(path, ".launcher-update-", "launcher-update-staging") {
+				appendCandidate(path, "启动器下载暂存", "启动器下载或校验中断留下的目录", true)
 			}
 		}
 	}
-	if entries, readErr := os.ReadDir(l.RuntimeDir); readErr == nil {
-		for _, entry := range entries {
-			path := filepath.Join(l.RuntimeDir, entry.Name())
-			if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".llama-lock-") {
-				if validOwnedTempDirectory(path, ".llama-lock-", "llama-global-install-lock") {
-					appendCandidate(path, "llama.cpp 更新锁残留", "llama.cpp 更新中断留下的全局锁", true)
-				}
-			} else if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-lock-") {
-				if validOwnedTempDirectory(path, ".launcher-lock-", "launcher-install-lock") {
-					appendCandidate(path, "启动器更新锁残留", "启动器交接中断留下的更新锁", true)
-				}
-			} else if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-update-") {
-				if validOwnedTempDirectory(path, ".launcher-update-", "launcher-update-staging") {
-					appendCandidate(path, "启动器下载暂存", "启动器下载或校验中断留下的目录", true)
-				}
-			}
-		}
-	}
-	if entries, readErr := os.ReadDir(l.LlamaRuntimeDir); readErr == nil {
+	{
+		entries := scanEntries(l.LlamaRuntimeDir)
 		known := make(map[string]bool)
 		if s.ActiveRuntime != "" {
-			known[filepath.Clean(filepath.Join(l.Root, filepath.FromSlash(s.ActiveRuntime)))] = true
+			known[managedPathKey(filepath.Join(l.Root, filepath.FromSlash(s.ActiveRuntime)))] = true
 		}
 		for _, pending := range s.PendingCleanup {
-			known[filepath.Clean(filepath.Join(l.Root, filepath.FromSlash(pending)))] = true
+			known[managedPathKey(filepath.Join(l.Root, filepath.FromSlash(pending)))] = true
 		}
 		for _, entry := range entries {
+			if validDeleteQuarantineName(entry.Name()) {
+				appendCandidate(filepath.Join(l.LlamaRuntimeDir, entry.Name()), "中断的隔离清理残留", "清理在隔离改名后中断；内容可能已部分删除，需要人工确认", false)
+				continue
+			}
 			if strings.HasPrefix(strings.ToLower(entry.Name()), ".install-lock-") {
 				path := filepath.Join(l.LlamaRuntimeDir, entry.Name())
 				if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validOwnedTempDirectory(path, ".install-lock-", "llama-install-lock") {
@@ -133,13 +147,14 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 				appendCandidate(backendPath, "异常运行时项目", "运行时根目录中的项目不符合 <backend>/<version> 布局", false)
 				continue
 			}
-			versions, versionErr := os.ReadDir(backendPath)
-			if versionErr != nil {
-				continue
-			}
+			versions := scanEntries(backendPath)
 			for _, version := range versions {
 				path := filepath.Join(backendPath, version.Name())
-				if known[filepath.Clean(path)] {
+				if validDeleteQuarantineName(version.Name()) {
+					appendCandidate(path, "中断的隔离清理残留", "运行时清理在隔离后中断；内容可能已部分删除，需要人工确认", false)
+					continue
+				}
+				if known[managedPathKey(path)] {
 					continue
 				}
 				reason := "不属于当前活动运行时，也未登记为待清理目录"
@@ -150,16 +165,18 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 			}
 		}
 	}
-	if entries, readErr := os.ReadDir(l.RecoveryDir); readErr == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
-				path := filepath.Join(l.RecoveryDir, entry.Name())
-				reason := recoveryReason(path)
-				if stateErr != nil {
-					reason = "扫描警告: 更新状态损坏；" + reason
-				}
-				appendCandidate(path, "恢复备份", reason, false)
+	for _, entry := range scanEntries(l.RecoveryDir) {
+		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			path := filepath.Join(l.RecoveryDir, entry.Name())
+			if validDeleteQuarantineName(entry.Name()) {
+				appendCandidate(path, "中断的隔离清理残留", "恢复备份清理在隔离后中断；内容可能已部分删除，需要人工确认", false)
+				continue
 			}
+			reason := recoveryReason(path)
+			if stateErr != nil {
+				reason = "扫描警告: 更新状态损坏；" + reason
+			}
+			appendCandidate(path, "恢复备份", reason, false)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -184,9 +201,20 @@ type HousekeepingResult struct {
 // unmarked directories.
 func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 	var result HousekeepingResult
+	scanEntries := func(directory string) []os.DirEntry {
+		entries, err := os.ReadDir(directory)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			result.Warnings = append(result.Warnings, fmt.Errorf("读取清理目录 %s: %w", directory, err))
+		}
+		return entries
+	}
 	removeFile := func(path string, immediate bool) {
 		info, err := stableCleanupInfo(path)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf("复核清理目标 %s: %w", path, err))
+			return
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return
 		}
 		if !immediate && !oldEnoughForAutomaticCleanup(path, info) {
@@ -209,50 +237,61 @@ func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 			result.Warnings = append(result.Warnings, fmt.Errorf("读取 pending_cleanup: %w", err))
 		}
 	} else if exists && len(state.PendingCleanup) > 0 {
-		remaining := make([]string, 0, len(state.PendingCleanup))
-		changed := false
-		for _, relative := range state.PendingCleanup {
-			path := filepath.Join(l.Root, filepath.FromSlash(relative))
-			if err := removeManagedRuntime(l, path); err != nil {
-				remaining = append(remaining, relative)
-				result.Warnings = append(result.Warnings, fmt.Errorf("清理 pending_cleanup %s: %w", path, err))
-				continue
+		lock, lockErr := acquireLlamaInstallLock(l)
+		if lockErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf("暂无法取得运行时清理锁: %w", lockErr))
+		} else {
+			stopHeartbeat := startOwnedLockHeartbeat(lock)
+			latest, latestExists, loadErr := LoadState(l)
+			if loadErr != nil {
+				result.Warnings = append(result.Warnings, fmt.Errorf("重新读取 pending_cleanup: %w", loadErr))
+			} else if latestExists {
+				before := append([]string(nil), latest.PendingCleanup...)
+				cleaned, cleanupErr := retryPendingCleanupLocked(l, latest)
+				remaining := make(map[string]bool, len(cleaned.PendingCleanup))
+				for _, relative := range cleaned.PendingCleanup {
+					remaining[managedPathKey(relative)] = true
+				}
+				for _, relative := range before {
+					if !remaining[managedPathKey(relative)] {
+						result.Removed = append(result.Removed, filepath.Join(l.Root, filepath.FromSlash(relative)))
+					}
+				}
+				if cleanupErr != nil {
+					result.Warnings = append(result.Warnings, cleanupErr)
+				}
 			}
-			changed = true
-			result.Removed = append(result.Removed, path)
-		}
-		if changed {
-			state.PendingCleanup = remaining
-			if err := SaveState(l, state); err != nil {
-				result.Warnings = append(result.Warnings, fmt.Errorf("保存 pending_cleanup: %w", err))
+			stopHeartbeat()
+			if removeErr := os.RemoveAll(lock); removeErr != nil {
+				result.Warnings = append(result.Warnings, fmt.Errorf("释放运行时清理锁: %w", removeErr))
 			}
 		}
 	}
 
-	if entries, err := os.ReadDir(l.Bin); err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			path := filepath.Join(l.Bin, entry.Name())
-			switch {
-			case validRunnerName(name):
-				removeFile(path, true)
-			case validProgramTempName(name, ".llamalc-new-") || validProgramTempName(name, ".llamaup-new-"):
-				removeFile(path, false)
-			}
+	for _, entry := range scanEntries(l.Bin) {
+		name := entry.Name()
+		path := filepath.Join(l.Bin, entry.Name())
+		switch {
+		case validRunnerName(name):
+			removeFile(path, true)
+		case validProgramTempName(name, ".llamalc-new-") || validProgramTempName(name, ".llamaup-new-"):
+			removeFile(path, false)
 		}
 	}
-	for _, directory := range []string{l.ConfigDir, l.SecretsDir, l.StateDir, l.RouterConfigDir, l.RouterStateDir} {
-		if entries, err := os.ReadDir(directory); err == nil {
-			for _, entry := range entries {
-				if validAtomicTempName(entry.Name()) {
-					removeFile(filepath.Join(directory, entry.Name()), false)
-				}
+	for _, location := range atomicTempLocations(l) {
+		for _, entry := range scanEntries(location.directory) {
+			if validAtomicTempName(entry.Name(), location.base) {
+				removeFile(filepath.Join(location.directory, entry.Name()), false)
 			}
 		}
 	}
 	removeOwnedDirectory := func(path, prefix, kind string) {
 		info, err := stableCleanupInfo(path)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !validOwnedTempDirectory(path, prefix, kind) {
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf("复核清理目录 %s: %w", path, err))
+			return
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !validOwnedTempDirectory(path, prefix, kind) {
 			return
 		}
 		if kind == "llama-global-install-lock" || kind == "launcher-install-lock" {
@@ -283,24 +322,20 @@ func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 		}
 		result.Removed = append(result.Removed, path)
 	}
-	if entries, err := os.ReadDir(l.RuntimeDir); err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(strings.ToLower(entry.Name()), ".llama-lock-") {
-				removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".llama-lock-", "llama-global-install-lock")
-			} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-lock-") {
-				removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".launcher-lock-", "launcher-install-lock")
-			} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-update-") {
-				removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".launcher-update-", "launcher-update-staging")
-			}
+	for _, entry := range scanEntries(l.RuntimeDir) {
+		if strings.HasPrefix(strings.ToLower(entry.Name()), ".llama-lock-") {
+			removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".llama-lock-", "llama-global-install-lock")
+		} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-lock-") {
+			removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".launcher-lock-", "launcher-install-lock")
+		} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".launcher-update-") {
+			removeOwnedDirectory(filepath.Join(l.RuntimeDir, entry.Name()), ".launcher-update-", "launcher-update-staging")
 		}
 	}
-	if entries, err := os.ReadDir(l.LlamaRuntimeDir); err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(strings.ToLower(entry.Name()), ".install-lock-") {
-				removeOwnedDirectory(filepath.Join(l.LlamaRuntimeDir, entry.Name()), ".install-lock-", "llama-install-lock")
-			} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".staging-") {
-				removeOwnedDirectory(filepath.Join(l.LlamaRuntimeDir, entry.Name()), ".staging-", "llama-runtime-staging")
-			}
+	for _, entry := range scanEntries(l.LlamaRuntimeDir) {
+		if strings.HasPrefix(strings.ToLower(entry.Name()), ".install-lock-") {
+			removeOwnedDirectory(filepath.Join(l.LlamaRuntimeDir, entry.Name()), ".install-lock-", "llama-install-lock")
+		} else if strings.HasPrefix(strings.ToLower(entry.Name()), ".staging-") {
+			removeOwnedDirectory(filepath.Join(l.LlamaRuntimeDir, entry.Name()), ".staging-", "llama-runtime-staging")
 		}
 	}
 	sort.Strings(result.Removed)
@@ -347,60 +382,54 @@ func stableCleanupInfo(path string) (os.FileInfo, error) {
 // swapped between inspection and deletion. The exact inode is first moved to
 // a private sibling name, then its identity and complete snapshot are checked
 // again before anything is removed.
-func removeAutomaticCleanupPath(l layout.Layout, path string, expected os.FileInfo, expectedSnapshot string) (err error) {
+func removeAutomaticCleanupPath(l layout.Layout, path string, expected os.FileInfo, expectedSnapshot string) error {
 	if expectedSnapshot == "" {
 		return errors.New("缺少清理目标快照")
 	}
-	if err = managedfs.Within(l.Root, path); err != nil {
+	if err := managedfs.Within(l.Root, path); err != nil {
 		return err
 	}
-	if err = managedfs.Validate(l.Root, path, false); err != nil {
+	if err := managedfs.Validate(l.Root, path, false); err != nil {
 		return err
 	}
 	quarantine := filepath.Join(filepath.Dir(path), ".llamalc-delete-"+randomToken())
-	if err = managedfs.Within(l.Root, quarantine); err != nil {
+	if err := managedfs.Within(l.Root, quarantine); err != nil {
 		return err
 	}
-	if err = os.Rename(path, quarantine); err != nil {
+	if err := os.Rename(path, quarantine); err != nil {
 		return fmt.Errorf("隔离清理目标: %w", err)
 	}
-	restore := true
-	defer func() {
-		if !restore {
-			return
-		}
-		if restoreErr := os.Rename(quarantine, path); restoreErr != nil {
-			if err == nil {
-				err = fmt.Errorf("恢复隔离目标: %w", restoreErr)
-			} else {
-				err = fmt.Errorf("%v；恢复隔离目标失败: %w", err, restoreErr)
-			}
-		}
-	}()
 	movedInfo, statErr := os.Lstat(quarantine)
 	if statErr != nil || !os.SameFile(expected, movedInfo) {
-		return errors.New("清理目标文件身份在隔离时发生变化")
+		return restoreQuarantinedPath(quarantine, path, errors.New("清理目标文件身份在隔离时发生变化"))
 	}
 	_, movedSnapshot, inspectErr := inspectCleanupPath(quarantine)
 	if inspectErr != nil || movedSnapshot != expectedSnapshot {
-		return errors.New("清理目标隔离后的最终快照不一致")
+		return restoreQuarantinedPath(quarantine, path, errors.New("清理目标隔离后的最终快照不一致"))
 	}
 	if movedInfo.IsDir() {
-		err = os.RemoveAll(quarantine)
+		if err := removeCleanupTree(quarantine); err != nil {
+			return fmt.Errorf("递归清理未完成，未恢复可能已部分删除的目录；残留保留在 %s: %w", quarantine, err)
+		}
 	} else {
-		err = os.Remove(quarantine)
+		if err := os.Remove(quarantine); err != nil {
+			return restoreQuarantinedPath(quarantine, path, err)
+		}
 	}
-	if err != nil {
-		return err
-	}
-	restore = false
-	if _, statErr = os.Lstat(quarantine); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Lstat(quarantine); !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("清理隔离路径仍然存在，最终状态复检失败")
 	}
 	if _, statErr = os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("原路径在清理期间被重新创建，最终状态复检失败")
 	}
 	return syncParentDirectory(filepath.Dir(path))
+}
+
+func restoreQuarantinedPath(quarantine, original string, cause error) error {
+	if restoreErr := os.Rename(quarantine, original); restoreErr != nil {
+		return fmt.Errorf("%v；恢复隔离目标失败，残留位于 %s: %w", cause, quarantine, restoreErr)
+	}
+	return cause
 }
 
 func recoveryReason(path string) string {
@@ -455,16 +484,39 @@ func validProgramTempName(name, prefix string) bool {
 	return token != value && len(token) == 16 && safeHex(token)
 }
 
-func validAtomicTempName(name string) bool {
+func validDeleteQuarantineName(name string) bool {
 	if name != strings.ToLower(name) {
 		return false
 	}
-	index := strings.LastIndex(strings.ToLower(name), ".tmp-")
-	if index <= 1 {
+	token := strings.TrimPrefix(name, ".llamalc-delete-")
+	return token != name && len(token) == 16 && safeHex(token)
+}
+
+type atomicTempLocation struct {
+	directory string
+	base      string
+}
+
+func atomicTempLocations(l layout.Layout) []atomicTempLocation {
+	return []atomicTempLocation{
+		{l.ConfigDir, filepath.Base(l.ConfigFile)},
+		{l.SecretsDir, filepath.Base(l.APIKeyFile)},
+		{l.StateDir, filepath.Base(l.UpdateStateFile)},
+		{l.RouterConfigDir, filepath.Base(l.RouterPreset)},
+		{l.RouterStateDir, filepath.Base(l.AutoRouterPreset)},
+	}
+}
+
+func validAtomicTempName(name, base string) bool {
+	if name != strings.ToLower(name) {
 		return false
 	}
-	token := name[index+5:]
-	return len(token) == 16 && safeHex(strings.ToLower(token))
+	prefix := "." + strings.ToLower(base) + ".tmp-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	token := strings.TrimPrefix(name, prefix)
+	return len(token) == 16 && safeHex(token)
 }
 
 func validOwnedTempDirectory(path, prefix, kind string) bool {
@@ -520,13 +572,27 @@ func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
 	if c.Warning {
 		return errors.New("扫描警告项目不可删除")
 	}
+	var cleanupLock string
+	var stopHeartbeat func()
+	if c.Kind == "已登记待清理运行时" || managedfs.Within(l.LlamaRuntimeDir, c.Path) == nil {
+		var lockErr error
+		cleanupLock, lockErr = acquireLlamaInstallLock(l)
+		if lockErr != nil {
+			return fmt.Errorf("取得运行时清理锁: %w", lockErr)
+		}
+		stopHeartbeat = startOwnedLockHeartbeat(cleanupLock)
+		defer func() {
+			stopHeartbeat()
+			_ = os.RemoveAll(cleanupLock)
+		}()
+	}
 	current, err := CleanupCandidates(l)
 	if err != nil {
 		return err
 	}
 	var found *CleanupCandidate
 	for _, x := range current {
-		if filepath.Clean(x.Path) == filepath.Clean(c.Path) && x.Kind == c.Kind {
+		if sameManagedPath(x.Path, c.Path) && x.Kind == c.Kind {
 			copy := x
 			found = &copy
 			break
@@ -554,6 +620,11 @@ func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("拒绝清理符号链接")
 	}
+	if managedfs.Within(l.LlamaRuntimeDir, c.Path) == nil {
+		if activeErr := ensureCleanupTargetIsNotActive(l, c.Path, info); activeErr != nil {
+			return activeErr
+		}
+	}
 	quarantine := filepath.Join(filepath.Dir(c.Path), ".llamalc-delete-"+randomToken())
 	if err = managedfs.Within(l.Root, quarantine); err != nil {
 		return err
@@ -561,29 +632,23 @@ func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
 	if err = os.Rename(c.Path, quarantine); err != nil {
 		return fmt.Errorf("隔离清理目标 %s: %w", c.Path, err)
 	}
-	restore := true
-	defer func() {
-		if restore {
-			_ = os.Rename(quarantine, c.Path)
-		}
-	}()
 	quarantineInfo, statErr := os.Lstat(quarantine)
 	if statErr != nil || !os.SameFile(info, quarantineInfo) {
-		return errors.New("清理目标文件身份在隔离时发生变化")
+		return restoreQuarantinedPath(quarantine, c.Path, errors.New("清理目标文件身份在隔离时发生变化"))
 	}
 	_, quarantineSnapshot, inspectErr := inspectCleanupPath(quarantine)
 	if inspectErr != nil || quarantineSnapshot != c.Snapshot {
-		return errors.New("清理目标隔离后的最终快照不一致")
+		return restoreQuarantinedPath(quarantine, c.Path, errors.New("清理目标隔离后的最终快照不一致"))
 	}
 	if quarantineInfo.IsDir() {
-		err = os.RemoveAll(quarantine)
+		if err = removeCleanupTree(quarantine); err != nil {
+			return fmt.Errorf("清理 %s 未完成，未恢复可能已部分删除的目录；残留保留在 %s: %w", c.Path, quarantine, err)
+		}
 	} else {
-		err = os.Remove(quarantine)
+		if err = os.Remove(quarantine); err != nil {
+			return restoreQuarantinedPath(quarantine, c.Path, fmt.Errorf("清理 %s: %w", c.Path, err))
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("清理 %s: %w", c.Path, err)
-	}
-	restore = false
 	if _, statErr := os.Lstat(quarantine); !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("清理隔离路径仍然存在，最终状态复检失败")
 	}
@@ -604,7 +669,7 @@ func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
 		if exists {
 			var pending []string
 			for _, p := range s.PendingCleanup {
-				if filepath.Clean(filepath.Join(l.Root, filepath.FromSlash(p))) != filepath.Clean(c.Path) {
+				if !sameManagedPath(filepath.Join(l.Root, filepath.FromSlash(p)), c.Path) {
 					pending = append(pending, p)
 				}
 			}
@@ -635,7 +700,7 @@ func oldEnoughForAutomaticCleanup(path string, rootInfo os.FileInfo) bool {
 		return false
 	}
 	oldEnough := true
-	_ = filepath.WalkDir(path, func(_ string, entry fs.DirEntry, walkErr error) error {
+	_ = filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			oldEnough = false
 			return fs.SkipAll
@@ -643,11 +708,9 @@ func oldEnoughForAutomaticCleanup(path string, rootInfo os.FileInfo) bool {
 		// Relative library soname symlinks are expected in modern llama.cpp
 		// runtimes; still refuse to walk through directory symlinks.
 		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				oldEnough = false
-				return fs.SkipAll
-			}
-			info, err := entry.Info()
+			// WalkDir's DirEntry.IsDir reports the link itself, not its target.
+			// Validate the resolved target explicitly.
+			_, info, err := inspectCleanupSymlink(filepath.Clean(path), current)
 			if err != nil || info.ModTime().After(cutoff) {
 				oldEnough = false
 				return fs.SkipAll
@@ -679,16 +742,9 @@ func inspectCleanupPath(path string) (int64, string, error) {
 		// Allow relative file symlinks (llama.cpp .so sonames). Directory
 		// symlinks are still rejected so snapshots cannot escape the tree.
 		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return errors.New("包含目录符号链接")
-			}
-			info, infoErr := entry.Info()
-			if infoErr != nil {
-				return infoErr
-			}
-			linkTarget, readErr := os.Readlink(current)
-			if readErr != nil {
-				return readErr
+			linkTarget, info, linkErr := inspectCleanupSymlink(root, current)
+			if linkErr != nil {
+				return linkErr
 			}
 			fmt.Fprintf(hash, "%s\x00symlink\x00%s\x00%d\n", filepath.ToSlash(relative), filepath.ToSlash(linkTarget), info.ModTime().UnixNano())
 			return nil
@@ -710,4 +766,30 @@ func inspectCleanupPath(path string) (int64, string, error) {
 		return total, "", err
 	}
 	return total, fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func inspectCleanupSymlink(root, current string) (string, os.FileInfo, error) {
+	linkTarget, err := os.Readlink(current)
+	if err != nil {
+		return "", nil, err
+	}
+	if filepath.IsAbs(linkTarget) {
+		return "", nil, errors.New("包含绝对符号链接")
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(current), linkTarget))
+	if err := managedfs.Within(root, resolved); err != nil {
+		return "", nil, errors.New("包含越界符号链接")
+	}
+	targetInfo, err := os.Stat(current)
+	if err != nil {
+		return "", nil, err
+	}
+	if targetInfo.IsDir() {
+		return "", nil, errors.New("包含目录符号链接")
+	}
+	linkInfo, err := os.Lstat(current)
+	if err != nil {
+		return "", nil, err
+	}
+	return linkTarget, linkInfo, nil
 }

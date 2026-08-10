@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
@@ -40,6 +41,23 @@ func runtimeRelative(backend, version string) string {
 func RuntimePath(l layout.Layout, s State) string {
 	return filepath.Join(l.Root, filepath.FromSlash(s.ActiveRuntime))
 }
+
+func sameManagedPath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func managedPathKey(path string) string {
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(path)
+	}
+	return path
+}
+
 func ValidateState(l layout.Layout, s State) error {
 	if s.Schema != StateSchema {
 		return fmt.Errorf("不支持的更新状态 schema %d", s.Schema)
@@ -92,10 +110,10 @@ func ValidateState(l layout.Layout, s State) error {
 		if len(parts) != 2 || !safeComponent.MatchString(parts[0]) || !safeComponent.MatchString(parts[1]) {
 			return errors.New("待清理路径必须是完整的 <backend>/<version> 运行时目录")
 		}
-		if filepath.Clean(p) == filepath.Clean(s.ActiveRuntime) {
+		if sameManagedPath(filepath.FromSlash(p), filepath.FromSlash(s.ActiveRuntime)) {
 			return errors.New("待清理路径不能是活动运行时")
 		}
-		key := strings.ToLower(filepath.Clean(filepath.FromSlash(p)))
+		key := managedPathKey(filepath.FromSlash(p))
 		if _, exists := seenCleanup[key]; exists {
 			return errors.New("更新状态包含重复待清理路径")
 		}

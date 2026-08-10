@@ -381,6 +381,7 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 	updaterSource := filepath.Join(bin, updaterSourceName)
 	launcherTarget := filepath.Join(bin, launcherTargetName)
 	updaterTarget := filepath.Join(bin, updaterTargetName)
+	identities := make(map[string]os.FileInfo, 4)
 	for _, item := range []struct {
 		label string
 		path  string
@@ -390,19 +391,20 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 		{"当前启动器", launcherTarget},
 		{"当前更新器", updaterTarget},
 	} {
-		info, err := os.Lstat(item.path)
+		info, err := stableUpdaterFileInfo(item.path)
 		if err != nil {
 			return fmt.Errorf("无法检查%s %s: %w", item.label, item.path, err)
 		}
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%s不是普通文件: %s", item.label, item.path)
 		}
+		identities[item.path] = info
 	}
-	return replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget)
+	return replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget, identities)
 }
 
-func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget string) error {
-	updaterBackup, err := copyUpdateBackup(updaterTarget)
+func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget string, identities map[string]os.FileInfo) error {
+	updaterBackup, err := copyUpdateBackup(updaterTarget, identities[updaterTarget])
 	if err != nil {
 		return fmt.Errorf("备份当前更新器: %w", err)
 	}
@@ -413,7 +415,7 @@ func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launc
 		}
 	}()
 
-	launcherBackup, err := copyUpdateBackup(launcherTarget)
+	launcherBackup, err := copyUpdateBackup(launcherTarget, identities[launcherTarget])
 	if err != nil {
 		return fmt.Errorf("备份当前启动器: %w", err)
 	}
@@ -424,8 +426,23 @@ func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launc
 		}
 	}()
 
+	for _, path := range []string{updaterSource, updaterTarget, launcherSource, launcherTarget} {
+		if err := verifyUpdaterFileIdentity(path, identities[path]); err != nil {
+			return err
+		}
+	}
 	if err := updateReplaceFile(updaterSource, updaterTarget); err != nil {
 		return fmt.Errorf("替换更新器: %w", err)
+	}
+	for _, path := range []string{launcherSource, launcherTarget} {
+		if err := verifyUpdaterFileIdentity(path, identities[path]); err != nil {
+			rollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
+			if rollbackErr != nil {
+				removeUpdaterBackup = false
+				return fmt.Errorf("%w；同时无法恢复原更新器，备份保留在 %s: %v", err, updaterBackup, rollbackErr)
+			}
+			return fmt.Errorf("%w；已恢复原更新器", err)
+		}
 	}
 	if err := updateReplaceFile(launcherSource, launcherTarget); err != nil {
 		rollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
@@ -452,19 +469,63 @@ func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launc
 	return nil
 }
 
-func copyUpdateBackup(source string) (string, error) {
-	info, err := os.Lstat(source)
+func stableUpdaterFileInfo(path string) (os.FileInfo, error) {
+	pathInfo, err := os.Lstat(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("不是普通文件: %s", source)
+	if !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("不是普通文件: %s", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	handleInfo, statErr := file.Stat()
+	same := statErr == nil && os.SameFile(pathInfo, handleInfo)
+	closeErr := file.Close()
+	if statErr != nil {
+		return nil, statErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if !same {
+		return nil, fmt.Errorf("文件身份在检查时发生变化: %s", path)
+	}
+	return handleInfo, nil
+}
+
+func verifyUpdaterFileIdentity(path string, expected os.FileInfo) error {
+	if expected == nil {
+		return fmt.Errorf("缺少文件身份: %s", path)
+	}
+	current, err := stableUpdaterFileInfo(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(expected, current) {
+		return fmt.Errorf("文件在更新交接期间被替换: %s", path)
+	}
+	return nil
+}
+
+func copyUpdateBackup(source string, expected os.FileInfo) (string, error) {
+	if err := verifyUpdaterFileIdentity(source, expected); err != nil {
+		return "", err
 	}
 	input, err := os.Open(source)
 	if err != nil {
 		return "", err
 	}
 	defer input.Close()
+	info, err := input.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(expected, info) {
+		return "", fmt.Errorf("备份源文件身份发生变化: %s", source)
+	}
 
 	extension := filepath.Ext(source)
 	base := strings.TrimSuffix(filepath.Base(source), extension)

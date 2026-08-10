@@ -2,6 +2,7 @@ package update
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,108 @@ func TestCleanupRequiresValidOwnershipMarkerForTempDirectory(t *testing.T) {
 	}
 	if err := createOwnedTempDirectory(l, path+"2", "0123456789abcdef", "llama-runtime-staging"); err == nil {
 		t.Fatal("accepted path whose name does not match token")
+	}
+}
+
+func TestStartupHousekeepingOnlyRemovesExactAtomicTempNames(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.ConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exact := filepath.Join(l.ConfigDir, ".llamalc.json.tmp-0123456789abcdef")
+	unrelated := filepath.Join(l.ConfigDir, "notes.tmp-0123456789abcdef")
+	for _, path := range []string{exact, unrelated} {
+		if err := os.WriteFile(path, []byte("keep-check"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-25 * time.Hour)
+	for _, path := range []string{exact, unrelated} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := StartupHousekeeping(l)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings=%v", result.Warnings)
+	}
+	if _, err := os.Lstat(exact); !os.IsNotExist(err) {
+		t.Fatalf("exact temp still exists: %v", err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated file was removed: %v", err)
+	}
+}
+
+func TestInterruptedQuarantineIsVisibleAndPartialDirectoryIsNotRestored(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	path := filepath.Join(l.RuntimeDir, ".launcher-update-0123456789abcdef")
+	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := createOwnedTempDirectory(l, path, "0123456789abcdef", "launcher-update-staging"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "payload"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := stableCleanupInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, snapshot, err := inspectCleanupPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := removeCleanupTree
+	t.Cleanup(func() { removeCleanupTree = originalRemove })
+	removeCleanupTree = func(string) error { return errors.New("simulated partial removal") }
+	if err := removeAutomaticCleanupPath(l, path, info, snapshot); err == nil || !strings.Contains(err.Error(), "残留保留") {
+		t.Fatalf("cleanup error=%v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("partially removed directory was restored: %v", err)
+	}
+	items, err := CleanupCandidates(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		if item.Kind == "中断的隔离清理残留" && strings.HasPrefix(filepath.Base(item.Path), ".llamalc-delete-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("quarantine not listed: %+v", items)
+	}
+}
+
+func TestCleanupSnapshotAllowsOnlyInTreeFileSymlinks(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "libfoo.so.1")
+	if err := os.WriteFile(file, []byte("library"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileLink := filepath.Join(root, "libfoo.so")
+	if err := os.Symlink("libfoo.so.1", fileLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, snapshot, err := inspectCleanupPath(root); err != nil || snapshot == "" {
+		t.Fatalf("relative file symlink rejected: snapshot=%q err=%v", snapshot, err)
+	}
+	directory := filepath.Join(root, "directory")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directoryLink := filepath.Join(root, "directory-link")
+	if err := os.Symlink("directory", directoryLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := inspectCleanupPath(root); err == nil || !strings.Contains(err.Error(), "目录符号链接") {
+		t.Fatalf("directory symlink accepted: %v", err)
 	}
 }
 
@@ -281,5 +384,52 @@ func TestStartupHousekeepingImmediatelyRemovesDeadLockButKeepsLiveLock(t *testin
 	}
 	if _, err := os.Stat(live); err != nil {
 		t.Fatalf("live lock missing: %v", err)
+	}
+}
+
+func TestPendingCleanupWaitsForGlobalLockAndNeverDeletesActiveRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	active := filepath.Join(l.LlamaRuntimeDir, "cpu", "b124")
+	pending := filepath.Join(l.LlamaRuntimeDir, "cpu", "b123")
+	for _, directory := range []string{active, pending, l.StateDir, l.RuntimeDir} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := State{Schema: StateSchema, LlamaTag: "b124", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b124"), Assets: []InstalledAsset{{Name: "runtime.tar.gz", SHA256: strings.Repeat("a", 64)}}, PendingCleanup: []string{runtimeRelative("cpu", "b123")}}
+	if err := SaveState(l, state); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireLlamaInstallLock(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := StartupHousekeeping(l)
+	if len(result.Warnings) == 0 {
+		t.Fatal("cleanup did not report lock contention")
+	}
+	if _, err := os.Stat(pending); err != nil {
+		t.Fatalf("pending runtime changed while lock held: %v", err)
+	}
+	if err := os.RemoveAll(lock); err != nil {
+		t.Fatal(err)
+	}
+	result = StartupHousekeeping(l)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings=%v", result.Warnings)
+	}
+	if _, err := os.Lstat(pending); !os.IsNotExist(err) {
+		t.Fatalf("pending runtime still exists: %v", err)
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Fatalf("active runtime was removed: %v", err)
+	}
+	activeInfo, err := stableCleanupInfo(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCleanupTargetIsNotActive(l, active, activeInfo); err == nil {
+		t.Fatal("active runtime was accepted as a cleanup target")
 	}
 }

@@ -13,8 +13,25 @@ import (
 )
 
 var atomicCreateLink = os.Link
+var atomicWriteSyncDir = syncDir
 
 const atomicCreateFallbackTimeout = 30 * time.Second
+const atomicCreateFallbackStaleAge = 24 * time.Hour
+
+// PublishedError means the new path was made visible, but the containing
+// directory could not be durably synchronized. Callers must not assume the old
+// value is still installed and blindly roll back dependent data.
+type PublishedError struct{ Err error }
+
+func (e *PublishedError) Error() string {
+	return "文件已发布但目录同步失败: " + e.Err.Error()
+}
+func (e *PublishedError) Unwrap() error { return e.Err }
+
+func IsPublishedError(err error) bool {
+	var published *PublishedError
+	return errors.As(err, &published)
+}
 
 func Within(root, path string) error {
 	r, err := filepath.Abs(root)
@@ -125,7 +142,10 @@ func AtomicWrite(root, path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	ok = true
-	return syncDir(dir)
+	if err = atomicWriteSyncDir(dir); err != nil {
+		return &PublishedError{Err: err}
+	}
+	return nil
 }
 
 // AtomicCreate durably publishes a new file without ever replacing an
@@ -266,6 +286,17 @@ func waitForAtomicCreateFallbackUntil(lock string, deadline time.Time) error {
 			return errors.New("AtomicCreate 兼容锁不是普通目录")
 		}
 		if time.Now().After(deadline) {
+			if time.Since(info.ModTime()) >= atomicCreateFallbackStaleAge {
+				entries, readErr := os.ReadDir(lock)
+				if readErr != nil {
+					return readErr
+				}
+				if len(entries) == 0 {
+					if removeErr := os.Remove(lock); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+						return nil
+					}
+				}
+			}
 			return errors.New("等待另一个 AtomicCreate 完成超时")
 		}
 		time.Sleep(10 * time.Millisecond)

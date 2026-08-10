@@ -227,3 +227,23 @@ func TestRejectsArbitrarySourceName(t *testing.T) {
 		t.Fatal("accepted launcher staging name as updater staging name")
 	}
 }
+
+func TestUpdaterIdentityCheckRejectsPathReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "llamaup")
+	if err := os.WriteFile(path, []byte("original"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := stableUpdaterFileInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyUpdaterFileIdentity(path, identity); err == nil {
+		t.Fatal("replacement was accepted as the staged updater")
+	}
+}

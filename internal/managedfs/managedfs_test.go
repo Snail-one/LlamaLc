@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAtomicWriteAndSymlinkRejection(t *testing.T) {
@@ -29,6 +30,22 @@ func TestAtomicWriteAndSymlinkRejection(t *testing.T) {
 	}
 	if err := AtomicWrite(root, filepath.Join(root, "link", "bad"), []byte("x"), 0o600); err == nil {
 		t.Fatal("accepted symlink")
+	}
+}
+
+func TestAtomicWriteReportsPublishedSyncFailure(t *testing.T) {
+	originalSync := atomicWriteSyncDir
+	t.Cleanup(func() { atomicWriteSyncDir = originalSync })
+	atomicWriteSyncDir = func(string) error { return errors.New("simulated sync failure") }
+	root := t.TempDir()
+	target := filepath.Join(root, "state", "value.json")
+	err := AtomicWrite(root, target, []byte("published"), 0o600)
+	if !IsPublishedError(err) {
+		t.Fatalf("error=%v, want PublishedError", err)
+	}
+	data, readErr := os.ReadFile(target)
+	if readErr != nil || string(data) != "published" {
+		t.Fatalf("published data=%q err=%v", data, readErr)
 	}
 }
 
@@ -95,6 +112,24 @@ func TestAtomicCreateFallbackNeverOverwritesWinner(t *testing.T) {
 	lock := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".create-lock")
 	if _, err := os.Lstat(lock); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fallback lock was not released: %v", err)
+	}
+}
+
+func TestAtomicCreateFallbackReclaimsOldEmptyLock(t *testing.T) {
+	root := t.TempDir()
+	lock := filepath.Join(root, ".value.create-lock")
+	if err := os.Mkdir(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-atomicCreateFallbackStaleAge - time.Hour)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForAtomicCreateFallbackUntil(lock, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale lock still exists: %v", err)
 	}
 }
 
