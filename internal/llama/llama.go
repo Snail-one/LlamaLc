@@ -65,12 +65,21 @@ func uniqueFile(root, name string) (string, error) {
 		if err != nil {
 			return err
 		}
+		// llama.cpp Linux packages ship relative .so soname symlinks. Allow them
+		// when they are not the server/CLI we are locating; never follow
+		// directory symlinks out of the runtime tree.
+		if e.Type()&os.ModeSymlink != 0 {
+			if e.IsDir() {
+				return filepath.SkipDir
+			}
+			if strings.EqualFold(e.Name(), name) {
+				return fmt.Errorf("%s 不能是符号链接: %s", name, path)
+			}
+			return nil
+		}
 		info, err := e.Info()
 		if err != nil {
 			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("运行时不允许符号链接: %s", path)
 		}
 		if !e.IsDir() && strings.EqualFold(e.Name(), name) {
 			if !info.Mode().IsRegular() {
@@ -93,12 +102,19 @@ func ProbeVersion(ctx context.Context, executable string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "--version")
+	// Run next to the binary so $ORIGIN / adjacent shared libraries resolve the
+	// same way a normal launch from the runtime directory would.
+	cmd.Dir = filepath.Dir(executable)
 	var out cappedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", errors.New("探测 llama.cpp 版本超时")
+		}
+		detail := strings.TrimSpace(out.String())
+		if detail != "" {
+			return "", fmt.Errorf("探测 llama.cpp 版本: %w (%s)", err, compressProbeDetail(detail))
 		}
 		return "", fmt.Errorf("探测 llama.cpp 版本: %w", err)
 	}
@@ -107,6 +123,16 @@ func ProbeVersion(ctx context.Context, executable string) (string, error) {
 		return "", errors.New("llama.cpp --version 没有输出")
 	}
 	return versionSummary(line)
+}
+
+func compressProbeDetail(detail string) string {
+	detail = strings.ReplaceAll(detail, "\r\n", "\n")
+	detail = strings.Join(strings.Fields(strings.ReplaceAll(detail, "\n", " ")), " ")
+	runes := []rune(detail)
+	if len(runes) > 300 {
+		return string(runes[:300]) + "…"
+	}
+	return detail
 }
 
 func versionSummary(output string) (string, error) {

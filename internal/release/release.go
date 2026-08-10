@@ -703,6 +703,62 @@ func safeTarget(root, name string) (string, error) {
 	}
 	return target, nil
 }
+
+// safeRelativeSymlinkLinkname validates a symlink target recorded in an
+// archive. Only relative linknames without ".." segments, whose resolved path
+// stays inside root, are accepted. Absolute targets and path escapes are
+// rejected so shared-library soname links (libfoo.so -> libfoo.so.1) work
+// without reopening archive symlink escape attacks.
+func safeRelativeSymlinkLinkname(root, linkPath, linkname string) (string, error) {
+	linkname = strings.TrimSpace(linkname)
+	if linkname == "" || strings.Contains(linkname, "\x00") {
+		return "", errors.New("归档符号链接目标无效")
+	}
+	// Archive linknames use forward slashes. Reject absolute Unix or Windows
+	// forms before any local path joining.
+	if filepath.IsAbs(linkname) || filepath.IsAbs(filepath.FromSlash(linkname)) ||
+		strings.HasPrefix(linkname, "/") || strings.HasPrefix(linkname, `\`) ||
+		len(linkname) >= 2 && linkname[1] == ':' {
+		return "", errors.New("归档不允许绝对符号链接")
+	}
+	// Soname links never need parent traversal; reject ".." segments entirely.
+	for _, part := range strings.Split(filepath.ToSlash(linkname), "/") {
+		if part == ".." {
+			return "", errors.New("归档符号链接目标越界")
+		}
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(linkname))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", errors.New("归档符号链接目标越界")
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), cleaned))
+	if err := managedfs.Within(root, resolved); err != nil {
+		return "", errors.New("归档符号链接目标越界")
+	}
+	stored := filepath.ToSlash(cleaned)
+	if stored == "" || stored == "." {
+		return "", errors.New("归档符号链接目标无效")
+	}
+	return stored, nil
+}
+
+func createSafeRelativeSymlink(root, linkPath, linkname string) error {
+	stored, err := safeRelativeSymlinkLinkname(root, linkPath, linkname)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o700); err != nil {
+		return err
+	}
+	// O_EXCL-equivalent: refuse to replace an existing path.
+	if _, err := os.Lstat(linkPath); err == nil {
+		return fmt.Errorf("归档符号链接目标路径已存在: %s", filepath.Base(linkPath))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Symlink(filepath.FromSlash(stored), linkPath)
+}
+
 func extractZip(path, root string, budget *ExtractBudget) error {
 	z, err := zip.OpenReader(path)
 	if err != nil {
@@ -710,9 +766,6 @@ func extractZip(path, root string, budget *ExtractBudget) error {
 	}
 	defer z.Close()
 	for _, f := range z.File {
-		if f.Mode()&os.ModeSymlink != 0 {
-			return errors.New("归档不允许符号链接")
-		}
 		target, err := safeTarget(root, f.Name)
 		if err != nil {
 			return err
@@ -722,6 +775,33 @@ func extractZip(path, root string, budget *ExtractBudget) error {
 				return err
 			}
 			if err = os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			continue
+		}
+		if f.Mode()&os.ModeSymlink != 0 {
+			if f.UncompressedSize64 > 4096 {
+				return errors.New("归档符号链接目标过长")
+			}
+			if err = budget.reserve(f.Name, 0); err != nil {
+				return err
+			}
+			src, openErr := f.Open()
+			if openErr != nil {
+				return openErr
+			}
+			data, readErr := io.ReadAll(io.LimitReader(src, 4097))
+			closeErr := src.Close()
+			if readErr != nil {
+				return readErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			if len(data) > 4096 {
+				return errors.New("归档符号链接目标过长")
+			}
+			if err = createSafeRelativeSymlink(root, target, string(data)); err != nil {
 				return err
 			}
 			continue
@@ -819,8 +899,15 @@ func extractTar(path, root string, budget *ExtractBudget) error {
 					}
 				}
 			}
+		case tar.TypeSymlink:
+			// Relative soname links (libfoo.so -> libfoo.so.1) are required by
+			// current llama.cpp Linux releases. Absolute and escaping links stay
+			// rejected. Hard links remain forbidden.
+			if err = budget.reserve(h.Name, 0); err == nil {
+				err = createSafeRelativeSymlink(root, target, h.Linkname)
+			}
 		default:
-			return errors.New("归档不允许链接或特殊文件")
+			return errors.New("归档不允许硬链接或特殊文件")
 		}
 		if err != nil {
 			return err

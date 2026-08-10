@@ -1,8 +1,10 @@
 package release
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -276,5 +278,90 @@ func TestExtractRejectsTraversal(t *testing.T) {
 	destination := t.TempDir()
 	if err = Extract(archive, destination); err == nil || !strings.Contains(err.Error(), "受管根目录") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExtractTarAllowsRelativeSymlinksAndRejectsEscapes(t *testing.T) {
+	writeTar := func(path string, write func(*tar.Writer)) {
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(file)
+		tw := tar.NewWriter(gz)
+		write(tw)
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addReg := func(tw *tar.Writer, name, body string) {
+		header := &tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addSym := func(tw *tar.Writer, name, target string) {
+		header := &tar.Header{Name: name, Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: target}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	good := filepath.Join(t.TempDir(), "good.tar.gz")
+	writeTar(good, func(tw *tar.Writer) {
+		addReg(tw, "lib/libfoo.so.1.0", "shared")
+		addSym(tw, "lib/libfoo.so.1", "libfoo.so.1.0")
+		addSym(tw, "lib/libfoo.so", "libfoo.so.1")
+	})
+	out := filepath.Join(t.TempDir(), "out")
+	if err := Extract(good, out); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lib/libfoo.so", "lib/libfoo.so.1"} {
+		info, err := os.Lstat(filepath.Join(out, filepath.FromSlash(name)))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s not a symlink: info=%v err=%v", name, info, err)
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(out, "lib", "libfoo.so"))
+	if err != nil || string(body) != "shared" {
+		t.Fatalf("symlink resolution body=%q err=%v", body, err)
+	}
+
+	escape := filepath.Join(t.TempDir(), "escape.tar.gz")
+	writeTar(escape, func(tw *tar.Writer) {
+		addSym(tw, "bad", "../outside")
+	})
+	if err := Extract(escape, filepath.Join(t.TempDir(), "escape-out")); err == nil {
+		t.Fatal("accepted escaping symlink")
+	}
+
+	absolute := filepath.Join(t.TempDir(), "abs.tar.gz")
+	writeTar(absolute, func(tw *tar.Writer) {
+		addSym(tw, "bad", "/etc/passwd")
+	})
+	if err := Extract(absolute, filepath.Join(t.TempDir(), "abs-out")); err == nil {
+		t.Fatal("accepted absolute symlink")
+	}
+
+	hard := filepath.Join(t.TempDir(), "hard.tar.gz")
+	writeTar(hard, func(tw *tar.Writer) {
+		addReg(tw, "a", "x")
+		header := &tar.Header{Name: "b", Mode: 0o644, Typeflag: tar.TypeLink, Linkname: "a"}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err := Extract(hard, filepath.Join(t.TempDir(), "hard-out")); err == nil || !strings.Contains(err.Error(), "硬链接") {
+		t.Fatalf("hard link err=%v", err)
 	}
 }

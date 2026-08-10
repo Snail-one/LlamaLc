@@ -48,6 +48,38 @@ func TestLocateRequiresUniqueServerAndCLI(t *testing.T) {
 	}
 }
 
+func TestLocateAllowsLibrarySonameSymlinks(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "llama-server"), []byte("x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "llama-cli"), []byte("x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "libfoo.so.1"), []byte("lib"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("libfoo.so.1", filepath.Join(directory, "libfoo.so")); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := Locate(directory, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Server == "" || runtime.CLI == "" {
+		t.Fatalf("runtime=%+v", runtime)
+	}
+	if err := os.Remove(filepath.Join(directory, "llama-server")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("llama-cli", filepath.Join(directory, "llama-server")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Locate(directory, "linux"); err == nil || !strings.Contains(err.Error(), "不能是符号链接") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestVersionProbeOutputCap(t *testing.T) {
 	var output cappedBuffer
 	data := bytes.Repeat([]byte("x"), (1<<20)+1)

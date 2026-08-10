@@ -600,9 +600,23 @@ func oldEnoughForAutomaticCleanup(path string, rootInfo os.FileInfo) bool {
 	}
 	oldEnough := true
 	_ = filepath.WalkDir(path, func(_ string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil || entry.Type()&os.ModeSymlink != 0 {
+		if walkErr != nil {
 			oldEnough = false
 			return fs.SkipAll
+		}
+		// Relative library soname symlinks are expected in modern llama.cpp
+		// runtimes; still refuse to walk through directory symlinks.
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				oldEnough = false
+				return fs.SkipAll
+			}
+			info, err := entry.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				oldEnough = false
+				return fs.SkipAll
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil || info.ModTime().After(cutoff) {
@@ -622,8 +636,26 @@ func inspectCleanupPath(path string) (int64, string, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		relative, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		// Allow relative file symlinks (llama.cpp .so sonames). Directory
+		// symlinks are still rejected so snapshots cannot escape the tree.
 		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New("包含符号链接")
+			if entry.IsDir() {
+				return errors.New("包含目录符号链接")
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			linkTarget, readErr := os.Readlink(current)
+			if readErr != nil {
+				return readErr
+			}
+			fmt.Fprintf(hash, "%s\x00symlink\x00%s\x00%d\n", filepath.ToSlash(relative), filepath.ToSlash(linkTarget), info.ModTime().UnixNano())
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -634,10 +666,6 @@ func inspectCleanupPath(path string) (int64, string, error) {
 		}
 		if info.Mode().IsRegular() {
 			total += info.Size()
-		}
-		relative, err := filepath.Rel(root, current)
-		if err != nil {
-			return err
 		}
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%d\n", filepath.ToSlash(relative), info.Mode().String(), info.Size(), info.ModTime().UnixNano())
 		return nil

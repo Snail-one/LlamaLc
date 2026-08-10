@@ -4,7 +4,7 @@
 
 Release 响应有 4 MiB 上限，拒绝尾随 JSON、draft/prerelease、无效 tag 和重复资产。下载要求 HTTPS、有效大小与 GitHub SHA-256 digest。启动器额外与 `SHA256SUMS.txt` 交叉校验。系统代理、Windows PAC/WPAD 和 `LLAMALC_GITHUB_PROXY` URL 前缀均受支持；请求失败、异常状态或中途断开时会删除部分文件并只直连重试一次，显示信息会移除凭据、查询串和片段。
 
-所有组合资产共享 20,000 条目和 8 GiB 解压预算。归档拒绝路径穿越、重复路径、链接、特殊文件与不完整条目。新运行时必须唯一包含 `llama-server` 和 `llama-cli`，并通过带超时、1 MiB 输出上限和目标 tag 签名的版本探测。启动器归档必须且只能包含 `LlamaLc/bin/llamalc[.exe]` 与 `llamaup[.exe]`；两个程序必须在精确 `Version:` 字段报告目标版本。
+所有组合资产共享 20,000 条目和 8 GiB 解压预算。归档拒绝路径穿越、重复路径、绝对/`..` 符号链接、硬链接、特殊文件与不完整条目；允许解压根内的相对符号链接（llama.cpp 的 `.so` soname）。新运行时必须唯一包含 `llama-server` 和 `llama-cli`，并通过带超时、1 MiB 输出上限和目标 tag 签名的版本探测。启动器归档必须且只能包含 `LlamaLc/bin/llamalc[.exe]` 与 `llamaup[.exe]`；两个程序必须在精确 `Version:` 字段报告目标版本。
 
 运行时切换和状态写入成功后立即删除上一版本；只有删除失败才写入 `pending_cleanup`，后续管理命令会自动重试。`--reinstall` 只替换状态登记的活动目标，拒绝覆盖未登记目录。状态损坏时，原状态和运行时先隔离到 `runtime/recovery`；失败完整回滚，成功保留恢复备份。
 
