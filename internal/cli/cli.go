@@ -568,7 +568,7 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
-	if err := a.confirmDestructive("安装或更新 llama.cpp 运行时，是否继续", *yes); err != nil {
+	if err := a.confirmAction("即将下载并安装或更新 llama.cpp，是否继续", *yes, true); err != nil {
 		return err
 	}
 	state, err := a.Updates.UpdateLlamaWithOptions(ctx, options)
@@ -655,13 +655,17 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 }
 
 func (a *App) confirmDestructive(prompt string, yes bool) error {
+	return a.confirmAction(prompt, yes, false)
+}
+
+func (a *App) confirmAction(prompt string, yes, defaultValue bool) error {
 	if yes {
 		return nil
 	}
 	if !a.Interactive {
 		return errors.New("非交互输入必须显式使用 --yes")
 	}
-	confirmed, err := a.askYesNo(prompt, false)
+	confirmed, err := a.askYesNo(prompt, defaultValue)
 	if err != nil {
 		return err
 	}

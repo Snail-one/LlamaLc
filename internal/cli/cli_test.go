@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -192,6 +193,23 @@ func TestBareUpdateIsHelpAndKeyResetRequiresYesNonInteractive(t *testing.T) {
 	}
 	if _, err := os.Stat(l.APIKeyFile); !os.IsNotExist(err) {
 		t.Fatalf("key was written: %v", err)
+	}
+}
+
+func TestLlamaInstallConfirmationDefaultsToYes(t *testing.T) {
+	var output, stderr bytes.Buffer
+	app := App{In: strings.NewReader("\n"), Out: &output, Err: &stderr, Interactive: true}
+	if err := app.confirmAction("即将下载并安装或更新 llama.cpp，是否继续", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "即将下载并安装或更新 llama.cpp，是否继续 [Y/n]:") {
+		t.Fatalf("output=%q", output.String())
+	}
+
+	output.Reset()
+	app.In = strings.NewReader("n\n")
+	if err := app.confirmAction("即将下载并安装或更新 llama.cpp，是否继续", false, true); !errors.Is(err, errCancelled) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
