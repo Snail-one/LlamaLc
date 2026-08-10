@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Snail-one/LlamaLc/internal/layout"
 )
@@ -132,5 +133,82 @@ func TestCleanupCandidatesDoesNotConsumePendingCleanup(t *testing.T) {
 	loaded, _, err := LoadState(l)
 	if err != nil || len(loaded.PendingCleanup) != 1 {
 		t.Fatalf("pending changed: %v err=%v", loaded.PendingCleanup, err)
+	}
+}
+
+func TestStartupHousekeepingRemovesOnlyOldOwnedStaging(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owned := filepath.Join(l.RuntimeDir, ".launcher-update-0123456789abcdef")
+	if err := createOwnedTempDirectory(l, owned, "0123456789abcdef", "launcher-update-staging"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owned, "payload"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unmarked := filepath.Join(l.RuntimeDir, ".launcher-update-fedcba9876543210")
+	if err := os.MkdirAll(unmarked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-25 * time.Hour)
+	for _, path := range []string{filepath.Join(owned, ownershipMarkerName), filepath.Join(owned, "payload"), owned, unmarked} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := StartupHousekeeping(l)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings=%v", result.Warnings)
+	}
+	if _, err := os.Lstat(owned); !os.IsNotExist(err) {
+		t.Fatalf("old owned staging still exists: %v", err)
+	}
+	if _, err := os.Stat(unmarked); err != nil {
+		t.Fatalf("unmarked staging was removed: %v", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != owned {
+		t.Fatalf("removed=%v", result.Removed)
+	}
+}
+
+func TestAutomaticCleanupRejectsPathReplacementAfterSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	path := filepath.Join(l.Bin, ".llamaup-run-0123456789abcdef")
+	if err := os.MkdirAll(l.Bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("original"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, snapshot, err := inspectCleanupPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalElsewhere := filepath.Join(l.Bin, "original-elsewhere")
+	if err := os.Rename(path, originalElsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAutomaticCleanupPath(l, path, info, snapshot); err == nil || !strings.Contains(err.Error(), "身份") {
+		t.Fatalf("replacement was not rejected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "replacement" {
+		t.Fatalf("replacement was not restored: data=%q err=%v", data, err)
+	}
+	data, err = os.ReadFile(originalElsewhere)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("original changed: data=%q err=%v", data, err)
 	}
 }

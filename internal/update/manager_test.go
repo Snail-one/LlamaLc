@@ -353,6 +353,28 @@ func TestLlamaPlanIsReadOnlyFreezesReleaseAndDetectsConcurrentTarget(t *testing.
 	}
 }
 
+func TestLlamaInstallLockIsGlobalAndOutsideReplaceableRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireLlamaInstallLock(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(lock) })
+	if filepath.Dir(lock) != filepath.Clean(l.RuntimeDir) {
+		t.Fatalf("lock=%s is not in global runtime directory %s", lock, l.RuntimeDir)
+	}
+	if _, err := acquireLlamaInstallLock(l); err == nil || !strings.Contains(err.Error(), "另一个进程") {
+		t.Fatalf("second global lock acquisition error=%v", err)
+	}
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("first lock changed after contention: %v", err)
+	}
+}
+
 func TestActiveRuntimeRejectsRegisteredTagMismatch(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "LlamaLc")
 	l, _ := layout.New(root, "linux")

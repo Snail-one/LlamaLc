@@ -9,7 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+var atomicCreateLink = os.Link
+
+const atomicCreateFallbackTimeout = 30 * time.Second
 
 func Within(root, path string) error {
 	r, err := filepath.Abs(root)
@@ -126,7 +131,10 @@ func AtomicWrite(root, path string, data []byte, perm os.FileMode) error {
 // AtomicCreate durably publishes a new file without ever replacing an
 // existing path.  The temporary file is fully written and protected before a
 // hard link makes it visible; os.Link is an atomic create-if-absent operation
-// on the supported Linux and Windows filesystems.
+// on the supported Linux and Windows filesystems. Filesystems without hard-link
+// support use a serialized O_EXCL fallback which retains the no-overwrite
+// guarantee and does not let another AtomicCreate return while the winner is
+// still writing.
 func AtomicCreate(root, path string, data []byte, perm os.FileMode) error {
 	if err := Validate(root, path, true); err != nil {
 		return err
@@ -157,10 +165,111 @@ func AtomicCreate(root, path string, data []byte, perm os.FileMode) error {
 	if err = protectPath(tmp, perm); err != nil {
 		return err
 	}
-	if err = os.Link(tmp, path); err != nil {
+	if err = atomicCreateLink(tmp, path); err == nil {
+		return syncDir(dir)
+	} else if errors.Is(err, os.ErrExist) {
+		// A fallback writer creates the destination before its contents are
+		// complete. Wait for its sidecar lock so callers never validate a
+		// partially written concurrent winner.
+		if waitErr := waitForAtomicCreateFallback(path); waitErr != nil {
+			return waitErr
+		}
 		return err
 	}
-	return syncDir(dir)
+	return atomicCreateWithoutLink(path, data, perm)
+}
+
+func atomicCreateWithoutLink(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	lock := filepath.Join(dir, "."+filepath.Base(path)+".create-lock")
+	deadline := time.Now().Add(atomicCreateFallbackTimeout)
+	for {
+		err = os.Mkdir(lock, 0o700)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("创建 AtomicCreate 兼容锁: %w", err)
+		}
+		if err = waitForAtomicCreateFallbackUntil(lock, deadline); err != nil {
+			return err
+		}
+		if _, statErr := os.Lstat(path); statErr == nil {
+			return os.ErrExist
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	}
+	defer func() {
+		if removeErr := os.Remove(lock); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
+			err = fmt.Errorf("释放 AtomicCreate 兼容锁: %w", removeErr)
+		}
+	}()
+	if _, statErr := os.Lstat(path); statErr == nil {
+		return os.ErrExist
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	createdInfo, statErr := f.Stat()
+	if statErr != nil {
+		_ = f.Close()
+		return statErr
+	}
+	complete := false
+	defer func() {
+		if complete {
+			return
+		}
+		current, statErr := os.Lstat(path)
+		if statErr == nil && os.SameFile(createdInfo, current) {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = protectPath(path, perm); err != nil {
+		return err
+	}
+	if err = syncDir(dir); err != nil {
+		return err
+	}
+	complete = true
+	return nil
+}
+
+func waitForAtomicCreateFallback(path string) error {
+	lock := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".create-lock")
+	return waitForAtomicCreateFallbackUntil(lock, time.Now().Add(atomicCreateFallbackTimeout))
+}
+
+func waitForAtomicCreateFallbackUntil(lock string, deadline time.Time) error {
+	for {
+		info, err := os.Lstat(lock)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("AtomicCreate 兼容锁不是普通目录")
+		}
+		if time.Now().After(deadline) {
+			return errors.New("等待另一个 AtomicCreate 完成超时")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func CopyFile(root, source, destination string, perm os.FileMode) error {

@@ -70,6 +70,34 @@ func TestAtomicCreateNeverOverwritesConcurrentWinner(t *testing.T) {
 	}
 }
 
+func TestAtomicCreateFallbackNeverOverwritesWinner(t *testing.T) {
+	originalLink := atomicCreateLink
+	t.Cleanup(func() { atomicCreateLink = originalLink })
+	atomicCreateLink = func(string, string) error {
+		return errors.New("hard links unsupported")
+	}
+
+	root := t.TempDir()
+	target := filepath.Join(root, "config", "value")
+	if err := AtomicCreate(root, target, []byte("winner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicCreate(root, target, []byte("loser"), 0o600); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second create error=%v, want os.ErrExist", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "winner" {
+		t.Fatalf("winner overwritten: %q", data)
+	}
+	lock := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".create-lock")
+	if _, err := os.Lstat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fallback lock was not released: %v", err)
+	}
+}
+
 func TestEnsureDirPreservesExistingPermissions(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "models", "llm")

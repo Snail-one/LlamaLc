@@ -186,6 +186,25 @@ func (m *Manager) ApplyLlama(ctx context.Context, plan *LlamaPlan) (State, error
 	if err := m.verifyLlamaPlan(plan); err != nil {
 		return State{}, err
 	}
+	if err := managedfs.EnsureDir(m.Layout.Root, m.Layout.RuntimeDir, 0o700); err != nil {
+		return State{}, err
+	}
+	lock, err := acquireLlamaInstallLock(m.Layout)
+	if err != nil {
+		return State{}, err
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(lock); removeErr != nil && m.Err != nil {
+			fmt.Fprintln(m.Err, "警告: 无法释放 llama.cpp 更新锁，下次启动将重试:", removeErr)
+		}
+	}()
+	stopHeartbeat := startOwnedLockHeartbeat(lock)
+	defer stopHeartbeat()
+	// The state may have changed between the initial preflight check and lock
+	// acquisition. Recheck only after the global lock is held.
+	if err := m.verifyLlamaPlan(plan); err != nil {
+		return State{}, err
+	}
 	if plan.CurrentExists && len(plan.Current.PendingCleanup) > 0 {
 		cleaned, err := m.retryPendingCleanup(plan.Current)
 		if err != nil {
@@ -233,11 +252,6 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 	if err := managedfs.EnsureDir(m.Layout.Root, m.Layout.LlamaRuntimeDir, 0o700); err != nil {
 		return State{}, err
 	}
-	lock, err := acquireLlamaInstallLock(m.Layout, plan.Target)
-	if err != nil {
-		return State{}, err
-	}
-	defer os.RemoveAll(lock)
 	token := randomToken()
 	staging := filepath.Join(m.Layout.LlamaRuntimeDir, ".staging-"+token)
 	if err = createOwnedTempDirectory(m.Layout, staging, token, "llama-runtime-staging"); err != nil {
@@ -719,7 +733,7 @@ func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) er
 	if len(token) != 16 || !safeHex(token) {
 		return errors.New("临时目录 token 无效")
 	}
-	prefix := map[string]string{"llama-runtime-staging": ".staging-", "launcher-update-staging": ".launcher-update-", "llama-install-lock": ".install-lock-", "launcher-install-lock": ".launcher-lock-"}[kind]
+	prefix := map[string]string{"llama-runtime-staging": ".staging-", "launcher-update-staging": ".launcher-update-", "llama-install-lock": ".install-lock-", "llama-global-install-lock": ".llama-lock-", "launcher-install-lock": ".launcher-lock-"}[kind]
 	if prefix == "" || filepath.Base(directory) != prefix+token {
 		return errors.New("临时目录名称或类型无效")
 	}
@@ -742,17 +756,40 @@ func createOwnedTempDirectory(l layout.Layout, directory, token, kind string) er
 	return nil
 }
 
-func acquireLlamaInstallLock(l layout.Layout, target string) (string, error) {
-	digest := sha256.Sum256([]byte(filepath.Clean(target)))
+func acquireLlamaInstallLock(l layout.Layout) (string, error) {
+	digest := sha256.Sum256([]byte(filepath.Clean(l.Root) + "\x00llama.cpp"))
 	token := hex.EncodeToString(digest[:8])
-	directory := filepath.Join(l.LlamaRuntimeDir, ".install-lock-"+token)
-	if err := createOwnedTempDirectory(l, directory, token, "llama-install-lock"); err != nil {
+	directory := filepath.Join(l.RuntimeDir, ".llama-lock-"+token)
+	if err := createOwnedTempDirectory(l, directory, token, "llama-global-install-lock"); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", errors.New("另一个进程正在安装同一 llama.cpp 目标，请稍后重试")
+			return "", errors.New("另一个进程正在安装或更新 llama.cpp，请稍后重试")
 		}
 		return "", err
 	}
 	return directory, nil
+}
+
+func startOwnedLockHeartbeat(directory string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C:
+				_ = os.Chtimes(filepath.Join(directory, ownershipMarkerName), now, now)
+				_ = os.Chtimes(directory, now, now)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 func safeHex(value string) bool {
@@ -848,6 +885,8 @@ func (m *Manager) ApplyLauncher(ctx context.Context, plan *LauncherPlan) (string
 			_ = os.RemoveAll(launcherLock)
 		}
 	}()
+	stopHeartbeat := startOwnedLockHeartbeat(launcherLock)
+	defer stopHeartbeat()
 	if state, exists, loadErr := LoadState(m.Layout); loadErr == nil && exists && len(state.PendingCleanup) > 0 {
 		if _, cleanupErr := m.retryPendingCleanup(state); cleanupErr != nil {
 			return "", cleanupErr

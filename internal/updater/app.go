@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/Snail-one/LlamaLc/internal/managedfs"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
@@ -83,6 +84,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer os.RemoveAll(lockDirectory)
+	stopHeartbeat := startUpdateLockHeartbeat(lockDirectory)
+	defer stopHeartbeat()
 	if err := waitForParent(*parentPID); err != nil {
 		return handoffFailure(stdin, stderr, "等待启动器退出失败", err)
 	}
@@ -90,6 +93,29 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return handoffFailure(stdin, stderr, "无法应用更新", err)
 	}
 	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdin, stdout, stderr)
+}
+
+func startUpdateLockHeartbeat(directory string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C:
+				_ = os.Chtimes(filepath.Join(directory, ".llamalc-owned.json"), now, now)
+				_ = os.Chtimes(directory, now, now)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 func handoffFailure(stdin io.Reader, stderr io.Writer, label string, err error) int {
