@@ -186,7 +186,7 @@ func TestAutomaticCleanupRejectsPathReplacementAfterSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(path)
+	info, err := stableCleanupInfo(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +211,29 @@ func TestAutomaticCleanupRejectsPathReplacementAfterSnapshot(t *testing.T) {
 	data, err = os.ReadFile(originalElsewhere)
 	if err != nil || string(data) != "original" {
 		t.Fatalf("original changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestStartupHousekeepingRemovesUpdaterRunner(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "windows")
+	if err := os.MkdirAll(l.Bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := filepath.Join(l.Bin, ".llamaup-run-0123456789abcdef.exe")
+	if err := os.WriteFile(runner, []byte("runner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	result := StartupHousekeeping(l)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings=%v", result.Warnings)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != runner {
+		t.Fatalf("removed=%v", result.Removed)
+	}
+	if _, err := os.Lstat(runner); !os.IsNotExist(err) {
+		t.Fatalf("updater runner still exists: %v", err)
 	}
 }
 

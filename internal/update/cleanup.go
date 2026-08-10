@@ -185,7 +185,7 @@ type HousekeepingResult struct {
 func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 	var result HousekeepingResult
 	removeFile := func(path string, immediate bool) {
-		info, err := os.Lstat(path)
+		info, err := stableCleanupInfo(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return
 		}
@@ -251,7 +251,7 @@ func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 		}
 	}
 	removeOwnedDirectory := func(path, prefix, kind string) {
-		info, err := os.Lstat(path)
+		info, err := stableCleanupInfo(path)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !validOwnedTempDirectory(path, prefix, kind) {
 			return
 		}
@@ -305,6 +305,42 @@ func StartupHousekeeping(l layout.Layout) HousekeepingResult {
 	}
 	sort.Strings(result.Removed)
 	return result
+}
+
+// stableCleanupInfo returns FileInfo whose identity was captured from an open
+// handle. On Windows, os.Lstat defers loading the file ID until os.SameFile is
+// called; after a rename that makes the old path unavailable and produces a
+// false identity mismatch. File.Stat records the ID while the handle is valid,
+// so the returned identity remains usable after the handle is closed and the
+// path is moved to quarantine.
+func stableCleanupInfo(path string) (os.FileInfo, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return pathInfo, nil
+	}
+	if !pathInfo.Mode().IsRegular() && !pathInfo.IsDir() {
+		return nil, errors.New("清理目标不是常规文件或目录")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	handleInfo, statErr := file.Stat()
+	sameFile := statErr == nil && os.SameFile(pathInfo, handleInfo)
+	closeErr := file.Close()
+	if statErr != nil {
+		return nil, statErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if !sameFile {
+		return nil, errors.New("清理目标文件身份在检查时发生变化")
+	}
+	return handleInfo, nil
 }
 
 // removeAutomaticCleanupPath prevents a validated cleanup path from being
@@ -511,7 +547,7 @@ func DeleteCandidate(l layout.Layout, c CleanupCandidate) error {
 	if err = managedfs.Validate(l.Root, c.Path, false); err != nil {
 		return err
 	}
-	info, err := os.Lstat(c.Path)
+	info, err := stableCleanupInfo(c.Path)
 	if err != nil {
 		return err
 	}

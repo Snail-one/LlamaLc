@@ -480,7 +480,7 @@ func removeManagedRuntime(l layout.Layout, path string) error {
 		}
 		return err
 	}
-	info, err := os.Lstat(path)
+	info, err := stableCleanupInfo(path)
 	if err != nil {
 		return err
 	}
@@ -808,7 +808,7 @@ func reclaimDeadOwnedLock(l layout.Layout, directory, prefix, kind string) (recl
 	if alive && identity == owner.Identity {
 		return false, true, nil
 	}
-	info, err := os.Lstat(directory)
+	info, err := stableCleanupInfo(directory)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return true, false, nil
