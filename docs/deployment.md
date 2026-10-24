@@ -10,6 +10,7 @@ LlamaLc/
 ├─ state/update.json, router/models.auto.ini
 ├─ runtime/llama.cpp/<backend>/<version>/
 ├─ runtime/recovery/
+├─ runtime/download-cache/cuda/<sha256>.zip
 └─ models/
    ├─ llm/
    ├─ embedding/

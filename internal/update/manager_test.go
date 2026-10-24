@@ -4,6 +4,7 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -142,6 +143,65 @@ func runtimeArchiveWithVersion(t *testing.T, output string) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestFailedCUDAInstallRetainsCacheForRetry(t *testing.T) {
+	zipArchive := func(files map[string]string) []byte {
+		var buffer bytes.Buffer
+		writer := zip.NewWriter(&buffer)
+		for name, data := range files {
+			header := &zip.FileHeader{Name: name, Method: zip.Deflate}
+			header.SetMode(0o700)
+			file, err := writer.CreateHeader(header)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.Write([]byte(data)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buffer.Bytes()
+	}
+	l, err := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cuda := zipArchive(map[string]string{"bundle/cudart.dll": "CUDA dependency"})
+	cudaAsset := fixtureAsset("cudart-llama-bin-win-cuda-13.4-x64.zip", cuda)
+	source := &countingSource{fakeSource: fakeSource{files: map[string][]byte{cudaAsset.Name: cuda}}}
+	m := NewManager(l, source)
+	m.GOOS, m.GOARCH = "windows", "amd64"
+	for _, build := range []string{"10334", "10333"} {
+		script := "#!/bin/sh\necho 'version: 0.7.0-dev (build " + build + ", commit 0ae0e1976)'\necho 'built with MSVC'\n"
+		archive := zipArchive(map[string]string{"bundle/llama-server.exe": script, "bundle/llama-cli.exe": script})
+		main := fixtureAsset("llama-b10333-bin-win-cuda-13.4-x64.zip", archive)
+		source.release = release.GitHubRelease{Tag: "b10333", Assets: []release.Asset{cudaAsset, main}}
+		source.files[main.Name] = archive
+		plan, err := m.PrepareLlama(context.Background(), LlamaOptions{Backend: "cuda-13.4"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if build == "10333" && (plan.CachedSize != cudaAsset.Size || plan.DownloadSize != main.Size) {
+			t.Fatalf("retry did not reuse CUDA cache: %+v", plan)
+		}
+		_, err = m.ApplyLlama(context.Background(), plan)
+		if build == "10334" {
+			if err == nil || !strings.Contains(err.Error(), "版本签名") {
+				t.Fatalf("expected version failure: %v", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if source.downloadCalls != 3 {
+		t.Fatalf("expected one CUDA download and two main downloads, got %d", source.downloadCalls)
+	}
+	if _, err := ValidateActiveRuntime(context.Background(), l, "windows"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestInstallLlamaBuildPrerelease(t *testing.T) {

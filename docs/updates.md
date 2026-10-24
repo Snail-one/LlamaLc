@@ -17,6 +17,10 @@ llamalc update all --channel preview --backend cpu --yes
 
 Release 响应有 4 MiB 上限，拒绝尾随 JSON、draft、无效 tag 和重复资产；只有 llama.cpp 的 `b<数字>` 构建允许 prerelease。下载要求 HTTPS、有效大小与 GitHub SHA-256 digest。启动器额外与 `SHA256SUMS.txt` 交叉校验。系统代理、Windows PAC/WPAD 和 `LLAMALC_GITHUB_PROXY` URL 前缀均受支持；请求失败、异常状态或中途断开时会删除部分文件并只直连重试一次，显示信息会移除凭据、查询串和片段。
 
+Windows CUDA 后端的 `cudart-llama-bin-win-cuda-*.zip` 按 SHA-256 缓存到 `runtime/download-cache/cuda`。首次下载并校验后保留压缩包；后续升级、重装或失败重试，只要上游摘要和大小相同，就校验并复用缓存，继续安全解压，无需再次下载 CUDA 运行库。缓存损坏或摘要变化时重新下载，未完成或校验失败的下载不会写入缓存。llama.cpp 主程序仍按目标版本下载。更新计划显示预计下载量及缓存复用量，执行时再次校验缓存。
+
+缓存独立于运行时目录，在旧运行时清理、修复安装或安装失败后仍可复用。旧版本已经删除的压缩包无法直接恢复为缓存，启用缓存后的首次更新仍需下载一次。缓存不随旧运行时自动删除；需要释放空间时可在没有更新任务运行时删除 `runtime/download-cache/cuda`，下次安装会重新下载。
+
 所有组合资产共享 20,000 条目和 8 GiB 解压预算。归档拒绝路径穿越、重复路径、绝对/`..` 符号链接、硬链接、特殊文件与不完整条目；允许解压根内的相对符号链接（llama.cpp 的 `.so` soname）。新运行时必须唯一包含 `llama-server` 和 `llama-cli`，并通过带超时、1 MiB 输出上限和目标 tag 签名的版本探测。启动器归档必须且只能包含 `LlamaLc/bin/llamalc[.exe]` 与 `llamaup[.exe]`；两个程序必须在精确 `Version:` 字段报告目标版本。
 
 运行时切换时会先把旧路径持久登记到 `pending_cleanup`，状态提交成功后立即删除上一版本并清除成功项；因此任何中途失败都仍可在下次重试。所有待清理状态变更与运行时更新共用跨进程锁，删除前还会以实际文件身份复核目标不是活动运行时。`--reinstall` 只替换状态登记的活动目标，拒绝覆盖未登记目录。状态损坏时，原状态和运行时先隔离到 `runtime/recovery`；失败完整报告回滚结果，成功保留恢复备份。

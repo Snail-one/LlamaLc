@@ -308,7 +308,13 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 	budget := release.NewExtractBudget(20_000, 8<<30)
 	for _, a := range selected.Assets {
 		archive := filepath.Join(staging, a.Name)
-		if err = m.Source.Download(ctx, a, archive); err != nil {
+		cached := cudaRuntimeAssetName.MatchString(a.Name)
+		if cached {
+			archive, err = m.cudaRuntimeArchive(ctx, a, staging)
+		} else {
+			err = m.Source.Download(ctx, a, archive)
+		}
+		if err != nil {
 			return State{}, err
 		}
 		digest, _ := release.Digest(a.Digest)
@@ -323,7 +329,9 @@ func (m *Manager) applyLlamaPlanCore(ctx context.Context, plan *LlamaPlan) (Stat
 		if m.Out != nil {
 			fmt.Fprintln(m.Out, "解压完成:", a.Name)
 		}
-		_ = os.Remove(archive)
+		if !cached {
+			_ = os.Remove(archive)
+		}
 	}
 	payload := filepath.Join(staging, "payload")
 	rt, err := llama.Locate(payload, m.GOOS)

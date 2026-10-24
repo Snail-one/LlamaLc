@@ -936,7 +936,10 @@ func (a *App) printLlamaPlan(plan *update.LlamaPlan) {
 	if plan.Release.ReleaseTag != "" {
 		target = plan.Release.ReleaseTag + "（构建 " + target + "）"
 	}
-	fmt.Fprintf(a.Out, "\nllama.cpp 更新计划\n  更新通道: %s\n  当前版本: %s\n  目标版本: %s\n  后端:     %s\n  安装目录: %s\n  下载大小: %s\n", channel, current, target, plan.Backend.ID, plan.Target, humanBytes(plan.DownloadSize))
+	fmt.Fprintf(a.Out, "\nllama.cpp 更新计划\n  更新通道: %s\n  当前版本: %s\n  目标版本: %s\n  后端:     %s\n  安装目录: %s\n  预计下载: %s\n", channel, current, target, plan.Backend.ID, plan.Target, humanBytes(plan.DownloadSize))
+	if plan.CachedSize > 0 {
+		fmt.Fprintf(a.Out, "  缓存复用: %s（执行时再次校验）\n", humanBytes(plan.CachedSize))
+	}
 	if plan.NeedsRecovery {
 		fmt.Fprintf(a.Out, "  修复操作: 当前状态/运行时无效（%s）\n  恢复目录: %s\n", plan.RecoveryReason, plan.RecoveryDirectory)
 	}

@@ -24,6 +24,7 @@ type LlamaPlan struct {
 	CurrentExists     bool
 	Target            string
 	DownloadSize      int64
+	CachedSize        int64
 	NeedsBackend      bool
 	NeedsRecovery     bool
 	RecoveryReason    string
@@ -179,12 +180,25 @@ func (m *Manager) SelectLlamaBackend(plan *LlamaPlan, backend string) error {
 			return fmt.Errorf("%w: llama.cpp %s；使用 --reinstall 重装", ErrAlreadyCurrent, plan.Release.Tag)
 		}
 	}
-	var total int64
+	var total, cachedSize int64
 	for _, asset := range selected.Assets {
 		if asset.Size <= 0 || asset.Size > 2<<30 || asset.Size > (4<<30)-total {
 			return errors.New("资产组合下载量超过 4 GiB 或大小无效")
 		}
 		total += asset.Size
+		if cudaRuntimeAssetName.MatchString(asset.Name) {
+			path, err := m.cudaCachePath(asset)
+			if err != nil {
+				return err
+			}
+			valid, err := m.validCUDAArchive(path, asset)
+			if err != nil {
+				return err
+			}
+			if valid {
+				cachedSize += asset.Size
+			}
+		}
 	}
 	if err := ensureFreeSpace(m.Layout.RuntimeDir, total*3); err != nil {
 		return err
@@ -192,7 +206,7 @@ func (m *Manager) SelectLlamaBackend(plan *LlamaPlan, backend string) error {
 	if !safeComponent.MatchString(plan.Release.Tag) || !safeComponent.MatchString(selected.ID) {
 		return errors.New("Release tag 或后端 ID 不能安全用作目录名")
 	}
-	plan.Backend, plan.DownloadSize, plan.NeedsBackend = selected, total, false
+	plan.Backend, plan.DownloadSize, plan.CachedSize, plan.NeedsBackend = selected, total-cachedSize, cachedSize, false
 	plan.Target = filepath.Join(m.Layout.LlamaRuntimeDir, selected.ID, plan.Release.Tag)
 	plan.stateSnapshot, err = pathSnapshot(m.Layout.UpdateStateFile)
 	if err != nil {

@@ -16,6 +16,7 @@ const RootName = "LlamaLc"
 type Layout struct {
 	Root, Bin, ConfigDir, RouterConfigDir, SecretsDir, StateDir, RouterStateDir string
 	RuntimeDir, LlamaRuntimeDir, RecoveryDir, ModelsDir                         string
+	DownloadCacheDir                                                            string
 	GenerationModels, EmbeddingModels, RerankModels, MMProjModels               string
 	ConfigFile, APIKeyFile, UpdateStateFile, RouterPreset, AutoRouterPreset     string
 	Launcher, Updater                                                           string
@@ -46,6 +47,7 @@ func New(root, goos string) (Layout, error) {
 	l.RuntimeDir = filepath.Join(l.Root, "runtime")
 	l.LlamaRuntimeDir = filepath.Join(l.RuntimeDir, "llama.cpp")
 	l.RecoveryDir = filepath.Join(l.RuntimeDir, "recovery")
+	l.DownloadCacheDir = filepath.Join(l.RuntimeDir, "download-cache")
 	l.ModelsDir = filepath.Join(l.Root, "models")
 	// GenerationModels keeps the internal field name used by the schema-1
 	// configuration code, but the public deployment directory is models/llm.
