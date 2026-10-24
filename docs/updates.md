@@ -2,7 +2,18 @@
 
 未指定版本时使用 latest，也可用 `--version` 或 `--llama-version/--launcher-version` 选择 Release。相同版本需要 `--reinstall`；降级需要 `--allow-downgrade`；`dev` 启动器允许更新到正式版本。首次安装或已保存后端不再可用时必须选择本平台后端，非交互错误会列出完整可用值。
 
-llama.cpp 使用 Releases 列表 API，按返回顺序选择首个非 draft 的 `b<数字>` 构建，包括上游标记为 prerelease 的构建；最多检查 100 条。GitHub 的 `/releases/latest` 会排除 prerelease，可能返回 `v0.7.0` 等不含二进制包的语义版本，因此不用于 llama.cpp。指定版本同样使用 `b<数字>`，如 `--version b11840`。启动器继续使用 `/releases/latest` 并拒绝预发布版本。
+llama.cpp 默认使用预览版通道（`--channel preview`），从 Releases 列表按返回顺序选择首个非 draft 的 `b<数字>` 构建，包括 prerelease；最多检查 100 条。使用 `--channel stable` 切换到正式版通道，跟随 GitHub `/releases/latest` 返回的非预发布版本。交互安装会先显示通道选项，回车选择预览版；非交互或 `--yes` 不询问通道。
+
+正式版可能直接使用 `b<数字>`，也可能使用 `v0.7.0` 等语义版本。语义版本通过其 `nightly-tag.txt` 定位对应的二进制构建；该文件要求 HTTPS、有效大小（最多 128 字节）和 SHA-256 校验，且只能指向一个 `b<数字>` tag。正式版所引用的构建即使标记为 prerelease，也按正式版的固定构建安装。状态、目录、运行时探测和升级/降级判断统一使用实际构建号，避免将 `v…` 和 `b…` 错误比较。正式版缺少有效构建指向时会报错，不回退到预览版。
+
+`update llama`、`update all` 和 `update check` 均支持 `--channel preview|stable`，其中通道只影响 llama.cpp。指定 `--version` / `--llama-version` 优先于通道，可直接选择 `b<数字>` 或有构建指向的语义版本。通道每次默认 preview，不随上一次安装改变；从较新的预览构建切换到较旧的正式构建仍需 `--allow-downgrade`。启动器继续使用正式版并拒绝预发布版本。
+
+```sh
+llamalc update llama --backend cpu --yes
+llamalc update llama --channel stable --backend cpu --yes
+llamalc update check llama --channel stable --json
+llamalc update all --channel preview --backend cpu --yes
+```
 
 Release 响应有 4 MiB 上限，拒绝尾随 JSON、draft、无效 tag 和重复资产；只有 llama.cpp 的 `b<数字>` 构建允许 prerelease。下载要求 HTTPS、有效大小与 GitHub SHA-256 digest。启动器额外与 `SHA256SUMS.txt` 交叉校验。系统代理、Windows PAC/WPAD 和 `LLAMALC_GITHUB_PROXY` URL 前缀均受支持；请求失败、异常状态或中途断开时会删除部分文件并只直连重试一次，显示信息会移除凭据、查询串和片段。
 

@@ -46,7 +46,12 @@ type taggedSource interface {
 	Release(context.Context, string, string) (release.GitHubRelease, error)
 }
 
+type llamaChannelSource interface {
+	LatestLlama(context.Context, string) (release.GitHubRelease, error)
+}
+
 type LlamaOptions struct {
+	Channel        string
 	Version        string
 	Backend        string
 	Reinstall      bool
@@ -69,6 +74,8 @@ type CheckResult struct {
 	Installed string `json:"installed"`
 	Latest    string `json:"latest"`
 	Available bool   `json:"available"`
+	Channel   string `json:"channel,omitempty"`
+	Release   string `json:"release,omitempty"`
 }
 
 func NewManager(l layout.Layout, source Source) *Manager {
@@ -87,9 +94,35 @@ func (m *Manager) release(ctx context.Context, repository, version string) (rele
 	return source.Release(ctx, repository, version)
 }
 
+func (m *Manager) llamaRelease(ctx context.Context, version, channel string) (release.GitHubRelease, error) {
+	channel, err := release.NormalizeLlamaChannel(channel)
+	if err != nil {
+		return release.GitHubRelease{}, err
+	}
+	version = strings.TrimSpace(version)
+	if version != "" && !strings.EqualFold(version, "latest") {
+		return m.release(ctx, LlamaRepository, version)
+	}
+	if source, ok := m.Source.(llamaChannelSource); ok {
+		return source.LatestLlama(ctx, channel)
+	}
+	if channel == release.ChannelStable {
+		return release.GitHubRelease{}, errors.New("当前 Release 源不支持 stable 通道")
+	}
+	return m.Source.Latest(ctx, LlamaRepository)
+}
+
 // AvailableLlamaBackends returns the backend IDs published for the current
 // platform together with the backend recorded by an existing installation.
 func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids []string, current string, err error) {
+	return m.AvailableLlamaBackendsWithChannel(ctx, release.ChannelPreview)
+}
+
+func (m *Manager) AvailableLlamaBackendsWithChannel(ctx context.Context, channel string) (tag string, ids []string, current string, err error) {
+	channel, err = release.NormalizeLlamaChannel(channel)
+	if err != nil {
+		return "", nil, "", err
+	}
 	state, exists, err := LoadState(m.Layout)
 	if err != nil {
 		// A damaged state must not prevent the maintenance menu from offering a
@@ -102,7 +135,7 @@ func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids [
 			return "", nil, "", err
 		}
 	}
-	rel, err := m.Source.Latest(ctx, LlamaRepository)
+	rel, err := m.llamaRelease(ctx, "", channel)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -123,6 +156,14 @@ func (m *Manager) AvailableLlamaBackends(ctx context.Context) (tag string, ids [
 	return rel.Tag, ids, current, nil
 }
 func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, error) {
+	return m.CheckWithChannel(ctx, target, release.ChannelPreview)
+}
+
+func (m *Manager) CheckWithChannel(ctx context.Context, target, channel string) ([]CheckResult, error) {
+	channel, err := release.NormalizeLlamaChannel(channel)
+	if err != nil {
+		return nil, err
+	}
 	var out []CheckResult
 	s, _, err := LoadState(m.Layout)
 	if err != nil {
@@ -133,7 +174,7 @@ func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, erro
 		return nil, err
 	}
 	if target == "all" || target == "llama" {
-		r, err := m.Source.Latest(ctx, LlamaRepository)
+		r, err := m.llamaRelease(ctx, "", channel)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +189,7 @@ func (m *Manager) Check(ctx context.Context, target string) ([]CheckResult, erro
 			}
 			available = cmp < 0
 		}
-		out = append(out, CheckResult{Component: "llama", Installed: s.LlamaTag, Latest: r.Tag, Available: available})
+		out = append(out, CheckResult{Component: "llama", Installed: s.LlamaTag, Latest: r.Tag, Available: available, Channel: channel, Release: r.ReleaseTag})
 	}
 	if target == "all" || target == "launcher" {
 		r, err := m.Source.Latest(ctx, LauncherRepository)

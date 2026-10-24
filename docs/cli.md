@@ -7,14 +7,16 @@ llamalc run api|embedding|rerank|router|chat [模式选项] [-- llama.cpp 参数
 llamalc router generate [--force] [preset 选项]
 llamalc key show
 llamalc key reset [--yes]
-llamalc update check [all|llama|launcher] [--json]
-llamalc update llama [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+llamalc update check [all|llama|launcher] [--channel preview|stable] [--json]
+llamalc update llama [--channel preview|stable] [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
 llamalc update launcher [--version SEMVER] [--reinstall] [--allow-downgrade] [--yes]
-llamalc update all [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+llamalc update all [--channel preview|stable] [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
 llamalc cleanup
 llamalc version
 llamalc help
 ```
+
+llama.cpp 的更新通道默认为 `preview`（预览版），可用 `--channel stable` 选择正式版。安装菜单中回车同样选择预览版。`update all --channel …` 只改变 llama.cpp 通道，启动器始终使用正式版。指定版本优先于通道；从较新预览构建切换到较旧正式构建需加 `--allow-downgrade`。详细规则见[更新说明](updates.md)。
 
 裸 `llamalc update` 只显示帮助。`serve`、`install`、`check-update`、`router-config`、`config` 和 `maintenance` 均不是别名。
 

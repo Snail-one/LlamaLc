@@ -39,6 +39,8 @@ type GitHubRelease struct {
 	Draft      bool    `json:"draft"`
 	Prerelease bool    `json:"prerelease"`
 	Assets     []Asset `json:"assets"`
+	// ReleaseTag records a semantic release resolved to this binary build.
+	ReleaseTag string `json:"-"`
 }
 
 type DownloadPhase string
@@ -166,18 +168,23 @@ func (c *Client) doWithFallback(req, fallbackReq *http.Request, reportFallback f
 }
 func (c *Client) Latest(ctx context.Context, repo string) (GitHubRelease, error) {
 	if repo == LlamaRepository {
-		return c.latestLlamaBuild(ctx)
+		return c.LatestLlama(ctx, ChannelPreview)
 	}
 	return c.fetchRelease(ctx, repo, "")
 }
 
-// Release fetches a specific, exact GitHub Release tag.
+// Release fetches an exact tag, resolving llama.cpp semantic tags to their
+// corresponding binary build release.
 func (c *Client) Release(ctx context.Context, repo, tag string) (GitHubRelease, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" || strings.ContainsAny(tag, "/\\?#") {
 		return GitHubRelease{}, errors.New("Release tag 无效")
 	}
-	return c.fetchRelease(ctx, repo, tag)
+	rel, err := c.fetchRelease(ctx, repo, tag)
+	if err != nil || repo != LlamaRepository {
+		return rel, err
+	}
+	return c.resolveLlamaRelease(ctx, rel)
 }
 
 func (c *Client) fetchRelease(ctx context.Context, repo, tag string) (GitHubRelease, error) {
@@ -193,7 +200,7 @@ func (c *Client) fetchRelease(ctx context.Context, repo, tag string) (GitHubRele
 	if err := decodeReleaseData(data, &r); err != nil {
 		return r, err
 	}
-	allowPrerelease := repo == LlamaRepository && llamaBuildTag.MatchString(r.Tag)
+	allowPrerelease := repo == LlamaRepository && tag != "" && llamaBuildTag.MatchString(r.Tag)
 	if err := validateRelease(r, allowPrerelease); err != nil {
 		return r, err
 	}

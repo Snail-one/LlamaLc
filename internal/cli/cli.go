@@ -19,6 +19,7 @@ import (
 	"github.com/Snail-one/LlamaLc/internal/layout"
 	"github.com/Snail-one/LlamaLc/internal/llama"
 	"github.com/Snail-one/LlamaLc/internal/models"
+	"github.com/Snail-one/LlamaLc/internal/release"
 	"github.com/Snail-one/LlamaLc/internal/secrets"
 	"github.com/Snail-one/LlamaLc/internal/update"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
@@ -177,13 +178,15 @@ func Usage(w io.Writer) {
   llamalc router generate [选项]
   llamalc key show
   llamalc key reset [--yes]
-  llamalc update check [all|llama|launcher] [--json]
-  llamalc update llama [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+  llamalc update check [all|llama|launcher] [--channel preview|stable] [--json]
+  llamalc update llama [--channel preview|stable] [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
   llamalc update launcher [--version SEMVER] [--reinstall] [--allow-downgrade] [--yes]
-  llamalc update all [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+  llamalc update all [--channel preview|stable] [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
   llamalc cleanup
   llamalc version
   llamalc help
+
+llama.cpp 默认通道为 preview（预览版），stable 为正式版；指定版本优先于通道。
 `)
 }
 
@@ -223,23 +226,26 @@ func commandUsage(w io.Writer, args []string) {
 		fmt.Fprintln(w, "用法: llamalc key show | llamalc key reset [--yes]")
 	case name == "update":
 		fmt.Fprint(w, `用法:
-  llamalc update check [all|llama|launcher] [--json]
-  llamalc update llama [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+  llamalc update check [all|llama|launcher] [--channel preview|stable] [--json]
+  llamalc update llama [--channel preview|stable] [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
   llamalc update launcher [--version SEMVER] [--reinstall] [--allow-downgrade] [--yes]
-  llamalc update all [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
+  llamalc update all [--channel preview|stable] [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]
 `)
 	case strings.HasPrefix(name, "update check"):
-		fmt.Fprintln(w, "用法: llamalc update check [all|llama|launcher] [--json]")
+		fmt.Fprintln(w, "用法: llamalc update check [all|llama|launcher] [--channel preview|stable] [--json]")
 	case strings.HasPrefix(name, "update llama"):
-		fmt.Fprintln(w, "用法: llamalc update llama [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]")
+		fmt.Fprintln(w, "用法: llamalc update llama [--channel preview|stable] [--version TAG] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]")
 	case strings.HasPrefix(name, "update launcher"):
 		fmt.Fprintln(w, "用法: llamalc update launcher [--version SEMVER] [--reinstall] [--allow-downgrade] [--yes]")
 	case strings.HasPrefix(name, "update all"):
-		fmt.Fprintln(w, "用法: llamalc update all [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]")
+		fmt.Fprintln(w, "用法: llamalc update all [--channel preview|stable] [--llama-version TAG] [--launcher-version SEMVER] [--backend ID] [--reinstall] [--allow-downgrade] [--yes]")
 	case name == "cleanup":
 		fmt.Fprintln(w, "用法: llamalc cleanup")
 	default:
 		Usage(w)
+	}
+	if name == "update" || strings.HasPrefix(name, "update check") || strings.HasPrefix(name, "update llama") || strings.HasPrefix(name, "update all") {
+		fmt.Fprintln(w, "llama.cpp 默认通道为 preview（预览版），stable 为正式版；指定版本优先于通道。")
 	}
 }
 
@@ -579,8 +585,23 @@ func (a *App) update(args []string) error {
 		asJSON := false
 		target := "all"
 		targetSet := false
-		for _, argument := range args[1:] {
+		channel, channelSet := "", false
+		for index := 1; index < len(args); index++ {
+			argument := args[index]
+			if strings.HasPrefix(argument, "--channel=") {
+				if channelSet {
+					return fmt.Errorf("%w: --channel 重复", errSyntax)
+				}
+				channel, channelSet = strings.TrimPrefix(argument, "--channel="), true
+				continue
+			}
 			switch argument {
+			case "--channel":
+				if channelSet || index+1 >= len(args) {
+					return fmt.Errorf("%w: --channel 需要一个 preview 或 stable 值，且不能重复", errSyntax)
+				}
+				index++
+				channel, channelSet = args[index], true
 			case "--json":
 				if asJSON {
 					return fmt.Errorf("%w: --json 重复", errSyntax)
@@ -596,7 +617,14 @@ func (a *App) update(args []string) error {
 		if target != "all" && target != "llama" && target != "launcher" {
 			return fmt.Errorf("%w: 检查目标必须为 all、llama 或 launcher", errSyntax)
 		}
-		results, err := a.Updates.Check(ctx, target)
+		if target == "launcher" && channelSet {
+			return fmt.Errorf("%w: --channel 仅适用于 llama 或 all", errSyntax)
+		}
+		channel, err := release.NormalizeLlamaChannel(channel)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errSyntax, err)
+		}
+		results, err := a.Updates.CheckWithChannel(ctx, target, channel)
 		if err != nil {
 			return err
 		}
@@ -610,7 +638,14 @@ func (a *App) update(args []string) error {
 			if r.Available {
 				status = "有可用更新"
 			}
-			fmt.Fprintf(a.Out, "%s: 当前 %s，最新 %s，%s\n", r.Component, empty(r.Installed, "未安装"), r.Latest, status)
+			component, latest := r.Component, r.Latest
+			if r.Channel != "" {
+				component += "（" + llamaChannelLabel(r.Channel) + "）"
+			}
+			if r.Release != "" {
+				latest = r.Release + "（构建 " + latest + "）"
+			}
+			fmt.Fprintf(a.Out, "%s: 当前 %s，最新 %s，%s\n", component, empty(r.Installed, "未安装"), latest, status)
 		}
 		return nil
 	case "llama":
@@ -628,6 +663,7 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 	set := flag.NewFlagSet("update llama", flag.ContinueOnError)
 	set.SetOutput(a.Err)
 	options := update.LlamaOptions{}
+	set.StringVar(&options.Channel, "channel", "", "更新通道 preview（默认）或 stable")
 	set.StringVar(&options.Version, "version", "", "目标 tag（默认 latest）")
 	set.StringVar(&options.Backend, "backend", "", "运行时后端")
 	set.BoolVar(&options.Reinstall, "reinstall", false, "重装同版本")
@@ -638,6 +674,9 @@ func (a *App) updateLlama(ctx context.Context, args []string) error {
 			err = errors.New("参数无效")
 		}
 		return fmt.Errorf("%w: %v", errSyntax, err)
+	}
+	if err := a.chooseLlamaChannel(&options, *yes); err != nil {
+		return err
 	}
 	plan, err := a.Updates.PrepareLlama(ctx, options)
 	if errors.Is(err, update.ErrAlreadyCurrent) {
@@ -714,6 +753,7 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	set.SetOutput(a.Err)
 	llamaOptions := update.LlamaOptions{}
 	launcherOptions := update.LauncherOptions{}
+	set.StringVar(&llamaOptions.Channel, "channel", "", "llama.cpp 更新通道 preview（默认）或 stable")
 	set.StringVar(&llamaOptions.Version, "llama-version", "", "llama.cpp 目标 tag")
 	set.StringVar(&launcherOptions.Version, "launcher-version", "", "启动器目标 SemVer")
 	set.StringVar(&llamaOptions.Backend, "backend", "", "运行时后端")
@@ -729,6 +769,9 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	// The public shared switches apply to both components.
 	llamaOptions.Reinstall, launcherOptions.Reinstall = *reinstall, *reinstall
 	llamaOptions.AllowDowngrade, launcherOptions.AllowDowngrade = *allowDowngrade, *allowDowngrade
+	if err := a.chooseLlamaChannel(&llamaOptions, *yes); err != nil {
+		return err
+	}
 	llamaPlan, llamaErr := a.Updates.PrepareLlama(ctx, llamaOptions)
 	if llamaErr != nil && !errors.Is(llamaErr, update.ErrAlreadyCurrent) {
 		return llamaErr
@@ -780,6 +823,56 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Out, "启动器 %s 已交给 llamaup；当前进程即将退出。\n", result.LauncherTag)
 		return ErrHandoff
 	}
+	return nil
+}
+
+func llamaChannelLabel(channel string) string {
+	if channel == release.ChannelStable {
+		return "正式版"
+	}
+	return "预览版"
+}
+
+func (a *App) chooseLlamaChannel(options *update.LlamaOptions, yes bool) error {
+	if options.Channel == "" && a.Interactive && !yes && (options.Version == "" || strings.EqualFold(options.Version, "latest")) {
+		reader, ok := a.In.(*bufio.Reader)
+		if !ok {
+			reader = bufio.NewReader(a.In)
+			a.In = reader
+		}
+		fmt.Fprintln(a.Out, "\nllama.cpp 更新通道\n  [1] 预览版（最新构建，默认）\n  [2] 正式版")
+		for {
+			fmt.Fprint(a.Out, "请选择通道 [1]（0/q 返回）: ")
+			line, err := reader.ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				return err
+			}
+			value := strings.ToLower(strings.TrimSpace(line))
+			if errors.Is(err, io.EOF) && value == "" {
+				return errCancelled
+			}
+			switch value {
+			case "", "1", "preview":
+				options.Channel = release.ChannelPreview
+			case "2", "stable":
+				options.Channel = release.ChannelStable
+			case "0", "q":
+				return errBack
+			default:
+				fmt.Fprintln(a.Err, "错误: 请选择 1 或 2。")
+				if errors.Is(err, io.EOF) {
+					return errCancelled
+				}
+				continue
+			}
+			break
+		}
+	}
+	channel, err := release.NormalizeLlamaChannel(options.Channel)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errSyntax, err)
+	}
+	options.Channel = channel
 	return nil
 }
 
@@ -835,7 +928,15 @@ func (a *App) printLlamaPlan(plan *update.LlamaPlan) {
 	if plan.CurrentExists && plan.Current.LlamaTag != "" {
 		current = plan.Current.LlamaTag + " / " + plan.Current.Backend
 	}
-	fmt.Fprintf(a.Out, "\nllama.cpp 更新计划\n  当前版本: %s\n  目标版本: %s\n  后端:     %s\n  安装目录: %s\n  下载大小: %s\n", current, plan.Release.Tag, plan.Backend.ID, plan.Target, humanBytes(plan.DownloadSize))
+	channel := llamaChannelLabel(plan.Options.Channel)
+	if plan.Options.Version != "" && !strings.EqualFold(plan.Options.Version, "latest") {
+		channel = "指定版本"
+	}
+	target := plan.Release.Tag
+	if plan.Release.ReleaseTag != "" {
+		target = plan.Release.ReleaseTag + "（构建 " + target + "）"
+	}
+	fmt.Fprintf(a.Out, "\nllama.cpp 更新计划\n  更新通道: %s\n  当前版本: %s\n  目标版本: %s\n  后端:     %s\n  安装目录: %s\n  下载大小: %s\n", channel, current, target, plan.Backend.ID, plan.Target, humanBytes(plan.DownloadSize))
 	if plan.NeedsRecovery {
 		fmt.Fprintf(a.Out, "  修复操作: 当前状态/运行时无效（%s）\n  恢复目录: %s\n", plan.RecoveryReason, plan.RecoveryDirectory)
 	}

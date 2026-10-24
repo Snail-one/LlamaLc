@@ -51,15 +51,19 @@ func newLlamaReleaseFixture(t *testing.T) (*Manager, *llamaReleaseFixture) {
 	base := "/repos/" + LlamaRepository + "/releases/"
 	f := &llamaReleaseFixture{
 		releases: map[string]release.GitHubRelease{
-			base + "latest":      {Tag: "v0.7.0"},
-			base + "tags/v0.7.0": {Tag: "v0.7.0"},
+			base + "latest":      {Tag: "v0.7.0", Assets: []release.Asset{fixtureAsset("nightly-tag.txt", []byte("b10332\n"))}},
+			base + "tags/v0.7.0": {Tag: "v0.7.0", Assets: []release.Asset{fixtureAsset("nightly-tag.txt", []byte("b10332\n"))}},
+			base + "tags/b10332": {Tag: "b10332", Prerelease: true, Assets: []release.Asset{
+				fixtureAsset("llama-b10332-bin-ubuntu-x64.tar.gz", []byte("x")),
+				fixtureAsset("llama-b10332-bin-win-x64.zip", []byte("x")),
+			}},
 			base + "tags/b10333": {Tag: "b10333", Prerelease: true, Assets: []release.Asset{
 				fixtureAsset("llama-b10333-bin-ubuntu-x64.tar.gz", []byte("x")),
 				fixtureAsset("llama-b10333-bin-win-x64.zip", []byte("x")),
 			}},
 			"/repos/" + LauncherRepository + "/releases/latest": {Tag: "v1.0.0"},
 		},
-		downloads: make(map[string][]byte),
+		downloads: map[string][]byte{"/nightly-tag.txt": []byte("b10332\n")},
 	}
 	l, err := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "linux")
 	if err != nil {
@@ -68,6 +72,95 @@ func newLlamaReleaseFixture(t *testing.T) (*Manager, *llamaReleaseFixture) {
 	m := NewManager(l, &release.Client{HTTP: &http.Client{Transport: f}})
 	m.GOOS, m.GOARCH = "linux", "amd64"
 	return m, f
+}
+
+func TestLlamaStableChannelAndExplicitSemanticVersion(t *testing.T) {
+	for _, platform := range []string{"linux", "windows"} {
+		for _, version := range []string{"", "v0.7.0", "b10332"} {
+			t.Run(platform+"/"+version, func(t *testing.T) {
+				m, _ := newLlamaReleaseFixture(t)
+				m.GOOS = platform
+				client := m.Source.(*release.Client)
+				client.Progress = func(release.DownloadEvent) { t.Error("metadata download emitted progress") }
+				plan, err := m.PrepareLlama(context.Background(), LlamaOptions{Channel: release.ChannelStable, Version: version, Backend: "cpu"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if plan.Release.Tag != "b10332" || plan.Options.Channel != release.ChannelStable || filepath.Base(plan.Target) != "b10332" {
+					t.Fatalf("plan=%+v", plan)
+				}
+				if version != "b10332" && plan.Release.ReleaseTag != "v0.7.0" {
+					t.Fatalf("semantic version lost: %+v", plan.Release)
+				}
+			})
+		}
+	}
+	m, _ := newLlamaReleaseFixture(t)
+	results, err := m.CheckWithChannel(context.Background(), "all", release.ChannelStable)
+	if err != nil || len(results) != 2 || results[0].Latest != "b10332" || results[0].Release != "v0.7.0" || results[0].Channel != release.ChannelStable || results[1].Latest != "v1.0.0" {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	tag, ids, _, err := m.AvailableLlamaBackendsWithChannel(context.Background(), release.ChannelStable)
+	if err != nil || tag != "b10332" || len(ids) != 1 || ids[0] != "cpu" {
+		t.Fatalf("tag=%s ids=%v err=%v", tag, ids, err)
+	}
+}
+
+func TestLlamaStableChannelRetainsDowngradeProtection(t *testing.T) {
+	m, _ := newLlamaReleaseFixture(t)
+	state := State{Schema: StateSchema, LlamaTag: "b10333", Backend: "cpu", ActiveRuntime: runtimeRelative("cpu", "b10333"), Assets: []InstalledAsset{{Name: "runtime.tar.gz", SHA256: strings.Repeat("a", 64)}}}
+	if err := SaveState(m.Layout, state); err != nil {
+		t.Fatal(err)
+	}
+	results, err := m.CheckWithChannel(context.Background(), "llama", release.ChannelStable)
+	if err != nil || len(results) != 1 || results[0].Available {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if _, err := m.PrepareLlama(context.Background(), LlamaOptions{Channel: release.ChannelStable}); err == nil || !strings.Contains(err.Error(), "降级") {
+		t.Fatalf("downgrade not rejected: %v", err)
+	}
+	if _, err := m.PrepareLlama(context.Background(), LlamaOptions{Channel: release.ChannelStable, AllowDowngrade: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLlamaStableRejectsInvalidReleasePointers(t *testing.T) {
+	for _, name := range []string{"missing", "oversize", "digest", "checksum", "malformed", "loop", "missing-build", "draft-build", "prerelease-release"} {
+		t.Run(name, func(t *testing.T) {
+			m, f := newLlamaReleaseFixture(t)
+			base := "/repos/" + LlamaRepository + "/releases/"
+			rel := f.releases[base+"latest"]
+			switch name {
+			case "missing":
+				rel.Assets = nil
+			case "oversize":
+				rel.Assets[0].Size = 129
+			case "digest":
+				rel.Assets[0].Digest = ""
+			case "checksum":
+				f.downloads["/nightly-tag.txt"] = []byte("b10333\n")
+			case "malformed", "loop":
+				data := []byte("../b10332\n")
+				if name == "loop" {
+					data = []byte("v0.7.0\n")
+				}
+				rel.Assets[0] = fixtureAsset("nightly-tag.txt", data)
+				f.downloads["/nightly-tag.txt"] = data
+			case "missing-build":
+				delete(f.releases, base+"tags/b10332")
+			case "draft-build":
+				build := f.releases[base+"tags/b10332"]
+				build.Draft = true
+				f.releases[base+"tags/b10332"] = build
+			case "prerelease-release":
+				rel.Prerelease = true
+			}
+			f.releases[base+"latest"] = rel
+			if _, err := m.CheckWithChannel(context.Background(), "llama", release.ChannelStable); err == nil {
+				t.Fatal("accepted invalid stable release")
+			}
+		})
+	}
 }
 
 func TestLlamaBuildPrereleaseInstallPlan(t *testing.T) {

@@ -87,6 +87,11 @@ func pathSnapshot(path string) (string, error) {
 }
 
 func (m *Manager) PrepareLlama(ctx context.Context, options LlamaOptions) (*LlamaPlan, error) {
+	channel, err := release.NormalizeLlamaChannel(options.Channel)
+	if err != nil {
+		return nil, err
+	}
+	options.Channel = channel
 	plan := &LlamaPlan{Options: options}
 	current, exists, stateErr := LoadState(m.Layout)
 	if stateErr != nil {
@@ -104,7 +109,7 @@ func (m *Manager) PrepareLlama(ctx context.Context, options LlamaOptions) (*Llam
 			}
 		}
 	}
-	rel, err := m.release(ctx, LlamaRepository, options.Version)
+	rel, err := m.llamaRelease(ctx, options.Version, options.Channel)
 	if err != nil {
 		return nil, err
 	}

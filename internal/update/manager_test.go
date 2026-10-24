@@ -165,6 +165,31 @@ func TestInstallLlamaBuildPrerelease(t *testing.T) {
 	}
 }
 
+func TestInstallLlamaStableSemanticRelease(t *testing.T) {
+	m, f := newLlamaReleaseFixture(t)
+	archive := runtimeArchive(t, "b10332")
+	asset := fixtureAsset("llama-b10332-bin-ubuntu-x64.tar.gz", archive)
+	f.releases["/repos/"+LlamaRepository+"/releases/tags/b10332"] = release.GitHubRelease{Tag: "b10332", Prerelease: true, Assets: []release.Asset{asset}}
+	f.downloads["/"+asset.Name] = archive
+	state, err := m.UpdateLlamaWithOptions(context.Background(), LlamaOptions{Channel: release.ChannelStable, Backend: "cpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LlamaTag != "b10332" || state.ActiveRuntime != runtimeRelative("cpu", "b10332") {
+		t.Fatalf("state=%+v", state)
+	}
+	if _, err := ValidateActiveRuntime(context.Background(), m.Layout, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.PrepareLlama(context.Background(), LlamaOptions{Version: "v0.7.0"}); !errors.Is(err, ErrAlreadyCurrent) {
+		t.Fatalf("same build via semantic tag: %v", err)
+	}
+	plan, err := m.PrepareLlama(context.Background(), LlamaOptions{})
+	if err != nil || plan.Release.Tag != "b10333" || plan.Options.Channel != release.ChannelPreview {
+		t.Fatalf("default preview plan=%+v err=%v", plan, err)
+	}
+}
+
 func launcherArchive(t *testing.T, tag string, extra bool) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

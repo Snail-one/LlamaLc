@@ -23,12 +23,14 @@ llamalc run api|embedding|rerank|router|chat
 llamalc router generate
 llamalc key show
 llamalc key reset [--yes]
-llamalc update check [all|llama|launcher] [--json]
+llamalc update check [all|llama|launcher] [--channel preview|stable] [--json]
 llamalc update llama|launcher|all [更新选项]
 llamalc cleanup
 llamalc version
 llamalc help
 ```
+
+llama.cpp 默认更新到预览版；使用 `update llama --channel stable` 可选择正式版，菜单中回车选择预览版。启动器始终使用正式版。
 
 运行参数按模式独立校验；透传给 llama.cpp 的参数必须放在 `--` 后。更新与密钥重置在交互终端要求确认，非交互调用必须给出 `--yes`。
 

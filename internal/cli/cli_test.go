@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -23,6 +24,19 @@ func (checkSource) Latest(_ context.Context, _ string) (release.GitHubRelease, e
 	return release.GitHubRelease{Tag: "b123"}, nil
 }
 func (checkSource) Download(context.Context, release.Asset, string) error { return nil }
+
+type channelCheckSource struct{ channel string }
+
+func (s *channelCheckSource) Latest(context.Context, string) (release.GitHubRelease, error) {
+	return release.GitHubRelease{}, errors.New("channel selection bypassed")
+}
+
+func (s *channelCheckSource) LatestLlama(_ context.Context, channel string) (release.GitHubRelease, error) {
+	s.channel = channel
+	return release.GitHubRelease{Tag: "b123", ReleaseTag: "v0.7.0"}, nil
+}
+
+func (*channelCheckSource) Download(context.Context, release.Asset, string) error { return nil }
 
 func TestUsageContainsOnlyPublicCommandTree(t *testing.T) {
 	var out, err bytes.Buffer
@@ -226,5 +240,74 @@ func TestUpdateCheckJSONAcceptsFlagAfterTarget(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %s in %s", want, output.String())
 		}
+	}
+}
+
+func TestUpdateCheckChannelsAndJSON(t *testing.T) {
+	for _, args := range [][]string{
+		{"update", "check", "llama", "--json"},
+		{"update", "check", "llama", "--channel", "stable", "--json"},
+		{"update", "check", "--channel=stable", "--json", "llama"},
+	} {
+		l, _ := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "linux")
+		source := &channelCheckSource{}
+		var output, stderr bytes.Buffer
+		app := App{Layout: l, Out: &output, Err: &stderr, Updates: update.NewManager(l, source)}
+		if code := app.Run(args); code != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, stderr.String())
+		}
+		var results []update.CheckResult
+		if err := json.Unmarshal(output.Bytes(), &results); err != nil {
+			t.Fatalf("invalid JSON output: %s: %v", output.String(), err)
+		}
+		want := release.ChannelStable
+		if len(args) == 4 {
+			want = release.ChannelPreview
+		}
+		if source.channel != want || len(results) != 1 || results[0].Channel != want {
+			t.Fatalf("channel=%q results=%+v", source.channel, results)
+		}
+	}
+}
+
+func TestUpdateRejectsInvalidChannels(t *testing.T) {
+	for _, args := range [][]string{
+		{"update", "check", "llama", "--channel", "invalid"},
+		{"update", "check", "llama", "--channel"},
+		{"update", "check", "llama", "--channel=stable", "--channel=preview"},
+		{"update", "check", "launcher", "--channel=stable"},
+		{"update", "llama", "--channel", "invalid", "--yes"},
+		{"update", "all", "--channel", "invalid", "--yes"},
+	} {
+		l, _ := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "linux")
+		var output, stderr bytes.Buffer
+		app := App{Layout: l, Out: &output, Err: &stderr, Updates: update.NewManager(l, &channelCheckSource{})}
+		if code := app.Run(args); code != 2 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, stderr.String())
+		}
+	}
+}
+
+func TestInteractiveChannelSelectionDefaultsToPreview(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{{"\n", release.ChannelPreview}, {"2\n", release.ChannelStable}, {"9\n1\n", release.ChannelPreview}} {
+		var output, stderr bytes.Buffer
+		app := App{Interactive: true, In: strings.NewReader(tc.input + "next\n"), Out: &output, Err: &stderr}
+		options := update.LlamaOptions{}
+		if err := app.chooseLlamaChannel(&options, false); err != nil || options.Channel != tc.want {
+			t.Fatalf("input=%q options=%+v err=%v", tc.input, options, err)
+		}
+		remaining, _ := io.ReadAll(app.In)
+		if string(remaining) != "next\n" {
+			t.Fatalf("lost buffered input: %q", remaining)
+		}
+	}
+	var output, stderr bytes.Buffer
+	app := App{Interactive: true, In: strings.NewReader("q\n"), Out: &output, Err: &stderr}
+	if err := app.chooseLlamaChannel(&update.LlamaOptions{}, false); !errors.Is(err, errBack) {
+		t.Fatalf("back=%v", err)
+	}
+	output.Reset()
+	if err := app.chooseLlamaChannel(&update.LlamaOptions{}, true); err != nil || output.Len() != 0 {
+		t.Fatalf("--yes prompted: %s err=%v", output.String(), err)
 	}
 }

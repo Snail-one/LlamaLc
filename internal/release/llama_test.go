@@ -26,6 +26,28 @@ func TestLatestLlamaUsesBuildListIncludingPrereleases(t *testing.T) {
 	}
 }
 
+func TestLlamaChannelValidationAndStableBuildRelease(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{{"", ChannelPreview}, {"preview", ChannelPreview}, {" stable ", ChannelStable}, {"PREVIEW", ChannelPreview}} {
+		got, err := NormalizeLlamaChannel(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("channel=%q got=%q err=%v", tc.input, got, err)
+		}
+	}
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/repos/"+LlamaRepository+"/releases/latest" {
+			t.Fatalf("unexpected stable URL: %s", req.URL)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"tag_name":"b12000"}`)), Request: req}, nil
+	})}}
+	if _, err := client.LatestLlama(context.Background(), "invalid"); err == nil {
+		t.Fatal("accepted invalid channel")
+	}
+	rel, err := client.LatestLlama(context.Background(), ChannelStable)
+	if err != nil || rel.Tag != "b12000" {
+		t.Fatalf("release=%+v err=%v", rel, err)
+	}
+}
+
 func TestLatestLlamaPaginatesAndBoundsSearch(t *testing.T) {
 	for _, found := range []bool{true, false} {
 		t.Run(fmt.Sprint(found), func(t *testing.T) {
