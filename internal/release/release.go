@@ -165,6 +165,9 @@ func (c *Client) doWithFallback(req, fallbackReq *http.Request, reportFallback f
 	return c.DirectHTTP.Do(fallbackReq.Clone(req.Context()))
 }
 func (c *Client) Latest(ctx context.Context, repo string) (GitHubRelease, error) {
+	if repo == LlamaRepository {
+		return c.latestLlamaBuild(ctx)
+	}
 	return c.fetchRelease(ctx, repo, "")
 }
 
@@ -182,9 +185,28 @@ func (c *Client) fetchRelease(ctx context.Context, repo, tag string) (GitHubRele
 	if tag != "" {
 		endpoint = "https://api.github.com/repos/" + repo + "/releases/tags/" + url.PathEscape(tag)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	data, err := c.fetchReleaseData(ctx, endpoint)
 	if err != nil {
 		return GitHubRelease{}, err
+	}
+	var r GitHubRelease
+	if err := decodeReleaseData(data, &r); err != nil {
+		return r, err
+	}
+	allowPrerelease := repo == LlamaRepository && llamaBuildTag.MatchString(r.Tag)
+	if err := validateRelease(r, allowPrerelease); err != nil {
+		return r, err
+	}
+	if tag != "" && r.Tag != tag {
+		return r, fmt.Errorf("GitHub Release tag 不匹配: 请求 %s，响应 %s", tag, r.Tag)
+	}
+	return r, nil
+}
+
+func (c *Client) fetchReleaseData(ctx context.Context, endpoint string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "LlamaLc")
@@ -193,56 +215,60 @@ func (c *Client) fetchRelease(ctx context.Context, repo, tag string) (GitHubRele
 	}
 	resp, err := c.do(req)
 	if err != nil {
-		return GitHubRelease{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			reset := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset"))
 			if reset != "" {
-				return GitHubRelease{}, fmt.Errorf("GitHub API 速率限制已用尽（重置时间戳 %s）；可设置 LLAMALC_GITHUB_TOKEN", reset)
+				return nil, fmt.Errorf("GitHub API 速率限制已用尽（重置时间戳 %s）；可设置 LLAMALC_GITHUB_TOKEN", reset)
 			}
-			return GitHubRelease{}, errors.New("GitHub API 速率限制已用尽；可设置 LLAMALC_GITHUB_TOKEN")
+			return nil, errors.New("GitHub API 速率限制已用尽；可设置 LLAMALC_GITHUB_TOKEN")
 		}
-		return GitHubRelease{}, fmt.Errorf("GitHub Release 请求失败: %s", resp.Status)
+		return nil, fmt.Errorf("GitHub Release 请求失败: %s", resp.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseResponse+1))
 	if err != nil {
-		return GitHubRelease{}, err
+		return nil, err
 	}
 	if int64(len(data)) > maxReleaseResponse {
-		return GitHubRelease{}, errors.New("GitHub Release 响应超过 4 MiB")
+		return nil, errors.New("GitHub Release 响应超过 4 MiB")
 	}
-	var r GitHubRelease
+	return data, nil
+}
+
+func decodeReleaseData(data []byte, destination any) error {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	if err = decoder.Decode(&r); err != nil {
-		return r, err
+	if err := decoder.Decode(destination); err != nil {
+		return err
 	}
 	var extra any
-	if err = decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return r, errors.New("GitHub Release 响应包含尾随 JSON")
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("GitHub Release 响应包含尾随 JSON")
 	}
+	return nil
+}
+
+func validateRelease(r GitHubRelease, allowPrerelease bool) error {
 	if r.Tag == "" {
-		return r, errors.New("GitHub Release 缺少 tag")
+		return errors.New("GitHub Release 缺少 tag")
 	}
-	if r.Draft || r.Prerelease {
-		return r, errors.New("拒绝使用 draft 或 prerelease Release")
-	}
-	if tag != "" && r.Tag != tag {
-		return r, fmt.Errorf("GitHub Release tag 不匹配: 请求 %s，响应 %s", tag, r.Tag)
+	if r.Draft || (r.Prerelease && !allowPrerelease) {
+		return errors.New("拒绝使用 draft 或 prerelease Release")
 	}
 	seenAssets := make(map[string]struct{}, len(r.Assets))
 	for _, asset := range r.Assets {
 		if filepath.Base(asset.Name) != asset.Name || asset.Name == "" {
-			return r, errors.New("GitHub Release 包含无效资产名")
+			return errors.New("GitHub Release 包含无效资产名")
 		}
 		key := strings.ToLower(asset.Name)
 		if _, exists := seenAssets[key]; exists {
-			return r, fmt.Errorf("GitHub Release 包含重复资产: %s", asset.Name)
+			return fmt.Errorf("GitHub Release 包含重复资产: %s", asset.Name)
 		}
 		seenAssets[key] = struct{}{}
 	}
-	return r, nil
+	return nil
 }
 func (c *Client) Download(ctx context.Context, a Asset, destination string) error {
 	if a.Size <= 0 || a.Size > maxAssetDownload {

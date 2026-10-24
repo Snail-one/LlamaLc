@@ -1,8 +1,10 @@
 # 更新、安全校验与恢复
 
-未指定版本时使用 latest，也可用 `--version` 或 `--llama-version/--launcher-version` 选择正式 Release。相同版本需要 `--reinstall`；降级需要 `--allow-downgrade`；`dev` 启动器允许更新到正式版本。首次安装或已保存后端不再可用时必须选择本平台后端，非交互错误会列出完整可用值。
+未指定版本时使用 latest，也可用 `--version` 或 `--llama-version/--launcher-version` 选择 Release。相同版本需要 `--reinstall`；降级需要 `--allow-downgrade`；`dev` 启动器允许更新到正式版本。首次安装或已保存后端不再可用时必须选择本平台后端，非交互错误会列出完整可用值。
 
-Release 响应有 4 MiB 上限，拒绝尾随 JSON、draft/prerelease、无效 tag 和重复资产。下载要求 HTTPS、有效大小与 GitHub SHA-256 digest。启动器额外与 `SHA256SUMS.txt` 交叉校验。系统代理、Windows PAC/WPAD 和 `LLAMALC_GITHUB_PROXY` URL 前缀均受支持；请求失败、异常状态或中途断开时会删除部分文件并只直连重试一次，显示信息会移除凭据、查询串和片段。
+llama.cpp 使用 Releases 列表 API，按返回顺序选择首个非 draft 的 `b<数字>` 构建，包括上游标记为 prerelease 的构建；最多检查 100 条。GitHub 的 `/releases/latest` 会排除 prerelease，可能返回 `v0.7.0` 等不含二进制包的语义版本，因此不用于 llama.cpp。指定版本同样使用 `b<数字>`，如 `--version b11840`。启动器继续使用 `/releases/latest` 并拒绝预发布版本。
+
+Release 响应有 4 MiB 上限，拒绝尾随 JSON、draft、无效 tag 和重复资产；只有 llama.cpp 的 `b<数字>` 构建允许 prerelease。下载要求 HTTPS、有效大小与 GitHub SHA-256 digest。启动器额外与 `SHA256SUMS.txt` 交叉校验。系统代理、Windows PAC/WPAD 和 `LLAMALC_GITHUB_PROXY` URL 前缀均受支持；请求失败、异常状态或中途断开时会删除部分文件并只直连重试一次，显示信息会移除凭据、查询串和片段。
 
 所有组合资产共享 20,000 条目和 8 GiB 解压预算。归档拒绝路径穿越、重复路径、绝对/`..` 符号链接、硬链接、特殊文件与不完整条目；允许解压根内的相对符号链接（llama.cpp 的 `.so` soname）。新运行时必须唯一包含 `llama-server` 和 `llama-cli`，并通过带超时、1 MiB 输出上限和目标 tag 签名的版本探测。启动器归档必须且只能包含 `LlamaLc/bin/llamalc[.exe]` 与 `llamaup[.exe]`；两个程序必须在精确 `Version:` 字段报告目标版本。
 

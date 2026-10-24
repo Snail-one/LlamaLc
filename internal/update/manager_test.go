@@ -140,6 +140,31 @@ func runtimeArchive(t *testing.T, tag string) []byte {
 	return buffer.Bytes()
 }
 
+func TestInstallLlamaBuildPrerelease(t *testing.T) {
+	m, f := newLlamaReleaseFixture(t)
+	archive := runtimeArchive(t, "b10333")
+	asset := fixtureAsset("llama-b10333-bin-ubuntu-x64.tar.gz", archive)
+	f.releases["/repos/"+LlamaRepository+"/releases/tags/b10333"] = release.GitHubRelease{Tag: "b10333", Prerelease: true, Assets: []release.Asset{asset}}
+	f.downloads["/"+asset.Name] = archive
+	state, err := m.UpdateLlamaWithOptions(context.Background(), LlamaOptions{Backend: "cpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LlamaTag != "b10333" || state.ActiveRuntime != runtimeRelative("cpu", "b10333") {
+		t.Fatalf("state=%+v", state)
+	}
+	if _, err := ValidateActiveRuntime(context.Background(), m.Layout, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	results, err := m.Check(context.Background(), "llama")
+	if err != nil || len(results) != 1 || results[0].Available || results[0].Installed != "b10333" {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if _, err := m.PrepareLlama(context.Background(), LlamaOptions{}); !errors.Is(err, ErrAlreadyCurrent) {
+		t.Fatalf("same build via latest: %v", err)
+	}
+}
+
 func launcherArchive(t *testing.T, tag string, extra bool) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

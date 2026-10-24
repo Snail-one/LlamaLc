@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	LlamaRepository    = "ggml-org/llama.cpp"
+	LlamaRepository    = release.LlamaRepository
 	LauncherRepository = "Snail-one/LlamaLc"
 )
 
