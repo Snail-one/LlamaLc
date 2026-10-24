@@ -5,6 +5,7 @@
 ```text
 LlamaLc/
 ├─ bin/llamalc[.exe], llamaup[.exe]
+│      .llamalc-update.json（仅未完成更新或待清理时存在）
 ├─ config/llamalc.json, router/models.ini
 ├─ secrets/api-key
 ├─ state/update.json, router/models.auto.ini

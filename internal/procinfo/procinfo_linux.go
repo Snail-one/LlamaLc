@@ -28,5 +28,8 @@ func platformIdentity(pid int) (string, bool, error) {
 	if len(fields) <= 19 || fields[19] == "" {
 		return "", false, fmt.Errorf("/proc/%d/stat 缺少进程启动身份", pid)
 	}
+	if fields[0] == "Z" || fields[0] == "X" {
+		return "", false, nil
+	}
 	return fields[19], true, nil
 }

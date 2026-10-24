@@ -433,3 +433,40 @@ func TestPendingCleanupWaitsForGlobalLockAndNeverDeletesActiveRuntime(t *testing
 		t.Fatal("active runtime was accepted as a cleanup target")
 	}
 }
+
+func TestPendingLauncherTransactionProtectsStagingAndBackups(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "LlamaLc")
+	l, _ := layout.New(root, "linux")
+	if err := os.MkdirAll(l.Bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	protected := []string{".llamalc-new-0123456789abcdef", ".llamaup-new-0123456789abcdef", ".llamalc-rollback-0123456789abcdef", ".llamaup-rollback-0123456789abcdef"}
+	for _, name := range append(protected, LauncherTransactionName) {
+		if err := os.WriteFile(filepath.Join(l.Bin, name), []byte("pending"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := CleanupCandidates(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warning := false
+	for _, c := range candidates {
+		if c.Path == filepath.Join(l.Bin, LauncherTransactionName) {
+			warning = c.Warning
+		}
+		for _, name := range protected {
+			if c.Path == filepath.Join(l.Bin, name) {
+				t.Fatalf("protected file offered for cleanup: %+v", c)
+			}
+		}
+	}
+	if !warning {
+		t.Fatal("missing pending transaction warning")
+	}
+	for _, name := range protected {
+		if _, err := os.Stat(filepath.Join(l.Bin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

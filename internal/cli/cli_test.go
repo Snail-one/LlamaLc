@@ -311,3 +311,35 @@ func TestInteractiveChannelSelectionDefaultsToPreview(t *testing.T) {
 		t.Fatalf("--yes prompted: %s err=%v", output.String(), err)
 	}
 }
+
+func TestLauncherUpdateDelegatesOptionsAndPreservesOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		result                     CommandOutcome
+		wantHandoff, wantCancelled bool
+	}{
+		{"install", CommandOutcome{Handoff: true}, true, false},
+		{"cancel", CommandOutcome{Cancelled: true}, false, true},
+		{"current", CommandOutcome{Success: true}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, _ := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "linux")
+			var out, stderr bytes.Buffer
+			// A self-update must never consult this llama-only release source.
+			source := &channelCheckSource{}
+			app := App{Layout: l, Out: &out, Err: &stderr, Updates: update.NewManager(l, source)}
+			called := false
+			app.LauncherUpdate = func(_ context.Context, options update.LauncherOptions, yes bool) (CommandOutcome, error) {
+				called = true
+				if options.Version != "v2.0.0" || !options.Reinstall || !options.AllowDowngrade || !yes {
+					t.Fatalf("options=%+v yes=%v", options, yes)
+				}
+				return tc.result, nil
+			}
+			result := app.RunWithResult([]string{"update", "launcher", "--version", "v2.0.0", "--reinstall", "--allow-downgrade", "--yes"})
+			if !called || result.Code != 0 || result.Handoff != tc.wantHandoff || result.Cancelled != tc.wantCancelled {
+				t.Fatalf("called=%v result=%+v stderr=%s", called, result, &stderr)
+			}
+		})
+	}
+}

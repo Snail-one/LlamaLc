@@ -34,6 +34,8 @@ type App struct {
 	Updates     *update.Manager
 	GOOS        string
 	Interactive bool
+	// LauncherUpdate delegates the entire self-update to the independent updater.
+	LauncherUpdate func(context.Context, update.LauncherOptions, bool) (CommandOutcome, error)
 	// PreparedRuntime is populated by the launcher after a read-only preflight
 	// so direct CLI runs cannot create configuration before runtime validation.
 	PreparedRuntime *update.ActiveRuntime
@@ -728,24 +730,24 @@ func (a *App) updateLauncher(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("%w: %v", errSyntax, err)
 	}
-	plan, err := a.Updates.PrepareLauncherPlan(ctx, options)
-	if errors.Is(err, update.ErrAlreadyCurrent) {
-		fmt.Fprintln(a.Out, "启动器已是最新版本。")
-		return nil
+	return a.delegateLauncherUpdate(ctx, options, *yes)
+}
+
+func (a *App) delegateLauncherUpdate(ctx context.Context, options update.LauncherOptions, yes bool) error {
+	if a.LauncherUpdate == nil {
+		return errors.New("独立更新器未初始化")
 	}
+	outcome, err := a.LauncherUpdate(ctx, options, yes)
 	if err != nil {
 		return err
 	}
-	a.printLauncherPlan(plan)
-	if err := a.confirmDestructive("执行以上启动器更新计划并自动重启，是否继续", *yes); err != nil {
-		return err
+	if outcome.Handoff {
+		return ErrHandoff
 	}
-	tag, err := a.Updates.ApplyLauncher(ctx, plan)
-	if err != nil {
-		return err
+	if outcome.Cancelled {
+		return errCancelled
 	}
-	fmt.Fprintf(a.Out, "启动器 %s 已交给 llamaup；当前进程即将退出。\n", tag)
-	return ErrHandoff
+	return nil
 }
 
 func (a *App) updateAll(ctx context.Context, args []string) error {
@@ -776,10 +778,6 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	if llamaErr != nil && !errors.Is(llamaErr, update.ErrAlreadyCurrent) {
 		return llamaErr
 	}
-	launcherPlan, launcherErr := a.Updates.PrepareLauncherPlan(ctx, launcherOptions)
-	if launcherErr != nil && !errors.Is(launcherErr, update.ErrAlreadyCurrent) {
-		return launcherErr
-	}
 	if llamaPlan != nil && llamaPlan.NeedsBackend {
 		backend, selectErr := a.chooseLlamaBackend(llamaPlan)
 		if selectErr != nil {
@@ -794,18 +792,12 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	} else {
 		fmt.Fprintln(a.Out, "llama.cpp: 已是当前版本")
 	}
-	if launcherPlan != nil {
-		a.printLauncherPlan(launcherPlan)
-	} else {
-		fmt.Fprintln(a.Out, "启动器: 已是当前版本")
+	if llamaPlan != nil {
+		if err := a.confirmDestructive("执行以上 llama.cpp 更新计划，完成后由独立更新器检查启动器，是否继续", *yes); err != nil {
+			return err
+		}
 	}
-	if llamaPlan == nil && launcherPlan == nil {
-		return nil
-	}
-	if err := a.confirmDestructive("执行以上全部更新计划，是否继续", *yes); err != nil {
-		return err
-	}
-	result, err := a.Updates.ApplyAll(ctx, &update.AllPlan{Llama: llamaPlan, Launcher: launcherPlan})
+	result, err := a.Updates.ApplyAll(ctx, &update.AllPlan{Llama: llamaPlan})
 	if result.LlamaApplied {
 		fmt.Fprintf(a.Out, "llama.cpp %s (%s) 已安装到 %s\n", result.Llama.LlamaTag, result.Llama.Backend, update.RuntimePath(a.Layout, result.Llama))
 		active, validateErr := update.ValidateActiveRuntime(ctx, a.Layout, a.goos())
@@ -819,11 +811,7 @@ func (a *App) updateAll(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if result.Handoff {
-		fmt.Fprintf(a.Out, "启动器 %s 已交给 llamaup；当前进程即将退出。\n", result.LauncherTag)
-		return ErrHandoff
-	}
-	return nil
+	return a.delegateLauncherUpdate(ctx, launcherOptions, *yes)
 }
 
 func llamaChannelLabel(channel string) string {
@@ -943,10 +931,6 @@ func (a *App) printLlamaPlan(plan *update.LlamaPlan) {
 	if plan.NeedsRecovery {
 		fmt.Fprintf(a.Out, "  修复操作: 当前状态/运行时无效（%s）\n  恢复目录: %s\n", plan.RecoveryReason, plan.RecoveryDirectory)
 	}
-}
-
-func (a *App) printLauncherPlan(plan *update.LauncherPlan) {
-	fmt.Fprintf(a.Out, "\n启动器更新计划\n  当前版本: %s\n  目标版本: %s\n  安装目录: %s\n  下载大小: %s\n", plan.CurrentVersion, plan.Release.Tag, plan.InstallDir, humanBytes(plan.DownloadSize))
 }
 
 func (a *App) confirmDestructive(prompt string, yes bool) error {

@@ -43,31 +43,31 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, buildversion.String())
 		return 0
 	}
-	if len(args) == 0 {
-		fmt.Fprintln(stdout, `llamaup 是 LlamaLc 的内部更新组件，不能单独执行更新。
-请启动 llamalc（Windows 为 llamalc.exe），然后选择 [3] 升级维护 -> [2] 更新启动器。`)
-		if runtime.GOOS == "windows" && stdin != nil {
-			fmt.Fprint(stdout, "\n按 Enter 关闭...")
-			_, _ = bufio.NewReader(stdin).ReadString('\n')
-		}
-		return 2
+	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+		printUsage(stdout)
+		return 0
 	}
-	if args[0] != "apply-update" {
-		printUsage(stderr)
-		return 2
+	if len(args) == 0 || (args[0] != "apply-update" && args[0] != "apply-recovery") {
+		return runWorkflow(args, stdin, stdout, stderr)
 	}
 
-	set := flag.NewFlagSet("apply-update", flag.ContinueOnError)
+	recovering := args[0] == "apply-recovery"
+	set := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	set.SetOutput(stderr)
 	launcherSourceName := set.String("launcher-source-name", "", "bin 目录中的暂存启动器文件名")
 	updaterSourceName := set.String("updater-source-name", "", "bin 目录中的暂存更新器文件名")
 	releaseVersion := set.String("release-version", "", "目标 Release 版本")
 	parentPID := set.Int("wait-parent-pid", 0, "退出前需要等待的 launcher PID")
+	parentIdentity := set.String("wait-parent-identity", "", "下载更新器进程启动身份")
+	launcherDigest := set.String("launcher-sha256", "", "暂存启动器摘要")
+	updaterDigest := set.String("updater-sha256", "", "暂存更新器摘要")
+	launcherPID := set.Int("wait-launcher-pid", 0, "原主程序 PID")
+	launcherIdentity := set.String("wait-launcher-identity", "", "原主程序启动身份")
 	lockToken := set.String("lock-token", "", "启动器交接锁 token")
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if set.NArg() != 0 || *launcherSourceName == "" || *updaterSourceName == "" || *releaseVersion == "" || *parentPID <= 0 || len(*lockToken) != 16 || !lowerHex(*lockToken) {
+	if set.NArg() != 0 || (!recovering && (*launcherSourceName == "" || *updaterSourceName == "" || *releaseVersion == "")) || *parentPID <= 0 || len(*lockToken) != 16 || !lowerHex(*lockToken) {
 		printUsage(stderr)
 		return 2
 	}
@@ -76,18 +76,21 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
-	if err := validateReleaseVersion(*releaseVersion); err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
+	if !recovering {
+		if err := validateReleaseVersion(*releaseVersion); err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
+		if err := validateStagedName(*launcherSourceName, stagedLauncherPrefix, "启动器", runtime.GOOS); err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
+		if err := validateStagedName(*updaterSourceName, stagedUpdaterPrefix, "更新器", runtime.GOOS); err != nil {
+			fmt.Fprintln(stderr, "错误:", err)
+			return 1
+		}
 	}
-	if err := validateStagedName(*launcherSourceName, stagedLauncherPrefix, "启动器", runtime.GOOS); err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
-	}
-	if err := validateStagedName(*updaterSourceName, stagedUpdaterPrefix, "更新器", runtime.GOOS); err != nil {
-		fmt.Fprintln(stderr, "错误:", err)
-		return 1
-	}
+
 	lockDirectory, err := validateUpdateLock(root, *lockToken, *parentPID)
 	if err != nil {
 		fmt.Fprintln(stderr, "错误: 启动器更新锁无效:", err)
@@ -97,16 +100,64 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "错误: 无法接管启动器更新锁:", err)
 		return 1
 	}
+	if err := acknowledgeHandoff(root, lockDirectory, *lockToken); err != nil {
+		fmt.Fprintln(stderr, "错误: 无法确认接管更新任务:", err)
+		return 1
+	}
 	defer os.RemoveAll(lockDirectory)
 	stopHeartbeat := startUpdateLockHeartbeat(lockDirectory)
 	defer stopHeartbeat()
-	if err := waitForParent(*parentPID); err != nil {
+	waitParent := func() error {
+		if *parentIdentity != "" {
+			return waitForLauncherExit(*parentPID, *parentIdentity)
+		}
+		return waitForParent(*parentPID)
+	}
+	if err := waitParent(); err != nil {
 		return handoffFailure(stdin, stderr, "等待启动器退出失败", err)
 	}
-	if err := applyUpdate(root, runtime.GOOS, *launcherSourceName, *updaterSourceName); err != nil {
-		return handoffFailure(stdin, stderr, "无法应用更新", err)
+	if *launcherPID > 0 {
+		if err := waitForLauncherExit(*launcherPID, *launcherIdentity); err != nil {
+			return handoffFailure(stdin, stderr, "等待原主程序退出失败", err)
+		}
 	}
-	return finishUpdate(root, runtime.GOOS, *releaseVersion, stdin, stdout, stderr)
+	if recovering {
+		if err := recoverTransaction(root, runtime.GOOS); err != nil {
+			return handoffFailure(stdin, stderr, "恢复更新失败，备份已保留", err)
+		}
+		fmt.Fprintln(stdout, "中断的更新已恢复，正在启动主程序。")
+		if err := startRestoredLauncher(root, stdout, stderr); err != nil {
+			return handoffFailure(stdin, stderr, "恢复完成但主程序启动失败", err)
+		}
+		return 0
+	}
+	for _, entry := range [][2]string{{*launcherSourceName, *launcherDigest}, {*updaterSourceName, *updaterDigest}} {
+		// Empty digests retain the previous release's internal handoff protocol.
+		if entry[1] == "" {
+			continue
+		}
+		digest, err := fileDigest(filepath.Join(root, "bin", entry[0]))
+		if err != nil || !validDigest(entry[1]) || digest != entry[1] {
+			return handoffFailure(stdin, stderr, "暂存程序摘要不匹配，原程序未替换", errors.New(entry[0]))
+		}
+	}
+	started := false
+	if err := applyUpdateWithValidation(root, runtime.GOOS, *launcherSourceName, *updaterSourceName, func() error {
+		fmt.Fprintln(stdout, "文件替换完成，正在启动新版并等待就绪……")
+		err := launchUpdatedLauncher(root, *releaseVersion, stdout, stderr)
+		started = err == nil
+		return err
+	}); err != nil {
+		fmt.Fprintln(stderr, "错误: 更新未完成:", err)
+		if !started && !transactionPending(root) {
+			if restartErr := startRestoredLauncher(root, stdout, stderr); restartErr != nil {
+				fmt.Fprintln(stderr, "错误: 无法自动启动原版本，请手动启动 llamalc:", restartErr)
+			}
+		}
+		return 1
+	}
+	fmt.Fprintf(stdout, "更新完成：启动器和更新器 %s，新版已就绪。\n", *releaseVersion)
+	return 0
 }
 
 func startUpdateLockHeartbeat(directory string) func() {
@@ -142,43 +193,8 @@ func handoffFailure(stdin io.Reader, stderr io.Writer, label string, err error) 
 	return 1
 }
 
-func finishUpdate(root, goos, releaseVersion string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if goos == "windows" {
-		fmt.Fprintf(stdout, `
-更新完成
-  启动器: %s
-  更新器: %s
-  状态: 文件替换成功
-  下一步: 正在自动启动新版本
-`, releaseVersion, releaseVersion)
-		if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
-			fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 llamalc:", err)
-			fmt.Fprintln(stderr, "请手动启动 bin\\llamalc.exe。")
-			if stdin != nil {
-				fmt.Fprint(stderr, "\n按 Enter 关闭...")
-				_, _ = bufio.NewReader(stdin).ReadString('\n')
-			}
-			return 1
-		}
-		return 0
-	}
-
-	fmt.Fprintf(stdout, `
-更新完成
-  启动器: %s
-  更新器: %s
-  状态: 文件替换成功
-  下一步: 正在自动启动新版本
-`, releaseVersion, releaseVersion)
-	if err := launchUpdatedLauncher(root, releaseVersion, stdout, stderr); err != nil {
-		fmt.Fprintln(stderr, "错误: 文件已更新，但无法自动启动新版 llamalc:", err)
-		return 1
-	}
-	return 0
-}
-
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "用法: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid> --lock-token <16位hex>")
+	fmt.Fprintln(w, "用法: llamaup [update] [--version TAG] [--reinstall] [--allow-downgrade] [--yes]\n      llamaup check [--json]\n      llamaup recover [--yes]\n内部交接: llamaup apply-update --launcher-source-name <文件名> --updater-source-name <文件名> --release-version <tag> --wait-parent-pid <pid> --lock-token <16位hex>")
 }
 
 func validateUpdateLock(root, token string, parentPID int) (string, error) {
@@ -257,6 +273,21 @@ func claimUpdateLock(root, directory, token string) error {
 		return err
 	}
 	return managedfs.AtomicWrite(root, filepath.Join(directory, lockOwnerName), append(data, '\n'), 0o600)
+}
+
+func acknowledgeHandoff(root, directory, token string) error {
+	identity, alive, err := procinfo.Identity(os.Getpid())
+	if err != nil {
+		return err
+	}
+	if !alive {
+		return errors.New("更新器已退出")
+	}
+	data, err := json.Marshal(updateLockOwner{Schema: 1, Token: token, Kind: "launcher-install-lock", PID: os.Getpid(), Identity: identity})
+	if err != nil {
+		return err
+	}
+	return managedfs.AtomicWrite(root, filepath.Join(directory, ".llamalc-handoff-ready.json"), append(data, '\n'), 0o600)
 }
 
 func readUpdateLockOwner(directory string) (updateLockOwner, bool, error) {
@@ -364,6 +395,10 @@ func lowerHex(value string) bool {
 }
 
 func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error {
+	return applyUpdateWithValidation(root, goos, launcherSourceName, updaterSourceName, nil)
+}
+
+func applyUpdateWithValidation(root, goos, launcherSourceName, updaterSourceName string, verify func() error) error {
 	if err := validateStagedName(launcherSourceName, stagedLauncherPrefix, "启动器", goos); err != nil {
 		return err
 	}
@@ -392,6 +427,10 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 		{"当前更新器", updaterTarget},
 	} {
 		info, err := stableUpdaterFileInfo(item.path)
+		if errors.Is(err, os.ErrNotExist) && item.path == launcherTarget {
+			identities[item.path] = nil
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("无法检查%s %s: %w", item.label, item.path, err)
 		}
@@ -400,73 +439,7 @@ func applyUpdate(root, goos, launcherSourceName, updaterSourceName string) error
 		}
 		identities[item.path] = info
 	}
-	return replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget, identities)
-}
-
-func replaceUpdateFiles(bin, updaterSource, updaterTarget, launcherSource, launcherTarget string, identities map[string]os.FileInfo) error {
-	updaterBackup, err := copyUpdateBackup(updaterTarget, identities[updaterTarget])
-	if err != nil {
-		return fmt.Errorf("备份当前更新器: %w", err)
-	}
-	removeUpdaterBackup := true
-	defer func() {
-		if removeUpdaterBackup {
-			_ = os.Remove(updaterBackup)
-		}
-	}()
-
-	launcherBackup, err := copyUpdateBackup(launcherTarget, identities[launcherTarget])
-	if err != nil {
-		return fmt.Errorf("备份当前启动器: %w", err)
-	}
-	removeLauncherBackup := true
-	defer func() {
-		if removeLauncherBackup {
-			_ = os.Remove(launcherBackup)
-		}
-	}()
-
-	for _, path := range []string{updaterSource, updaterTarget, launcherSource, launcherTarget} {
-		if err := verifyUpdaterFileIdentity(path, identities[path]); err != nil {
-			return err
-		}
-	}
-	if err := updateReplaceFile(updaterSource, updaterTarget); err != nil {
-		return fmt.Errorf("替换更新器: %w", err)
-	}
-	for _, path := range []string{launcherSource, launcherTarget} {
-		if err := verifyUpdaterFileIdentity(path, identities[path]); err != nil {
-			rollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
-			if rollbackErr != nil {
-				removeUpdaterBackup = false
-				return fmt.Errorf("%w；同时无法恢复原更新器，备份保留在 %s: %v", err, updaterBackup, rollbackErr)
-			}
-			return fmt.Errorf("%w；已恢复原更新器", err)
-		}
-	}
-	if err := updateReplaceFile(launcherSource, launcherTarget); err != nil {
-		rollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
-		if rollbackErr != nil {
-			removeUpdaterBackup = false
-			return fmt.Errorf("替换启动器: %w；同时无法恢复原更新器，备份保留在 %s: %v", err, updaterBackup, rollbackErr)
-		}
-		return fmt.Errorf("替换启动器: %w；已恢复原更新器", err)
-	}
-	if err := syncDirectory(bin); err != nil {
-		launcherRollbackErr := updateReplaceFile(launcherBackup, launcherTarget)
-		if launcherRollbackErr != nil {
-			removeLauncherBackup = false
-		}
-		updaterRollbackErr := updateReplaceFile(updaterBackup, updaterTarget)
-		if updaterRollbackErr != nil {
-			removeUpdaterBackup = false
-		}
-		if launcherRollbackErr != nil || updaterRollbackErr != nil {
-			return fmt.Errorf("同步更新目录失败: %w；回滚也未完整成功（launcher: %v，updater: %v）", err, launcherRollbackErr, updaterRollbackErr)
-		}
-		return fmt.Errorf("同步更新目录失败: %w；已恢复原启动器和更新器", err)
-	}
-	return nil
+	return installTransaction(bin, updaterSource, updaterTarget, launcherSource, launcherTarget, identities, verify)
 }
 
 func stableUpdaterFileInfo(path string) (os.FileInfo, error) {

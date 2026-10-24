@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	LlamaRepository    = release.LlamaRepository
-	LauncherRepository = "Snail-one/LlamaLc"
+	LlamaRepository         = release.LlamaRepository
+	LauncherRepository      = "Snail-one/LlamaLc"
+	LauncherTransactionName = ".llamalc-update.json"
 )
 
 var ErrAlreadyCurrent = errors.New("已是最新版本")
@@ -65,10 +66,12 @@ type LauncherOptions struct {
 	AllowDowngrade bool
 }
 type Manager struct {
-	Layout       layout.Layout
-	Source       Source
-	GOOS, GOARCH string
-	Out, Err     io.Writer
+	Layout                 layout.Layout
+	Source                 Source
+	GOOS, GOARCH           string
+	Out, Err               io.Writer
+	LauncherParentPID      int
+	LauncherParentIdentity string
 }
 type CheckResult struct {
 	Component string `json:"component"`
@@ -165,6 +168,9 @@ func (m *Manager) CheckWithChannel(ctx context.Context, target, channel string) 
 	if err != nil {
 		return nil, err
 	}
+	if target == "launcher" {
+		return m.CheckLauncher(ctx)
+	}
 	var out []CheckResult
 	s, _, err := LoadState(m.Layout)
 	if err != nil {
@@ -193,23 +199,33 @@ func (m *Manager) CheckWithChannel(ctx context.Context, target, channel string) 
 		out = append(out, CheckResult{Component: "llama", Installed: s.LlamaTag, Latest: r.Tag, Available: available, Channel: channel, Release: r.ReleaseTag})
 	}
 	if target == "all" || target == "launcher" {
-		r, err := m.Source.Latest(ctx, LauncherRepository)
+		launcher, err := m.CheckLauncher(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := CompareSemVer(r.Tag, r.Tag); err != nil {
-			return nil, fmt.Errorf("最新启动器版本无效: %w", err)
-		}
-		available := strings.EqualFold(strings.TrimSpace(buildversion.Version), "dev")
-		if !available {
-			cmp, e := CompareSemVer(buildversion.Version, r.Tag)
-			if e != nil {
-				return nil, fmt.Errorf("当前启动器版本 %q 不是发布 SemVer: %w", buildversion.Version, e)
-			}
-			available = cmp < 0
-		}
-		out = append(out, CheckResult{Component: "launcher", Installed: buildversion.Version, Latest: r.Tag, Available: available})
+		out = append(out, launcher...)
 	}
+	return out, nil
+}
+
+// CheckLauncher is independent of runtime state so it remains usable for repairs.
+func (m *Manager) CheckLauncher(ctx context.Context) ([]CheckResult, error) {
+	r, err := m.Source.Latest(ctx, LauncherRepository)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := CompareSemVer(r.Tag, r.Tag); err != nil {
+		return nil, fmt.Errorf("最新启动器版本无效: %w", err)
+	}
+	available := strings.EqualFold(strings.TrimSpace(buildversion.Version), "dev")
+	if !available {
+		cmp, e := CompareSemVer(buildversion.Version, r.Tag)
+		if e != nil {
+			return nil, fmt.Errorf("当前启动器版本 %q 不是发布 SemVer: %w", buildversion.Version, e)
+		}
+		available = cmp < 0
+	}
+	out := []CheckResult{{Component: "launcher", Installed: buildversion.Version, Latest: r.Tag, Available: available}}
 	return out, nil
 }
 
@@ -979,7 +995,10 @@ func reclaimDeadOwnedLock(l layout.Layout, directory, prefix, kind string) (recl
 }
 
 func readLockOwner(directory, token, kind string) (lockOwner, bool) {
-	path := filepath.Join(directory, lockOwnerName)
+	return readLockOwnerAt(filepath.Join(directory, lockOwnerName), token, kind)
+}
+
+func readLockOwnerAt(path, token, kind string) (lockOwner, bool) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4096 {
 		return lockOwner{}, false
@@ -1133,6 +1152,9 @@ func (m *Manager) StartLauncherUpdateWithOptions(ctx context.Context, options La
 }
 
 func (m *Manager) ApplyLauncher(ctx context.Context, plan *LauncherPlan) (string, error) {
+	if _, err := os.Lstat(filepath.Join(m.Layout.Bin, LauncherTransactionName)); !errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("存在未完成的更新，请先退出主程序并运行 llamaup recover")
+	}
 	if err := m.verifyLauncherPlan(plan); err != nil {
 		return "", err
 	}
@@ -1177,36 +1199,122 @@ func (m *Manager) ApplyLauncher(ctx context.Context, plan *LauncherPlan) (string
 		_ = os.Remove(launcherStage)
 		return "", err
 	}
+	launcherDigest, err := stagedProgramDigest(launcherStage)
+	if err != nil {
+		return "", err
+	}
+	updaterDigest, err := stagedProgramDigest(updaterStage)
+	if err != nil {
+		return "", err
+	}
 	args := []string{"apply-update", "--launcher-source-name", launcherName, "--updater-source-name", updaterName, "--release-version", tag, "--wait-parent-pid", strconv.Itoa(os.Getpid()), "--lock-token", launcherLockToken}
-	runnerName := ".llamaup-run-" + token + ext
-	runner := filepath.Join(m.Layout.Bin, runnerName)
-	if err = managedfs.CopyFile(m.Layout.Root, newUpdater, runner, 0o755); err != nil {
+	args = append(args, "--launcher-sha256", launcherDigest, "--updater-sha256", updaterDigest)
+	if m.LauncherParentPID > 0 {
+		args = append(args, "--wait-launcher-pid", strconv.Itoa(m.LauncherParentPID), "--wait-launcher-identity", m.LauncherParentIdentity)
+	}
+	if err := m.launchInstaller(launcherLock, launcherLockToken, args); err != nil {
 		_ = os.Remove(launcherStage)
 		_ = os.Remove(updaterStage)
 		return "", err
 	}
-	cmd := exec.Command(runner, args...)
-	cmd.Dir = m.Layout.Root
-	cmd.Stdin = nil
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err = cmd.Start(); err != nil {
-		_ = os.Remove(launcherStage)
-		_ = os.Remove(updaterStage)
-		_ = os.Remove(runner)
-		return "", err
-	}
-	if err = setOwnedLockOwner(m.Layout, launcherLock, launcherLockToken, "launcher-install-lock", cmd.Process.Pid); err != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		_ = os.Remove(launcherStage)
-		_ = os.Remove(updaterStage)
-		_ = os.Remove(runner)
-		return "", fmt.Errorf("交接启动器更新锁: %w", err)
-	}
-	_ = cmd.Process.Release()
 	lockHandedOff = true
 	return tag, nil
+}
+
+// StartLauncherRecovery hands interrupted installation recovery to a temporary
+// updater, allowing the installed updater itself to be restored on Windows.
+func (m *Manager) StartLauncherRecovery(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := managedfs.EnsureDir(m.Layout.Root, m.Layout.RuntimeDir, 0o700); err != nil {
+		return err
+	}
+	lock, token, err := acquireLauncherInstallLock(m.Layout)
+	if err != nil {
+		return err
+	}
+	args := []string{"apply-recovery", "--wait-parent-pid", strconv.Itoa(os.Getpid()), "--lock-token", token}
+	if m.LauncherParentPID > 0 {
+		args = append(args, "--wait-launcher-pid", strconv.Itoa(m.LauncherParentPID), "--wait-launcher-identity", m.LauncherParentIdentity)
+	}
+	if err := m.launchInstaller(lock, token, args); err != nil {
+		_ = os.RemoveAll(lock)
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) launchInstaller(lock, lockToken string, args []string) error {
+	identity, alive, err := procinfo.Identity(os.Getpid())
+	if err != nil {
+		return err
+	}
+	if !alive || identity == "" {
+		return errors.New("无法确认下载更新器进程身份")
+	}
+	args = append(args, "--wait-parent-identity", identity)
+	ext := ""
+	if m.GOOS == "windows" {
+		ext = ".exe"
+	}
+	runner := filepath.Join(m.Layout.Bin, ".llamaup-run-"+randomToken()+ext)
+	if err := managedfs.CopyFile(m.Layout.Root, m.Layout.Updater, runner, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command(runner, args...)
+	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = m.Layout.Root, os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(runner)
+		return err
+	}
+	if err := setOwnedLockOwner(m.Layout, lock, lockToken, "launcher-install-lock", cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		_ = os.Remove(runner)
+		return fmt.Errorf("交接启动器更新锁: %w", err)
+	}
+	if err := waitInstallerReady(lock, lockToken, cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		_ = os.Remove(runner)
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
+func stagedProgramDigest(path string) (string, error) {
+	snapshot, err := pathSnapshot(path)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Split(snapshot, ":")
+	if len(fields) != 4 || fields[0] != "file" {
+		return "", errors.New("暂存程序不是普通文件")
+	}
+	return fields[1], nil
+}
+
+func waitInstallerReady(lock, token string, pid int) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		owner, valid := readLockOwnerAt(filepath.Join(lock, ".llamalc-handoff-ready.json"), token, "launcher-install-lock")
+		identity, alive, err := procinfo.Identity(pid)
+		if err != nil {
+			return err
+		}
+		if !alive {
+			return errors.New("安装更新器在接管任务前退出，主程序保留运行")
+		}
+		if valid && owner.PID == pid && owner.Identity == identity {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("安装更新器未确认接管任务，主程序保留运行")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func (m *Manager) ApplyLauncherUpdate(ctx context.Context, plan *LauncherPlan) (string, error) {

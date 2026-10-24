@@ -53,18 +53,61 @@ func startUpdatedLauncher(root, releaseVersion string, _, _ io.Writer) error {
 	}
 	defer restoreEvent()
 
+	processInfo, err := createLauncherProcess(root)
+	if err != nil {
+		return err
+	}
+	_ = syscall.CloseHandle(processInfo.Thread)
+	defer syscall.CloseHandle(processInfo.Process)
+
+	if err := waitForLauncherReady(eventHandle, processInfo.Process); err != nil {
+		if stopErr := syscall.TerminateProcess(processInfo.Process, 1); stopErr != nil {
+			status, waitErr := syscall.WaitForSingleObject(processInfo.Process, 0)
+			if waitErr != nil || status != waitObject0 {
+				return &launcherStillRunningError{fmt.Errorf("%w；无法停止未就绪的新版进程: %v", err, stopErr)}
+			}
+		}
+		status, waitErr := syscall.WaitForSingleObject(processInfo.Process, 10_000)
+		if waitErr != nil || status != waitObject0 {
+			return &launcherStillRunningError{fmt.Errorf("%w；无法确认新版进程退出: %v", err, waitErr)}
+		}
+		return err
+	}
+	return nil
+}
+
+func startRestoredLauncher(root string, _, _ io.Writer) error {
+	restoreVersion, err := setTemporaryEnvironment(updatedVersionEnvironment, "")
+	if err != nil {
+		return err
+	}
+	defer restoreVersion()
+	restoreEvent, err := setTemporaryEnvironment(updateReadyEnvironment, "")
+	if err != nil {
+		return err
+	}
+	defer restoreEvent()
+	processInfo, err := createLauncherProcess(root)
+	if err != nil {
+		return err
+	}
+	_ = syscall.CloseHandle(processInfo.Thread)
+	return syscall.CloseHandle(processInfo.Process)
+}
+
+func createLauncherProcess(root string) (*syscall.ProcessInformation, error) {
 	launcher := filepath.Join(root, "bin", "llamalc.exe")
 	launcherPointer, err := syscall.UTF16PtrFromString(launcher)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	commandLine, err := syscall.UTF16PtrFromString(`"` + launcher + `"`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rootPointer, err := syscall.UTF16PtrFromString(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	startupInfo := &syscall.StartupInfo{Cb: uint32(unsafe.Sizeof(syscall.StartupInfo{}))}
@@ -81,12 +124,10 @@ func startUpdatedLauncher(root, releaseVersion string, _, _ io.Writer) error {
 		startupInfo,
 		processInfo,
 	); err != nil {
-		return err
+		return nil, err
 	}
-	_ = syscall.CloseHandle(processInfo.Thread)
-	defer syscall.CloseHandle(processInfo.Process)
 
-	return waitForLauncherReady(eventHandle, processInfo.Process)
+	return processInfo, nil
 }
 
 func newUpdateReadyEventName() (string, error) {

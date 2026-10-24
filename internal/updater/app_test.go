@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,56 +11,6 @@ import (
 
 	"github.com/Snail-one/LlamaLc/internal/procinfo"
 )
-
-func TestFinishUpdateAutomaticallyStartsWindowsLauncher(t *testing.T) {
-	original := launchUpdatedLauncher
-	t.Cleanup(func() { launchUpdatedLauncher = original })
-	var startedRoot string
-	var startedVersion string
-	launchUpdatedLauncher = func(root, version string, _, _ io.Writer) error {
-		startedRoot = root
-		startedVersion = version
-		return nil
-	}
-
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	root := filepath.Join(t.TempDir(), "LlamaLc")
-	if code := finishUpdate(root, "windows", "v1.2.3", nil, stdout, stderr); code != 0 {
-		t.Fatalf("finish code=%d stderr=%s", code, stderr)
-	}
-	if startedRoot != root {
-		t.Fatalf("started root=%q, want %q", startedRoot, root)
-	}
-	if startedVersion != "v1.2.3" {
-		t.Fatalf("started version=%q, want v1.2.3", startedVersion)
-	}
-	for _, want := range []string{"更新完成", "启动器: v1.2.3", "文件替换成功", "正在自动启动新版本"} {
-		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
-			t.Fatalf("completion output missing %q: %s", want, stdout)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("unexpected stderr: %s", stderr)
-	}
-}
-
-func TestFinishUpdateReportsAutomaticStartFailure(t *testing.T) {
-	original := launchUpdatedLauncher
-	t.Cleanup(func() { launchUpdatedLauncher = original })
-	launchUpdatedLauncher = func(string, string, io.Writer, io.Writer) error {
-		return errors.New("start failed")
-	}
-
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := finishUpdate(t.TempDir(), "windows", "v1.2.3", bytes.NewBufferString("\n"), stdout, stderr); code != 1 {
-		t.Fatalf("finish code=%d, want 1", code)
-	}
-	for _, want := range []string{"文件已更新，但无法自动启动", "请手动启动 bin\\llamalc.exe", "按 Enter 关闭"} {
-		if !bytes.Contains(stderr.Bytes(), []byte(want)) {
-			t.Fatalf("failure output missing %q: %s", want, stderr)
-		}
-	}
-}
 
 func TestVersionDoesNotRequireDeploymentLayout(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -73,18 +22,18 @@ func TestVersionDoesNotRequireDeploymentLayout(t *testing.T) {
 	}
 }
 
-func TestDirectInvocationExplainsLauncherMenuEntry(t *testing.T) {
+func TestHelpDescribesIndependentUpdater(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := Main(nil, bytes.NewBufferString("\n"), stdout, stderr); code != 2 {
-		t.Fatalf("direct invocation code=%d, want 2", code)
+	if code := Main([]string{"--help"}, nil, stdout, stderr); code != 0 {
+		t.Fatalf("help code=%d", code)
 	}
-	for _, want := range []string{"内部更新组件", "llamalc.exe", "[3] 升级维护 -> [2] 更新启动器"} {
-		if !bytes.Contains(stdout.Bytes(), []byte(want)) {
-			t.Fatalf("direct invocation output missing %q: %s", want, stdout)
+	for _, want := range []string{"llamaup [update]", "llamaup check", "llamaup recover"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("missing %q: %s", want, stdout)
 		}
 	}
 	if stderr.Len() != 0 {
-		t.Fatalf("unexpected stderr: %s", stderr)
+		t.Fatalf("stderr=%s", stderr)
 	}
 }
 
@@ -199,7 +148,7 @@ func TestApplyUpdateRestoresUpdaterWhenLauncherReplacementFails(t *testing.T) {
 	}
 
 	err := applyUpdate(root, "linux", launcherSourceName, updaterSourceName)
-	if err == nil || !strings.Contains(err.Error(), "已恢复原更新器") {
+	if err == nil || !strings.Contains(err.Error(), "已恢复原启动器和原更新器") {
 		t.Fatalf("apply update error=%v", err)
 	}
 	for path, want := range map[string]string{launcherTarget: "old launcher", updaterTarget: "old updater"} {
@@ -245,5 +194,14 @@ func TestUpdaterIdentityCheckRejectsPathReplacement(t *testing.T) {
 	}
 	if err := verifyUpdaterFileIdentity(path, identity); err == nil {
 		t.Fatal("replacement was accepted as the staged updater")
+	}
+}
+
+func TestPublicSubcommandHelpDoesNotRequireDeployment(t *testing.T) {
+	for _, command := range []string{"update", "check", "recover"} {
+		var stdout, stderr bytes.Buffer
+		if code := Main([]string{command, "--help"}, nil, &stdout, &stderr); code != 0 {
+			t.Fatalf("%s --help code=%d stderr=%s", command, code, &stderr)
+		}
 	}
 }

@@ -73,6 +73,11 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 		path := filepath.Join(l.Root, filepath.FromSlash(relative))
 		appendCandidate(path, "已登记待清理运行时", "更新状态登记的非活动运行时或同版本重装备份", true)
 	}
+	_, transactionErr := os.Lstat(filepath.Join(l.Bin, LauncherTransactionName))
+	transactionPending := !errors.Is(transactionErr, os.ErrNotExist)
+	if transactionPending {
+		out = append(out, CleanupCandidate{Path: filepath.Join(l.Bin, LauncherTransactionName), Kind: "扫描警告", Reason: "存在未完成的启动器更新；暂存程序和恢复备份受保护，请退出主程序后运行 llamaup recover", Warning: true})
+	}
 	for _, entry := range scanEntries(l.Bin) {
 		name := entry.Name()
 		path := filepath.Join(l.Bin, entry.Name())
@@ -82,8 +87,14 @@ func CleanupCandidates(l layout.Layout) ([]CleanupCandidate, error) {
 		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && validRunnerName(name):
 			appendCandidate(path, "updater 运行副本", "更新交接后遗留的严格命名副本", true)
 		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-new-") || validProgramTempName(name, ".llamaup-new-")):
+			if transactionPending {
+				continue
+			}
 			appendCandidate(path, "启动器更新残留", "更新交接中断留下的暂存程序", true)
 		case !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && (validProgramTempName(name, ".llamalc-rollback-") || validProgramTempName(name, ".llamaup-rollback-")):
+			if transactionPending {
+				continue
+			}
 			appendCandidate(path, "启动器更新恢复备份", "双文件更新回滚时保留的原程序，需要人工确认", false)
 		}
 	}

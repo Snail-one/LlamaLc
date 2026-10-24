@@ -22,6 +22,7 @@ import (
 	"github.com/Snail-one/LlamaLc/internal/secrets"
 	"github.com/Snail-one/LlamaLc/internal/tui"
 	"github.com/Snail-one/LlamaLc/internal/update"
+	"github.com/Snail-one/LlamaLc/internal/updater"
 	buildversion "github.com/Snail-one/LlamaLc/internal/version"
 )
 
@@ -82,6 +83,9 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	manager := update.NewManager(l, client)
 	manager.Out, manager.Err = stdout, stderr
 	app := &cli.App{Layout: l, Config: config.Default(), In: stdin, Out: stdout, Err: stderr, Executor: executor, Updates: manager, GOOS: runtime.GOOS, Interactive: inputIsTerminal(stdin)}
+	app.LauncherUpdate = func(ctx context.Context, options update.LauncherOptions, yes bool) (cli.CommandOutcome, error) {
+		return updater.RunExternal(ctx, l, options, yes, stdin, stdout, stderr)
+	}
 	lastRuntimeReport := ""
 	reportRuntime := func(active update.ActiveRuntime) {
 		key := active.Runtime.Server + "\x00" + active.State.LlamaTag + "\x00" + active.Detected
@@ -132,8 +136,9 @@ func MainWithLayout(args []string, l layout.Layout, stdin io.Reader, stdout, std
 	}
 	notice := strings.TrimSpace(os.Getenv("LLAMALC_UPDATED_VERSION"))
 	_ = os.Unsetenv("LLAMALC_UPDATED_VERSION")
-	if notice != buildversion.Version {
-		notice = ""
+	if notice != "" && notice != buildversion.Version {
+		fmt.Fprintf(stderr, "错误: 更新后启动版本不匹配，目标 %s，实际 %s\n", notice, buildversion.Version)
+		return 1
 	}
 	var menu *tui.App
 	initializeInstalledRuntime := func() error {
