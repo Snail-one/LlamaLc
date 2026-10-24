@@ -118,11 +118,15 @@ func (f *fakeSource) Download(_ context.Context, a release.Asset, path string) e
 	return os.WriteFile(path, f.files[a.Name], 0o600)
 }
 func runtimeArchive(t *testing.T, tag string) []byte {
+	return runtimeArchiveWithVersion(t, "llama.cpp "+tag)
+}
+
+func runtimeArchiveWithVersion(t *testing.T, output string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	gz := gzip.NewWriter(&buffer)
 	tw := tar.NewWriter(gz)
-	script := []byte("#!/bin/sh\necho 'llama.cpp " + tag + "'\n")
+	script := []byte("#!/bin/sh\nprintf '%s\\n' '" + strings.ReplaceAll(output, "'", "'\\''") + "'\n")
 	for _, name := range []string{"bundle/llama-server", "bundle/llama-cli"} {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
@@ -162,6 +166,49 @@ func TestInstallLlamaBuildPrerelease(t *testing.T) {
 	}
 	if _, err := m.PrepareLlama(context.Background(), LlamaOptions{}); !errors.Is(err, ErrAlreadyCurrent) {
 		t.Fatalf("same build via latest: %v", err)
+	}
+}
+
+func TestLlamaUpdateWithSemanticBuildVersionOutput(t *testing.T) {
+	for _, test := range []struct {
+		name, build string
+		matches     bool
+	}{{"matching", "11849", true}, {"mismatch", "11850", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			l, err := layout.New(filepath.Join(t.TempDir(), "LlamaLc"), "linux")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldArchive := runtimeArchive(t, "b11848")
+			oldAsset := fixtureAsset("llama-b11848-bin-ubuntu-x64.tar.gz", oldArchive)
+			source := &fakeSource{release: release.GitHubRelease{Tag: "b11848", Assets: []release.Asset{oldAsset}}, files: map[string][]byte{oldAsset.Name: oldArchive}}
+			m := NewManager(l, source)
+			m.GOOS, m.GOARCH = "linux", "amd64"
+			if _, err := m.UpdateLlama(context.Background(), "cpu", false); err != nil {
+				t.Fatal(err)
+			}
+			output := "version: 0.7.0-dev (build " + test.build + ", commit 0ae0e1976)\nbuilt with MSVC 19.44 for x86_64-pc-windows-msvc"
+			archive := runtimeArchiveWithVersion(t, output)
+			asset := fixtureAsset("llama-b11849-bin-ubuntu-x64.tar.gz", archive)
+			source.release = release.GitHubRelease{Tag: "b11849", Prerelease: true, Assets: []release.Asset{asset}}
+			source.files[asset.Name] = archive
+			_, err = m.UpdateLlama(context.Background(), "cpu", false)
+			wantTag := "b11849"
+			if test.matches {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				wantTag = "b11848"
+				if err == nil || !strings.Contains(err.Error(), "版本签名") {
+					t.Fatalf("mismatched build not rejected: %v", err)
+				}
+			}
+			active, err := ValidateActiveRuntime(context.Background(), l, "linux")
+			if err != nil || active.State.LlamaTag != wantTag {
+				t.Fatalf("active=%+v err=%v", active, err)
+			}
+		})
 	}
 }
 
@@ -384,24 +431,6 @@ func TestLauncherProbeRequiresExactVersionField(t *testing.T) {
 	}
 	if err := probeBundleVersion(context.Background(), program, "v1.2.3"); err == nil {
 		t.Fatal("accepted tag outside Version field")
-	}
-}
-
-func TestLlamaVersionOutputMatchesReleaseTag(t *testing.T) {
-	for _, test := range []struct {
-		output string
-		tag    string
-		want   bool
-	}{
-		{"version: 10333 (abcdef)", "b10333", true},
-		{"Version: 010333 (abcdef)", "b10333", true},
-		{"version: 10334 (abcdef)", "b10333", false},
-		{"llama.cpp b10333", "b10333", true},
-		{"llama.cpp b103330", "b10333", false},
-	} {
-		if got := matchesLlamaTag(test.output, test.tag); got != test.want {
-			t.Errorf("matchesLlamaTag(%q, %q)=%v, want %v", test.output, test.tag, got, test.want)
-		}
 	}
 }
 

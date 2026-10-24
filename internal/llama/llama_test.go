@@ -89,13 +89,15 @@ func TestVersionProbeOutputCap(t *testing.T) {
 }
 
 func TestVersionSummaryAcceptsOfficialLlamaOutput(t *testing.T) {
-	output := "version: 10333 (abcdef)\r\nbuilt with MSVC 19.44 for x86_64-pc-windows-msvc\r\n"
-	summary, err := versionSummary(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary != "version: 10333 (abcdef)" {
-		t.Fatalf("summary=%q", summary)
+	for _, version := range []string{
+		"version: 10333 (abcdef)",
+		"version: 0.7.0-dev (build 11849, commit 0ae0e1976)",
+	} {
+		output := version + "\r\nbuilt with MSVC 19.44 for x86_64-pc-windows-msvc\r\n"
+		summary, err := versionSummary(output)
+		if err != nil || summary != version {
+			t.Fatalf("summary=%q err=%v", summary, err)
+		}
 	}
 	if _, err := versionSummary("version: 10333"); err == nil {
 		t.Fatal("accepted output without compiler signature")

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -447,6 +448,8 @@ func removePendingCleanupPath(l layout.Layout, pending []string, absolute string
 	return out
 }
 
+var llamaSemanticBuild = regexp.MustCompile(`^(\S+)[ \t]+\(build[ \t]+([0-9]+)(?:,[ \t]*commit[ \t]+[0-9a-f]+)?\)$`)
+
 func matchesLlamaTag(versionOutput, tag string) bool {
 	tag = strings.ToLower(strings.TrimSpace(tag))
 	if _, err := CompareLlamaTag(tag, tag); err != nil {
@@ -455,14 +458,32 @@ func matchesLlamaTag(versionOutput, tag string) bool {
 	lower := strings.ToLower(versionOutput)
 	if index := strings.Index(lower, "version:"); index >= 0 {
 		value := strings.TrimSpace(lower[index+len("version:"):])
+		if parts := llamaSemanticBuild.FindStringSubmatch(value); parts != nil {
+			if _, err := CompareSemVer(parts[1], parts[1]); err != nil {
+				return false
+			}
+			comparison, err := CompareLlamaTag("b"+parts[2], tag)
+			return err == nil && comparison == 0
+		}
 		end := 0
 		for end < len(value) && value[end] >= '0' && value[end] <= '9' {
 			end++
 		}
 		if end > 0 {
+			// A semantic version without a recognized build field must never be
+			// interpreted as its leading major number (for example, b0).
+			if end < len(value) && value[end] != ' ' && value[end] != '\t' && value[end] != '(' {
+				return false
+			}
 			comparison, err := CompareLlamaTag("b"+value[:end], tag)
 			return err == nil && comparison == 0
 		}
+		fields := strings.Fields(value)
+		if len(fields) > 0 {
+			comparison, err := CompareLlamaTag(fields[0], tag)
+			return err == nil && comparison == 0
+		}
+		return false
 	}
 	for index := 0; index+len(tag) <= len(lower); index++ {
 		if lower[index:index+len(tag)] != tag {
